@@ -30,7 +30,7 @@ from .screens.scanner import ScannerView
 from .screens.bluetooth_scanner import BluetoothScannerView
 from .screens.bluetooth_focus import BluetoothFocusView
 from .screens.client_focus import ClientFocusView
-from .screens.about import AboutModal
+from .screens.about import AboutModal, UpdateAvailableModal
 from .screens.diagnostics import AdapterDiagnosticsModal
 from .screens.focus_v2 import FocusViewV2
 from .screens.error_modals import FatalErrorModal, RecoverableErrorModal
@@ -52,7 +52,7 @@ HeaderClock.ALLOW_SELECT = False
 class WifiteApp(App):
     """wifit3 TUI Main App."""
 
-    TITLE = f"wifit3 v{__version__} - derv82"
+    TITLE = f"wifit3-ng v{__version__} - yadox666"
 
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
@@ -390,10 +390,8 @@ class WifiteApp(App):
             return
         if update.update_available:
             self.call_from_thread(
-                self.notify,
-                f"Version {update.latest_version} is available\n{update.release_url}",
-                title="wifit3 update",
-                timeout=10,
+                self.push_screen,
+                UpdateAvailableModal(update),
             )
         elif show_current:
             self.call_from_thread(

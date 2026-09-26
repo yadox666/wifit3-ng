@@ -1,9 +1,9 @@
-# wifit3 - Enhanced Fork
+# wifit3-ng
 > A standalone USB Wi-Fi and Bluetooth auditor for Linux, Windows, and macOS.
 
 This repository is an enhanced fork of the original
 [derv82/wifit3](https://github.com/derv82/wifit3), upgraded and maintained by
-[Yadox (@yadox666)](https://github.com/yadox666).
+[Yadox (@yadox666)](https://github.com/yadox666) as **wifit3-ng**.
 
 The excellent original development by
 [derv82](https://github.com/derv82) made this fork possible. Its direct
@@ -154,7 +154,7 @@ project.
   exports are excluded from Git. Protect these files because captures may
   contain sensitive network and device metadata.
 - Automatic update checking only queries this fork's
-  `yadox666/wifit3` GitHub latest-release API. It reports updates but never
+  `yadox666/wifit3-ng` GitHub latest-release API. It reports updates but never
   downloads or installs them.
 
 ## Screenshots
@@ -195,7 +195,7 @@ Breakdown of each device's capabilities and limitations: [Supported Hardware Doc
 
 ### Option 1: Download Prebuilt Fork Binaries
 Download the latest standalone executable from the
-[enhanced fork releases](https://github.com/yadox666/wifit3/releases/latest).
+[enhanced fork releases](https://github.com/yadox666/wifit3-ng/releases/latest).
 
 * **Windows:** Download and run `wifit3-windows-x64.exe`.
 * **Linux (non-sudo):** `chmod +x wifit3-linux-x64 && ./wifit3-linux-x64`

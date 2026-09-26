@@ -10,6 +10,7 @@ from textual.widgets import (
 from textual.widgets.selection_list import Selection
 from textual.containers import Vertical, Center, Horizontal
 from textual import events, work
+from rich.style import Style
 from rich.text import Text
 
 from typing import TYPE_CHECKING
@@ -25,6 +26,8 @@ if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
 
 logger = logging.getLogger(__name__)
+
+_NG_BADGE_COLUMN = 48
 
 # Suffix appended to a chipset name when 2+ of the same chip are present, so a multi-card
 # list doesn't read as a wall of identical names. Flip the glyph here (e.g. "_{n}", "·{n}").
@@ -77,12 +80,42 @@ def load_logo() -> Text:
     logo_path = Path(__file__).parent.parent / "assets" / "logo_sm.ans"
     try:
         if logo_path.exists():
-            return make_black_transparent(Text.from_ansi(logo_path.read_text(encoding="utf-8")))
+            logo = Text.from_ansi(logo_path.read_text(encoding="utf-8"))
+            return make_black_transparent(_add_ng_badge(logo))
     except Exception:
         pass
 
     # Fallback
-    return Text.from_markup("[bold green]Wifit3[/bold green]\n[dim green]// Wireless Auditor[/dim green]")
+    return Text.from_markup(
+        "[bold green]Wifit3[/bold green][bold bright_green]-NG[/bold bright_green]"
+        "\n[dim green]// Wireless Auditor[/dim green]"
+    )
+
+
+def _add_ng_badge(logo: Text) -> Text:
+    lines = logo.split("\n")
+    if len(lines) < 3:
+        return logo
+
+    green = Style(color="#00ff00")
+    white = Style(color="#ffffff")
+    badge = [
+        Text("┌────┐", style=green),
+        Text("│ ", style=green)
+        + Text("N", style=white)
+        + Text("G │", style=green),
+        Text("└────┘", style=green),
+    ]
+    for index, badge_line in enumerate(badge):
+        line = lines[index]
+        if len(line) < _NG_BADGE_COLUMN + len(badge_line):
+            line.pad_right(_NG_BADGE_COLUMN + len(badge_line))
+        lines[index] = (
+            line[:_NG_BADGE_COLUMN]
+            + badge_line
+            + line[_NG_BADGE_COLUMN + len(badge_line):]
+        )
+    return Text("\n").join(lines)
 
 LOGO = load_logo()
 

@@ -4,7 +4,7 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
-## Unreleased - 2026-09-26
+## 0.3.4 - 2026-09-26
 
 ### Added
 
@@ -118,7 +118,7 @@ build compared with the original
 - Restricted Vault to Wi-Fi mode.
 - Added About and Targets actions to Preferences.
 - Added automatic update checking against the enhanced fork's
-  `yadox666/wifit3` GitHub release API without automatic download or
+  `yadox666/wifit3-ng` GitHub release API without automatic download or
   installation.
 - Added configurable active-action confirmation and intensity.
 - Moved WPS PBC automation into Preferences.

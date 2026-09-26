@@ -8,13 +8,17 @@ if [[ ! -d .venv ]]; then
   python3 -m venv .venv
 fi
 
-# shellcheck disable=SC1091
-source .venv/bin/activate
+if ! .venv/bin/python -c '
+import pathlib
+import wifit3
 
-if [[ ! -x .venv/bin/wifit3 ]]; then
+expected = pathlib.Path.cwd() / "src" / "wifit3"
+installed = pathlib.Path(wifit3.__file__).resolve().parent
+raise SystemExit(installed != expected.resolve())
+' 2>/dev/null; then
   echo "Installing wifit3..."
-  python -m pip install -U pip
-  python -m pip install -e .
+  .venv/bin/python -m pip install -U pip
+  .venv/bin/python -m pip install -e .
 fi
 
-exec wifit3 "$@"
+exec .venv/bin/python -m wifit3 "$@"

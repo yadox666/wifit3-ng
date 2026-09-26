@@ -84,5 +84,6 @@ async def test_splash_logo_uses_current_theme_variables():
 
     styles = {str(span.style) for span in logo.spans}
 
+    assert "NG" in logo.plain
     assert any("#010203" in style for style in styles)
     assert any("#040506" in style for style in styles)

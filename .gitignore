@@ -35,6 +35,7 @@ scripts/baseline/history/
 scratch/
 scratchpad/
 *.log
+/RELEASE_GUIDE.private.md
 # Probe captures (WEP frag/chopchop, WPS, …) — real on-air frames from the
 # user's environment; never commit (see no-SSIDs/BSSIDs-in-commits rule).
 wifit3*.pcap

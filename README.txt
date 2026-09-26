@@ -1,5 +1,5 @@
-WIFIT3 ENHANCED LOCAL BUILD
-===========================
+WIFIT3-NG
+=========
 
 This tree is an expanded, unofficial build based on the original wifit3
 project at https://github.com/derv82/wifit3.
@@ -183,8 +183,8 @@ Preferences include:
 - Handshake PCAP saving.
 
 Automatic update checking performs one HTTPS request at startup to the
-yadox666/wifit3 GitHub latest-release API. It reports an available release but
-never downloads or installs it. Scan and device data are not sent.
+yadox666/wifit3-ng GitHub latest-release API. It reports an available release
+but never downloads or installs it. Scan and device data are not sent.
 
 
 PRIVATE LOCAL FILES
