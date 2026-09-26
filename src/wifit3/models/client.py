@@ -1,10 +1,14 @@
 """The wireless-client scan model."""
 from __future__ import annotations
 
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Dict, Optional, Set
+
+from .capabilities import AdvertisedCapabilities
+from .enterprise import EnterpriseProfile
 
 if TYPE_CHECKING:
     from wifit3.id import Fingerprint
@@ -16,9 +20,13 @@ class Client:
     mac: str
     bssid: Optional[str] = None  # The AP it is currently connected to or probing for
     packets: int = 0
+    first_seen: float = field(default_factory=time.time)
+    last_seen: float = field(default_factory=time.time)
     probed_ssids: Set[str] = field(default_factory=set)  # SSIDs this client is actively searching for
     # AKM suite chosen by this client, read from the RSN IE in its (Re)Assoc Request. Latest-wins.
     akm_selected: Optional[int] = None
+    capabilities: AdvertisedCapabilities = field(default_factory=AdvertisedCapabilities)
+    enterprise: EnterpriseProfile = field(default_factory=EnterpriseProfile)
     # Smoothed RSSI per receiving card (card name -> dBm), written by WlanSink.
     signal_by_card: Dict[str, int] = field(default_factory=dict)
     signal_history: Dict[str, deque[int]] = field(default_factory=dict, repr=False)

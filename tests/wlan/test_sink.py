@@ -7,8 +7,11 @@ registry. These are the picture assertions that used to live on WlanInterface, r
 import struct
 
 from wifit3.dot11.mac import str_to_mac
+from wifit3.dot11.packet import EapPacket
+from wifit3.dot11.parser import WlanFrameParser
 from wifit3.dot11.wsc import messages as WSC
-from wifit3.models import IdKey, IdSource
+from wifit3.models import AdvertisedCapabilities, IdKey, IdSource
+from wifit3.persist.hidden_ssids import HiddenSsidStore
 from wifit3.wlan.sink import WlanSink
 from wifit3.wlan.packet_stats import PACKET_CLASSES
 
@@ -51,17 +54,27 @@ def _wps_m1_frame(bssid: bytes, client: bytes) -> bytes:
 
 def test_beacon_creates_ap_and_smooths_signal_per_card():
     s = WlanSink()
-    s.update(_beacon(), W0)
+    s.update(_beacon({"timestamp_us": 3_723_000_000, "country_code": "US"}), W0)
     ap = s.get_access_points()[0]
     assert ap.bssid == BSSID and ap.ssid == "Test_SSID" and ap.channel == 6
     assert ap.encryption == "WPA2" and ap.beacons == 1
+    assert ap.uptime_us == 3_723_000_000
+    assert ap.country_code == "US"
     assert ap.signal == -40 and ap.signal_by_card == {W0: -40}
 
-    s.update(_beacon({"rssi": -50}), W0)         # same card, second sample
+    s.update(_beacon({"rssi": -50, "timestamp_us": 3_724_000_000}), W0)
     ap = s.get_access_points()[0]
     assert ap.beacons == 2
+    assert ap.uptime_us == 3_724_000_000
     assert ap.signal == -45                       # (-40 + -50) / 2, per-card
     assert ap.signal_by_card == {W0: -45}
+
+
+def test_beacon_without_country_keeps_last_advertised_country():
+    s = WlanSink()
+    s.update(_beacon({"country_code": "DE"}), W0)
+    s.update(_beacon(), W0)
+    assert s.access_points[BSSID].country_code == "DE"
 
 
 def test_signal_sliding_window_absorbs_spikes_and_evicts_old_samples():
@@ -155,6 +168,21 @@ def test_wps_m1_identity_fields_are_applied_by_sink():
     assert ap.identity.summary == "TP-Link Archer AX10"
 
 
+def test_parsed_wps_m1_still_updates_identity_through_general_eap_path():
+    sink = WlanSink()
+    sink.update(_beacon(), W0)
+    frame = _wps_m1_frame(
+        str_to_mac(BSSID),
+        str_to_mac("02:00:00:00:00:01"),
+    )
+    parsed = WlanFrameParser.parse_80211_frame(frame, -45)
+    assert isinstance(parsed, EapPacket)
+
+    sink.update(parsed, W0)
+
+    assert sink.access_points[BSSID].identity.model_name == "Archer AX10"
+
+
 
 # ----- encryption / decloak / clients ----------------------------------------
 
@@ -174,12 +202,67 @@ def test_decloak_via_probe_resp():
     assert ap.ssid == "Now_Visible" and ap.decloak_method == "probe_resp"
 
 
+def test_hidden_ap_uses_previous_ssid_for_same_bssid(tmp_path):
+    store = HiddenSsidStore(tmp_path / "hidden_ssids.json")
+    store.remember(BSSID, "Remembered Network", "assoc_req")
+    sink = WlanSink(store)
+
+    sink.update(
+        pkt({"type": "beacon", "bssid": BSSID, "rssi": -60, "ssid": "<hidden>"}),
+        W0,
+    )
+
+    ap = sink.access_points[BSSID]
+    assert ap.ssid == "Remembered Network"
+    assert ap.decloak_method == "history"
+
+
+def test_new_hidden_ssid_reveal_is_persisted(tmp_path):
+    store = HiddenSsidStore(tmp_path / "hidden_ssids.json")
+    sink = WlanSink(store)
+    sink.update(
+        pkt({"type": "beacon", "bssid": BSSID, "rssi": -60, "ssid": "<hidden>"}),
+        W0,
+    )
+    sink.update(
+        pkt({"type": "probe_resp", "bssid": BSSID, "rssi": -60, "ssid": "Revealed"}),
+        W0,
+    )
+
+    assert HiddenSsidStore(store.path).lookup(BSSID) == "Revealed"
+
+
 def test_assoc_req_stamps_client_akm():
     s = WlanSink()
     client = "12:22:33:44:55:66"
     s.update(pkt({"type": "assoc_req", "bssid": BSSID, "source": client, "dest": BSSID,
                   "rssi": -45, "assoc_akm": 0x02}), W0)
     assert s.clients[client].akm_selected == 0x02
+
+
+def test_client_advertised_capabilities_merge_across_probe_and_assoc():
+    s = WlanSink()
+    client = "12:22:33:44:55:66"
+    probe_caps = AdvertisedCapabilities(
+        phy_modes={"802.11n"}, channel_widths_mhz={20, 40}, wmm=True,
+    )
+    assoc_caps = AdvertisedCapabilities(
+        phy_modes={"802.11ac"}, channel_widths_mhz={80}, max_spatial_streams=2,
+        pmf_capable=True,
+    )
+    s.update(pkt({
+        "type": "probe_req", "source": client, "dest": "ff:ff:ff:ff:ff:ff",
+        "bssid": "ff:ff:ff:ff:ff:ff", "rssi": -50, "capabilities": probe_caps,
+    }), W0)
+    s.update(pkt({
+        "type": "assoc_req", "bssid": BSSID, "source": client, "dest": BSSID,
+        "rssi": -45, "capabilities": assoc_caps,
+    }), W0)
+    caps = s.clients[client].capabilities
+    assert caps.phy_modes == {"802.11n", "802.11ac"}
+    assert caps.channel_widths_mhz == {20, 40, 80}
+    assert caps.max_spatial_streams == 2
+    assert caps.wmm and caps.pmf_capable
 
 
 def test_decloak_via_assoc_req():

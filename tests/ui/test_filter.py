@@ -102,6 +102,15 @@ def test_hidden_ap_found_by_guessed_ssid():
     assert ScanFilter(text="castle").matches(hidden, ssid="Castle Crasher")
 
 
+def test_scan_filter_supports_signal_wps_and_country():
+    ap = _ap(ssid="Office", wps=True, country_code="US")
+    ap.signal_by_card = {"card0": -65}
+    assert ScanFilter(min_signal=-70, wps=True).matches(ap)
+    assert not ScanFilter(min_signal=-60).matches(ap)
+    assert not ScanFilter(wps=False).matches(ap)
+    assert ScanFilter(text="US").matches(ap)
+
+
 # ---- FilterBar message wiring ----------------------------------------------
 
 class _Host(App):
@@ -140,6 +149,32 @@ async def test_encryption_select_emits_scan_filter():
         await pilot.pause()
         scan = [e for e in app.events if e[0] == "scan"]
         assert scan and scan[-1][1].encryption is EncryptionFilter.WPA
+
+
+async def test_signal_and_wps_selects_emit_scan_filter():
+    app = _Host([1, 6, 11])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.events.clear()
+        app.query_one("#filter-signal", Select).value = -70
+        app.query_one("#filter-wps", Select).value = "yes"
+        await pilot.pause()
+        scan = [event for event in app.events if event[0] == "scan"]
+        assert scan[-1][1].min_signal == -70
+        assert scan[-1][1].wps is True
+
+
+async def test_association_select_emits_client_filter():
+    app = _Host([1, 6, 11])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.query_one(FilterBar)
+        bar.set_view("clients")
+        app.events.clear()
+        app.query_one("#filter-association", Select).value = "unassociated"
+        await pilot.pause()
+        scan = [event for event in app.events if event[0] == "scan"]
+        assert scan[-1][1].association == "unassociated"
 
 
 async def test_channels_button_requests_dialog():

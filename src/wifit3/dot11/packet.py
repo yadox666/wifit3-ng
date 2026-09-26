@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 
 from wifit3.dot11.mac import mac_to_str
+from wifit3.models.capabilities import AdvertisedCapabilities
 
 
 def is_group_mac(mac: str) -> bool:
@@ -61,11 +62,16 @@ class Packet:
 @dataclass(slots=True, kw_only=True)
 class BeaconPacket(Packet):
     """A beacon or probe response: carries the AP's advertised capabilities (IEs)."""
+    timestamp_us: Optional[int] = None
+    country_code: Optional[str] = None
+    capabilities: AdvertisedCapabilities = field(default_factory=AdvertisedCapabilities)
     channel: Optional[int] = None
     encryption: str = "OPEN"
     akms: List[str] = field(default_factory=list)
     akm_suites: List[int] = field(default_factory=list)
     pairwise_cipher: Optional[str] = None
+    pairwise_ciphers: List[str] = field(default_factory=list)
+    group_cipher: Optional[str] = None
     wpa3: bool = False
     transition_mode: bool = False
     pmf_capable: bool = False
@@ -102,6 +108,14 @@ class EapolPacket(Packet):
 
 
 @dataclass(slots=True, kw_only=True)
+class EapPacket(EapolPacket):
+    eap_code: int = 0
+    eap_identifier: int = 0
+    eap_type: Optional[int] = None
+    eap_data: bytes = b""
+
+
+@dataclass(slots=True, kw_only=True)
 class WepDataPacket(Packet):
     """A WEP-encrypted Data frame: the IV + leading ciphertext the WEP suite feeds on."""
     iv: Optional[bytes] = None
@@ -113,6 +127,7 @@ class WepDataPacket(Packet):
 class AssocRequestPacket(Packet):
     """A (Re)Association Request: carries the client's selected AKM."""
     assoc_akm: Optional[int] = None
+    capabilities: AdvertisedCapabilities = field(default_factory=AdvertisedCapabilities)
 
 
 @dataclass(slots=True, kw_only=True)
@@ -136,3 +151,4 @@ class DeauthPacket(Packet):
 @dataclass(slots=True, kw_only=True)
 class ProbeReqPacket(Packet):
     """A Probe Request; the requested SSID is the base ``ssid`` field."""
+    capabilities: AdvertisedCapabilities = field(default_factory=AdvertisedCapabilities)

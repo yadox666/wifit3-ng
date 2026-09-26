@@ -1,0 +1,383 @@
+import time
+from dataclasses import replace
+from unittest.mock import AsyncMock
+
+import pytest
+from textual.widgets import DataTable, Input, Select
+from textual.widgets.data_table import ColumnKey
+
+from wifit3.models import BluetoothDevice
+from wifit3.persist.targets import TargetStore
+from wifit3.ui.app import WifiteApp
+from wifit3.ui.screens.bluetooth_scanner import (
+    BluetoothScannerView,
+    _group_anonymous_apple_devices,
+)
+from wifit3.ui.screens.splash import SplashView
+
+
+def _anonymous_apple(identifier: str, *, rssi: int = -70) -> BluetoothDevice:
+    now = time.time()
+    return BluetoothDevice(
+        identifier=identifier,
+        name="<Unknown>",
+        rssi=rssi,
+        service_uuids=("180f",),
+        service_data_uuids=(),
+        manufacturer_ids=(0x004C,),
+        manufacturer_data_bytes=8,
+        service_data_bytes=0,
+        tx_power=None,
+        advertisement_count=3,
+        advertisement_interval=0.2,
+        first_seen=now - 5,
+        last_seen=now,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_splash_can_start_bluetooth_without_wifi_device(monkeypatch):
+    app = WifiteApp()
+    app.bluetooth_manager.start = AsyncMock()
+    switched = []
+    monkeypatch.setattr(app, "switch_screen", switched.append)
+
+    async with app.run_test() as pilot:
+        splash = app.screen
+        assert isinstance(splash, SplashView)
+        assert not splash.query_one("#bluetooth-btn").disabled
+
+        splash.action_start_bluetooth()
+        for _ in range(40):
+            await pilot.pause(0)
+            if switched:
+                break
+
+        app.bluetooth_manager.start.assert_awaited_once()
+        assert switched == ["bluetooth"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_splash_wifi_and_bluetooth_buttons_share_a_row():
+    app = WifiteApp()
+    async with app.run_test(size=(100, 36)) as pilot:
+        await pilot.pause(0)
+        wifi = app.screen.query_one("#start-btn").region
+        bluetooth = app.screen.query_one("#bluetooth-btn").region
+        assert wifi.y == bluetooth.y
+        assert bluetooth.x >= wifi.right + 2
+        assert abs((wifi.x + bluetooth.right) - 100) <= 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_splash_wifi_and_bluetooth_buttons_have_hotkeys():
+    app = WifiteApp()
+    async with app.run_test() as pilot:
+        splash = app.screen
+        wifi = splash.query_one("#start-btn")
+        bluetooth = splash.query_one("#bluetooth-btn")
+        assert wifi.label.plain == "START WI-FI"
+        assert bluetooth.label.plain == "SCAN BLE"
+        assert any("yellow" in str(span.style) for span in wifi.label.spans)
+        assert any("yellow" in str(span.style) for span in bluetooth.label.spans)
+
+        called = []
+        splash.action_start = lambda: called.append("wifi")
+        splash.action_start_bluetooth = lambda: called.append("bluetooth")
+        await pilot.press("w", "b")
+        assert called == ["wifi", "bluetooth"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_scanner_renders_discovered_device():
+    app = WifiteApp()
+    now = time.time()
+    device = BluetoothDevice(
+        identifier="AA:BB:CC:DD:EE:FF",
+        name="Test Beacon",
+        rssi=-42,
+        service_uuids=("0000180f-0000-1000-8000-00805f9b34fb",),
+        service_data_uuids=("0000180f-0000-1000-8000-00805f9b34fb",),
+        manufacturer_ids=(0x004C,),
+        manufacturer_data_bytes=8,
+        service_data_bytes=1,
+        tx_power=-8,
+        advertisement_count=12,
+        advertisement_interval=0.25,
+        first_seen=now,
+        last_seen=now,
+    )
+    app.bluetooth_manager.devices = lambda: [device]
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        assert isinstance(scanner, BluetoothScannerView)
+        assert app.check_action("toggle_vault", ()) is None
+        app.action_toggle_vault()
+        assert app.screen is scanner
+
+        scanner.refresh_table()
+        table = scanner.query_one("#bluetooth-table", DataTable)
+        expected_widths = scanner._COLUMN_WIDTHS
+        assert {
+            key: table.columns[ColumnKey(key)].width for key in expected_widths
+        } == expected_widths
+        row = table.get_row("AA:BB:CC:DD:EE:FF")
+        assert row[0].plain == "Test Beacon"
+        assert row[1].plain == "-42 dBm"
+        assert row[2].plain == "Beacon"
+        assert row[3].plain == "12"
+        assert row[4].plain == "250 ms"
+        assert row[5].plain == "now"
+        assert row[6].plain == "now"
+        assert row[7].plain == "Apple, Inc. (004C)"
+        assert row[8].plain == "Battery Service"
+        assert row[9].plain == "AA:BB:CC:DD:EE:FF"
+
+        device = replace(
+            device,
+            advertisement_count=123_456,
+            advertisement_interval=123.456,
+            service_uuids=(
+                "0000180f-0000-1000-8000-00805f9b34fb",
+                "0000180a-0000-1000-8000-00805f9b34fb",
+                "0000180d-0000-1000-8000-00805f9b34fb",
+            ),
+        )
+        scanner.refresh_table()
+        assert {
+            key: table.columns[ColumnKey(key)].width for key in expected_widths
+        } == expected_widths
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_saved_target_row_is_red_and_marked(tmp_path):
+    app = WifiteApp()
+    device = replace(_anonymous_apple("AA:BB:CC:DD:EE:FF"), name="Watch")
+    app.bluetooth_manager.devices = lambda: [device]
+    app.target_store = TargetStore(tmp_path / "targets.json")
+    app.target_store.upsert(
+        alias="Watch",
+        medium="bluetooth",
+        kind="device",
+        identifier=device.identifier,
+        details={},
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner.refresh_table()
+        name = scanner.query_one("#bluetooth-table", DataTable).get_row(
+            device.identifier,
+        )[0]
+        assert name.plain.startswith("! ")
+        assert any("red" in str(span.style) for span in name.spans)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_scanner_cycles_sort_column_and_direction():
+    app = WifiteApp()
+    now = time.time()
+    weak = replace(
+        _anonymous_apple("11:11:11:11:11:11", rssi=-80),
+        name="Weak Sensor",
+        advertisement_count=30,
+        first_seen=now - 20,
+    )
+    strong = replace(
+        _anonymous_apple("22:22:22:22:22:22", rssi=-40),
+        name="Strong Sensor",
+        advertisement_count=10,
+        first_seen=now - 5,
+    )
+    app.bluetooth_manager.devices = lambda: [weak, strong]
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        table = scanner.query_one("#bluetooth-table", DataTable)
+        scanner.refresh_table()
+
+        assert table.columns[ColumnKey("first_seen")].label.plain == "▼ FIRST SEEN"
+        assert table.get_row_at(0)[0].plain == "Weak Sensor"
+
+        while table.columns[ColumnKey("rssi")].label.plain == "  POWER":
+            scanner.action_cycle_sort()
+        assert table.columns[ColumnKey("rssi")].label.plain == "▼ POWER"
+        assert table.get_row_at(0)[0].plain == "Strong Sensor"
+
+        scanner.action_toggle_sort_dir()
+        assert table.columns[ColumnKey("rssi")].label.plain == "▲ POWER"
+        assert table.get_row_at(0)[0].plain == "Weak Sensor"
+
+        while table.columns[ColumnKey("advertisements")].label.plain == "  ADV":
+            scanner.action_cycle_sort()
+        assert table.columns[ColumnKey("advertisements")].label.plain == "▲ ADV"
+        assert table.get_row_at(0)[0].plain == "Strong Sensor"
+
+        scanner.action_toggle_sort_dir()
+        assert table.columns[ColumnKey("advertisements")].label.plain == "▼ ADV"
+        assert table.get_row_at(0)[0].plain == "Weak Sensor"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_scanner_filters_by_power_type_and_text():
+    app = WifiteApp()
+    audio = replace(
+        _anonymous_apple("11:11:11:11:11:11", rssi=-45),
+        name="Office Headphones",
+    )
+    sensor = replace(
+        _anonymous_apple("22:22:22:22:22:22", rssi=-75),
+        name="Temperature Sensor",
+        manufacturer_ids=(0x0499,),
+    )
+    app.bluetooth_manager.devices = lambda: [audio, sensor]
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        table = scanner.query_one("#bluetooth-table", DataTable)
+        scanner.refresh_table()
+        assert table.row_count == 2
+
+        scanner.query_one("#bluetooth-filter-type", Select).value = "Audio"
+        await pilot.pause()
+        assert table.row_count == 1
+        assert table.get_row_at(0)[0].plain == "Office Headphones"
+
+        scanner.query_one("#bluetooth-filter-type", Select).value = "All"
+        scanner.query_one("#bluetooth-filter-power", Select).value = -70
+        await pilot.pause()
+        assert table.row_count == 1
+
+        scanner.query_one("#bluetooth-filter-power", Select).value = -100
+        scanner.query_one("#bluetooth-filter-text", Input).value = "temperature"
+        await pilot.pause()
+        assert table.row_count == 1
+        assert table.get_row_at(0)[0].plain == "Temperature Sensor"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_default_sort_keeps_new_devices_at_the_bottom():
+    app = WifiteApp()
+    now = time.time()
+    first = replace(
+        _anonymous_apple("11:11:11:11:11:11"), name="First", first_seen=now - 30
+    )
+    second = replace(
+        _anonymous_apple("22:22:22:22:22:22"), name="Second", first_seen=now - 15
+    )
+    devices = [first, second]
+    app.bluetooth_manager.devices = lambda: devices
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        table = scanner.query_one("#bluetooth-table", DataTable)
+        scanner.refresh_table()
+        assert [table.get_row_at(i)[0].plain for i in range(2)] == ["First", "Second"]
+
+        devices.append(replace(_anonymous_apple("33:33:33:33:33:33"), name="Newcomer", first_seen=now))
+        scanner.refresh_table()
+        assert [table.get_row_at(i)[0].plain for i in range(3)] == [
+            "First",
+            "Second",
+            "Newcomer",
+        ]
+
+
+def test_anonymous_apple_identifiers_form_approximate_group():
+    first = _anonymous_apple("11111111-1111-1111-1111-111111111111")
+    second = replace(
+        first,
+        identifier="22222222-2222-2222-2222-222222222222",
+        rssi=-45,
+        advertisement_count=4,
+    )
+    named_airpods = replace(first, identifier="stable", name="AirPods")
+
+    grouped = _group_anonymous_apple_devices([first, second, named_airpods])
+
+    assert len(grouped) == 2
+    assert grouped[0].identifier == "approximate:apple:004c"
+    assert grouped[0].name == "Apple devices (~2 IDs)"
+    assert grouped[0].group_size == 2
+    assert grouped[0].advertisement_count == 7
+    assert grouped[0].rssi == -45
+    assert grouped[1] is named_airpods
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_apple_group_can_expand_and_collapse():
+    app = WifiteApp()
+    devices = [
+        _anonymous_apple("11111111-1111-1111-1111-111111111111"),
+        _anonymous_apple("22222222-2222-2222-2222-222222222222", rssi=-45),
+    ]
+    app.bluetooth_manager.devices = lambda: devices
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        table = scanner.query_one("#bluetooth-table", DataTable)
+        scanner.refresh_table()
+        assert table.row_count == 1
+        assert table.get_row("approximate:apple:004c")[0].plain == "≈ Apple devices (~2 IDs)"
+
+        scanner.action_toggle_apple_group()
+        assert table.row_count == 2
+        assert table.get_row(devices[0].identifier)[0].plain == "Apple private ID"
+
+        scanner.action_toggle_apple_group()
+        assert table.row_count == 1
+        assert table.get_row("approximate:apple:004c")[0].plain == "≈ Apple devices (~2 IDs)"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_connect_key_connects_selected_device_and_opens_focus(monkeypatch):
+    app = WifiteApp()
+    device = replace(
+        _anonymous_apple("AA:BB:CC:DD:EE:FF"),
+        name="Test Sensor",
+        manufacturer_ids=(0x0499,),
+    )
+    app.bluetooth_manager.devices = lambda: [device]
+    app.bluetooth_manager.stop = AsyncMock()
+    app.bluetooth_manager.connect = AsyncMock()
+    pushed = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner.refresh_table()
+        monkeypatch.setattr(app, "push_screen", pushed.append)
+
+        scanner.action_connect()
+        for _ in range(40):
+            await pilot.pause(0)
+            if pushed:
+                break
+
+        app.bluetooth_manager.connect.assert_awaited_once_with(device)
+        assert pushed == ["bluetooth-focus"]
+

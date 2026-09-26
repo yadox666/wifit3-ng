@@ -1,0 +1,24 @@
+{
+  "artifact": "Zephyr Bluetooth LE HCI USB controller",
+  "board": "Nordic nRF52840 Dongle PCA10059",
+  "source": "https://google.github.io/bumble/downloads/zephyr/hci_usb.zip",
+  "source_documentation": "https://google.github.io/bumble/platforms/zephyr.html",
+  "upstream_package_date": "2023-08-25",
+  "embedded_zephyr_version": "v3.4.0-2824-g4cde3ea70f0c",
+  "hal_nordic_revision": "9ae7c765985ebdea3d9b98c0d3b154794f0b47cf",
+  "retrieved": "2026-09-26",
+  "raw_binary": {
+    "file": "nrf52840_pca10059_hci_usb.bin",
+    "size": 126604,
+    "sha256": "8a585342ab99aca08d09c37537ec658be0193cc5b127a834ceaf4fd371febc43"
+  },
+  "stock_bootloader_package": {
+    "file": "nrf52840_pca10059_hci_usb_dfu.zip",
+    "size": 127126,
+    "sha256": "95a71f2f912bba8cca3ae90f8d270cda0d3c982e69aa0d2108f92a7056193f9e"
+  },
+  "licenses": [
+    "LICENSE-zephyr-Apache-2.0.txt",
+    "LICENSE-hal_nordic-BSD-3-Clause.txt"
+  ]
+}

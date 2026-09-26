@@ -70,6 +70,7 @@ class VaultTable(Widget):
             has_pin = False
             has_hs = False
             has_pmk = False
+            has_pcap = False
             
             for _, caps in self._aps.values():
                 if any(c.type in (CaptureType.WPS_PIN, CaptureType.WPS_PBC, CaptureType.WPA_PSK) and c.value for c in caps):
@@ -82,6 +83,8 @@ class VaultTable(Widget):
                     has_hs = True
                 if any(c.type == CaptureType.PMKID for c in caps):
                     has_pmk = True
+                if any(c.type == CaptureType.PCAP for c in caps):
+                    has_pcap = True
                     
             # Manage Tabs
             tabs = self.query_one("#vault-tabs", Tabs)
@@ -101,6 +104,7 @@ class VaultTable(Widget):
             _ensure_tab("tab-pin", "WPS PIN", has_pin)
             _ensure_tab("tab-hs", "HANDSHAKE", has_hs)
             _ensure_tab("tab-pmk", "PMKID", has_pmk)
+            _ensure_tab("tab-pcap", "PCAP", has_pcap)
             
             try:
                 tabs.active = self._current_tab
@@ -123,6 +127,7 @@ class VaultTable(Widget):
                 if self._current_tab == "tab-pin" and not any(c.type == CaptureType.WPS_PIN and c.pin for c in caps): continue
                 if self._current_tab == "tab-hs" and not any(c.type == CaptureType.HS for c in caps): continue
                 if self._current_tab == "tab-pmk" and not any(c.type == CaptureType.PMKID for c in caps): continue
+                if self._current_tab == "tab-pcap" and not any(c.type == CaptureType.PCAP for c in caps): continue
                 
                 # Build Row Markup
                 name = ssid or "‹hidden›"
@@ -139,6 +144,8 @@ class VaultTable(Widget):
                     badges.append("[bold cyan]✓HS[/]")
                 if any(c.type == CaptureType.PMKID for c in caps):
                     badges.append("[bold cyan]✓PMK[/]")
+                if any(c.type == CaptureType.PCAP for c in caps):
+                    badges.append("[bold blue]✓CAP[/]")
                 
                 badges_str = " ".join(badges)
                 markup = f"{name} {badges_str}{bssid_suffix}".strip()

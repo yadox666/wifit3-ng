@@ -9,6 +9,8 @@ from typing import Dict, List, Optional
 
 from .handshake import Handshake
 from .identity import ApIdentity, IdKey, IdSource
+from .capabilities import AdvertisedCapabilities
+from .enterprise import EnterpriseProfile
 
 
 @dataclass
@@ -27,6 +29,7 @@ class CaptureType(StrEnum):
     WPS_PIN = "WPS_PIN"
     WPS_PBC = "WPS_PBC"
     WPA_PSK = "WPA_PSK"           # passphrase recovered from a handshake/PMKID (e.g. hashcat)
+    PCAP = "PCAP"
 
 
 @dataclass
@@ -57,6 +60,12 @@ class AccessPoint:
     first_seen: float = field(default_factory=time.time)
     # Most recent beacon/probe-resp timestamp.
     last_seen: float = field(default_factory=time.time)
+    uptime_us: Optional[int] = None
+    country_code: Optional[str] = None
+    capabilities: AdvertisedCapabilities = field(default_factory=AdvertisedCapabilities)
+    enterprise: EnterpriseProfile = field(default_factory=EnterpriseProfile)
+    group_cipher: Optional[str] = None
+    pairwise_ciphers: List[str] = field(default_factory=list)
     wpa3: bool = False
     transition_mode: bool = False
     pmf_capable: bool = False

@@ -8,7 +8,11 @@ from wifit3.persist.config import Config, ConfigError
 _DEFAULTS = {n: getattr(Config, n)
              for n in (
                  "theme", "scanner_sort", "scanner_sort_reverse", "scanner_sort_delay",
-                 "silenced_bssids", "log_level", "captures_dir", "save_pcap")}
+                 "scanner_ap_expiry", "silenced_bssids", "log_level", "captures_dir",
+                 "save_pcap", "auto_check_updates", "confirm_active_actions", "auto_wps_pbc",
+                 "active_action_intensity", "auto_lock_targets",
+                 "target_reacquire_timeout", "target_capture_max_mb",
+                 "target_capture_max_parts")}
 
 
 @pytest.fixture(autouse=True)
@@ -138,3 +142,51 @@ def test_scanner_sort_delay_save_load_roundtrip(config_path):
     Config.scanner_sort_delay = 1.0
     Config.load()
     assert Config.scanner_sort_delay == 5.0
+
+
+def test_scanner_ap_expiry_save_load_roundtrip(config_path):
+    Config.scanner_ap_expiry = 120.0
+    Config.save()
+    assert "scanner_ap_expiry = 120.0" in config_path.read_text("utf-8")
+    Config.scanner_ap_expiry = 30.0
+    Config.load()
+    assert Config.scanner_ap_expiry == 120.0
+
+
+def test_update_preference_save_load_roundtrip(config_path):
+    Config.auto_check_updates = True
+    Config.save()
+    Config.auto_check_updates = False
+    Config.load()
+    assert Config.auto_check_updates is True
+
+
+def test_active_action_preferences_save_load_roundtrip(config_path):
+    Config.confirm_active_actions = False
+    Config.auto_wps_pbc = True
+    Config.active_action_intensity = "low"
+    Config.save()
+    Config.confirm_active_actions = True
+    Config.auto_wps_pbc = False
+    Config.active_action_intensity = "normal"
+    Config.load()
+    assert Config.confirm_active_actions is False
+    assert Config.auto_wps_pbc is True
+    assert Config.active_action_intensity == "low"
+
+
+def test_auto_lock_targets_save_load_roundtrip(config_path):
+    Config.auto_lock_targets = True
+    Config.target_reacquire_timeout = 60
+    Config.target_capture_max_mb = 50
+    Config.target_capture_max_parts = 3
+    Config.save()
+    Config.auto_lock_targets = False
+    Config.target_reacquire_timeout = 120
+    Config.target_capture_max_mb = 100
+    Config.target_capture_max_parts = 10
+    Config.load()
+    assert Config.auto_lock_targets is True
+    assert Config.target_reacquire_timeout == 60
+    assert Config.target_capture_max_mb == 50
+    assert Config.target_capture_max_parts == 3

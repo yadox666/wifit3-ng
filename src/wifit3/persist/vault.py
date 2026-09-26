@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 from wifit3.models import CaptureType, PersistedCapture
 from wifit3.persist import save
 from wifit3.persist.capture_history import load_capture_index, summarize
-from wifit3.persist.common import LEGACY_CAPTURE_RE, bssid_to_dashed, safe_ssid
+from wifit3.persist.common import LEGACY_CAPTURE_RE, bssid_to_dashed, parse_hc22000, safe_ssid
 from wifit3.persist.config import Config
 from wifit3.persist.save import SaveResult
 from wifit3.vault.manager import JobManager
@@ -195,6 +195,53 @@ class Vault:
                 0, PersistedCapture(type=CaptureType.WPS_PBC, timestamp=int(time.time()),
                                     path=str(result.path), bssid=ap.bssid, value=psk, ssid=ap.ssid))
         return result
+
+    def save_wpa_psk(self, ap: "AccessPoint", psk: str) -> Optional[SaveResult]:
+        result = save.save_wpa_psk(ap, psk)
+        if result and result.was_new:
+            self._index.setdefault(ap.bssid, []).insert(
+                0, PersistedCapture(type=CaptureType.WPA_PSK, timestamp=int(time.time()),
+                                    path=str(result.path), bssid=ap.bssid, value=psk, ssid=ap.ssid))
+        return result
+
+    def validate_capture(self, capture: PersistedCapture) -> tuple[bool, str]:
+        """Validate a saved artifact's local structure without transmitting or exposing secrets."""
+        path = Path(capture.path)
+        try:
+            if path.suffix.lower() == ".hc22000":
+                entries = [
+                    parse_hc22000(line)
+                    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+                ]
+                valid = [entry for entry in entries if entry is not None]
+                return (
+                    (True, f"{len(valid)} valid Hashcat record{'s' if len(valid) != 1 else ''}")
+                    if valid else (False, "No valid Hashcat 22000 records")
+                )
+            if path.suffix.lower() == ".pcap":
+                with path.open("rb") as stream:
+                    header = stream.read(4)
+                magics = {b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d"}
+                return (
+                    (True, "Valid PCAP header")
+                    if header in magics else (False, "Invalid or truncated PCAP header")
+                )
+            if capture.type == CaptureType.WEP:
+                value = capture.value or ""
+                return (
+                    (True, f"Valid {len(value) * 4}-bit WEP key")
+                    if len(value) in {10, 26, 32, 58} and all(char in "0123456789abcdefABCDEF" for char in value)
+                    else (False, "Invalid WEP key encoding")
+                )
+            if capture.type in self._PSK_TYPES:
+                value = capture.value or ""
+                valid = 8 <= len(value) <= 63 or (
+                    len(value) == 64 and all(char in "0123456789abcdefABCDEF" for char in value)
+                )
+                return (True, "Credential structure is valid") if valid else (False, "Invalid WPA credential length")
+        except OSError as exc:
+            return False, str(exc)
+        return False, "Unsupported capture format"
 
     # ----- filesystem ops (the screen goes through these, never touches disk) -----
 

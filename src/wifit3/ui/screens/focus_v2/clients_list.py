@@ -8,8 +8,11 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Tooltip
+from rich.text import Text
 
-from wifit3.id import Fingerprint
+from wifit3.id import Fingerprint, vendor_for_mac
+from ...signal_bar import dbm_style
+from ... import focus_model as fm
 
 
 def _widget_id(mac: str) -> str:
@@ -25,23 +28,32 @@ class ClientWidget(Horizontal):
             self.mac = mac
 
     class FingerprintClicked(Message):
-        def __init__(self, mac: str, fingerprint: Fingerprint, offset: tuple[int, int]) -> None:
+        def __init__(
+            self, mac: str, fingerprint: Fingerprint | None, details: str,
+            offset: tuple[int, int],
+        ) -> None:
             super().__init__()
             self.mac = mac
             self.fingerprint = fingerprint
+            self.details = details
             self.offset = offset
 
     def __init__(self, client, **kwargs) -> None:
         super().__init__(id=_widget_id(client.mac), classes="client-row", **kwargs)
+        self._client = client
         self._mac = client.mac
         self._fp = client.fingerprint
+        self._manufacturer = vendor_for_mac(client.mac) or ""
         self._power = client.signal
         self._packets = client.packets
 
     def compose(self) -> ComposeResult:
         self._fp_label = Label(self._fp.emoji if self._fp else "", classes="cl-fp")
         self._mac_label = Label(self._mac, classes="cl-bssid")
-        self._pwr_label = Label(str(self._power), classes="cl-pwr")
+        self._mfr_label = Label(self._manufacturer, classes="cl-mfr")
+        self._pwr_label = Label(
+            Text(str(self._power), style=dbm_style(self._power)), classes="cl-pwr",
+        )
         self._pkts_label = Label(str(self._packets), classes="cl-pkts")
         if self._fp is not None:
             self._fp_label.tooltip = self._fp.label
@@ -50,6 +62,7 @@ class ClientWidget(Horizontal):
         self._deauth = Button("✕", classes="cl-deauth", tooltip="Deauthenticate Client")
         yield self._fp_label
         yield self._mac_label
+        yield self._mfr_label
         yield self._pwr_label
         yield self._pkts_label
         yield self._deauth
@@ -59,19 +72,27 @@ class ClientWidget(Horizontal):
         wipes text selection and burns CPU)."""
         if power != self._power:
             self._power = power
-            self._pwr_label.update(str(power))
+            self._pwr_label.update(Text(str(power), style=dbm_style(power)))
         if packets != self._packets:
             self._packets = packets
             self._pkts_label.update(str(packets))
+        manufacturer = vendor_for_mac(self._mac) or ""
+        if manufacturer != self._manufacturer:
+            self._manufacturer = manufacturer
+            self._mfr_label.update(manufacturer)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
         self.post_message(self.DeauthRequested(self._mac))
 
     def on_click(self, event: events.Click) -> None:
-        if self._fp is not None and event.widget in (self._fp_label, self._mac_label):
+        targets = (self._mac_label, self._mfr_label)
+        if event.widget in targets or (self._fp is not None and event.widget is self._fp_label):
             self.post_message(
-                self.FingerprintClicked(self._mac, self._fp, (event.screen_x, event.screen_y)))
+                self.FingerprintClicked(
+                    self._mac, self._fp, fm.client_advertised_details(self._client),
+                    (event.screen_x, event.screen_y),
+                ))
 
     # Keyboard a11y: the mac label is not focusable, so focusing the row's ✕ surfaces the
     # fingerprint as a tooltip at the button (Textual otherwise shows tooltips on hover only).
@@ -105,15 +126,22 @@ class FingerprintModal(ModalScreen[None]):
     }
     """
 
-    def __init__(self, mac: str, fp: Fingerprint, *, offset: tuple[int, int]) -> None:
+    def __init__(
+        self, mac: str, fp: Fingerprint | None, *, details: str = "",
+        offset: tuple[int, int],
+    ) -> None:
         super().__init__()
         self._mac = mac
         self._fp = fp
+        self._details = details
         self._offset = offset
 
     def compose(self) -> ComposeResult:
+        heading = f"{self._fp.emoji} {self._fp.label}" if self._fp else self._mac
+        rows = [Label(heading)]
+        rows.extend(Label(line) for line in self._details.splitlines()[1:] if line)
         box = Vertical(
-            Label(f"{self._fp.emoji} {self._fp.label}"),
+            *rows,
             Label(f"[dim]OUI: {self._mac[:8]}[/dim]"),
             id="fp-box",
         )
@@ -147,6 +175,13 @@ class ClientsList(Vertical):
         # Broadcast button pinned at the top; only the row list scrolls below it.
         yield Button("Deauth all", id="deauth-all", classes="bcast-btn",
                      tooltip="Deauthenticate all clients (Broadcast)")
+        with Horizontal(classes="client-columns"):
+            yield Label("", classes="cl-fp")
+            yield Label("CLIENT", classes="cl-bssid")
+            yield Label("VENDOR", classes="cl-mfr")
+            yield Label("PWR", classes="cl-pwr")
+            yield Label("PKT", classes="cl-pkts")
+            yield Label("", classes="cl-action")
         rows = []
         for c in self._clients:
             widget = ClientWidget(c)

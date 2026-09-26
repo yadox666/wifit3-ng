@@ -2,7 +2,7 @@
 FCS-less MPDU bodies (every chip driver strips at RX ingress), so the writer
 no longer second-guesses the frame tail."""
 
-from wifit3.persist.pcap import write_pcap
+from wifit3.persist.pcap import PcapWriter, write_pcap
 
 
 def _first_packet(path) -> bytes:
@@ -51,3 +51,31 @@ def test_write_pcap_preserves_per_frame_timestamps(tmp_path):
     assert write_pcap(path, recs) == 2
     assert _record_header(path, 0)[:2] == (1000, 500000)
     assert _record_header(path, 1)[:2] == (1002, 250000)
+
+
+def test_streaming_pcap_writer_appends_and_closes(tmp_path):
+    path = tmp_path / "stream.pcap"
+    writer = PcapWriter(path)
+    assert writer.write(_beacon_body(), 1000.5)
+    assert writer.write(b"", 1001.0) is False
+    writer.close()
+
+    assert writer.count == 1
+    assert _first_packet(path) == _beacon_body()
+    assert writer.write(_beacon_body(), 1002.0) is False
+
+
+def test_streaming_pcap_writer_rotates_and_limits_parts(tmp_path):
+    path = tmp_path / "Net_aa-bb-cc-dd-ee-ff_1700000000_packet_capture.pcap"
+    writer = PcapWriter(path, max_bytes=50, max_parts=2)
+    assert writer.write(b"first")
+    assert writer.write(b"second")
+    assert writer.write(b"third") is False
+    writer.close()
+
+    assert writer.count == 2
+    assert writer.dropped == 1
+    assert [item.name for item in writer.paths] == [
+        "Net_aa-bb-cc-dd-ee-ff_1700000000_packet_capture.pcap",
+        "Net_aa-bb-cc-dd-ee-ff_1700000001_packet_capture.pcap",
+    ]

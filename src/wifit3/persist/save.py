@@ -403,3 +403,24 @@ def save_wps_pbc(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
     )
     path.write_text(body, encoding="utf-8")
     return SaveResult(path=path, was_new=True)
+
+
+def save_wpa_psk(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
+    """Persist a manually supplied WPA passphrase without exposing it in a filename."""
+    captures_dir = Path(Config.captures_dir)
+    if not psk:
+        return None
+    for path in _existing(captures_dir, ap.bssid, "_wpa_psk.txt"):
+        try:
+            match = WPS_PSK_RE.search(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        if match and match.group(1).strip() == psk:
+            return SaveResult(path=path, was_new=False)
+    captures_dir.mkdir(parents=True, exist_ok=True)
+    path = _fresh_path(captures_dir, ap.ssid, ap.bssid, "_wpa_psk.txt")
+    path.write_text(
+        f"SSID: {ap.ssid or ''}\nBSSID: {ap.bssid}\nPSK: {psk}\n",
+        encoding="utf-8",
+    )
+    return SaveResult(path=path, was_new=True)

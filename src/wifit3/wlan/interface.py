@@ -3,6 +3,7 @@ chipset driver. The 802.11 state (AP/client registry, WEP capture, packet stats)
 ``WlanSink``, owned by the ``WlanArray`` this interface is pooled into."""
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Callable, Any
 
@@ -58,6 +59,12 @@ class WlanInterface:
         self.bus = bus
         self.address = address
         self.current_channel = 1
+        self.connected_at: float | None = None
+        self.last_frame_at: float | None = None
+        self.received_frames = 0
+        self.transmitted_frames = 0
+        self.tune_failures = 0
+        self.visited_channels: set[int] = set()
 
         self._rx_callbacks: List[Callable[[Packet], None]] = []
         self._disconnect_callbacks: List[Callable[[Exception], None]] = []
@@ -78,6 +85,8 @@ class WlanInterface:
     def _on_frame_parsed(self, pkt: Packet) -> None:
         """Fan the driver's parsed frame out to raw subscribers (the array's _ingest, campaigns).
         The 802.11 state is built from this stream by WlanArray/WlanSink, not here."""
+        self.received_frames += 1
+        self.last_frame_at = time.time()
         if self._rx_callbacks:
             self._fire_rx_callbacks(pkt)
 
@@ -86,7 +95,10 @@ class WlanInterface:
         unopenable for a fixable access reason (Windows not WinUSB-bound, Linux EACCES/EBUSY) is
         re-raised as BringUpPermissionsError so the caller can offer the one-time setup."""
         try:
-            return await self.driver.connect(progress_cb=progress_cb)
+            connected = await self.driver.connect(progress_cb=progress_cb)
+            if connected:
+                self.connected_at = time.time()
+            return connected
         except BringUpError as e:
             if is_permission_error(e):
                 raise BringUpPermissionsError(e.stage, e.detail) from e
@@ -99,9 +111,16 @@ class WlanInterface:
     async def set_channel(self, channel: int, scan: bool = False) -> bool:
         """Tune to ``channel`` via the driver. ``scan=True`` (channel hopper) hints
         a transient hop so the driver may skip per-hop calibration."""
-        success = await self.driver.set_channel(channel, scan=scan)
+        try:
+            success = await self.driver.set_channel(channel, scan=scan)
+        except Exception:
+            self.tune_failures += 1
+            raise
         if success:
             self.current_channel = channel
+            self.visited_channels.add(channel)
+        else:
+            self.tune_failures += 1
         return success
 
     async def set_fake_mac(self, mac: Any = None, bssid: Any = None) -> Optional[str]:
@@ -139,6 +158,10 @@ class WlanInterface:
     def instance_key(self) -> tuple:
         """(vid, pid, bus, address): which physical card this is, for pool-membership de-dup."""
         return (self.vid, self.pid, self.bus, self.address)
+
+    @property
+    def device_lost(self) -> bool:
+        return self._device_lost
 
     @property
     def _chipset(self) -> str:
@@ -198,6 +221,7 @@ class WlanInterface:
 
     async def send_no_wait(self, frame_bytes: bytes) -> bool:
         """Inject a frame fire-and-forget."""
+        self.transmitted_frames += 1
         if self.on_tx:
             self.on_tx(frame_bytes)          # array records TX packet-stats
         return await self.driver.inject_frame(frame_bytes)
@@ -206,6 +230,7 @@ class WlanInterface:
         """Inject a frame, then watch the monitor tap for the recipient's link-ACK, resending up
         to ``max_retries`` times on silence; returns whether it landed. Needs ``enable_rx_acks()``
         armed first, else fire-and-forget. Best-effort (see ``Driver.inject_frame_slow_retry``)."""
+        self.transmitted_frames += 1
         if self.on_tx:
             self.on_tx(frame_bytes)
         return await self.driver.inject_frame_slow_retry(frame_bytes, max_resends=max_retries)

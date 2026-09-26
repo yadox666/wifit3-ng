@@ -7,6 +7,8 @@ license = "GPL-2.0-only"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
+    "bleak>=1.1.1",
+    "bluetooth-numbers>=1.1.2",
     "libusb-package>=1.0.26.3",
     "platformdirs",
     "pyusb>=1.3.1",

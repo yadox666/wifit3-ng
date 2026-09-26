@@ -12,6 +12,12 @@ def _isolate_config(tmp_path, monkeypatch):
     Config.theme = "wifit3-green-dark"
     Config.scanner_sort = "signal"
     Config.scanner_sort_reverse = True
+    Config.scanner_sort_delay = 2.0
+    Config.scanner_ap_expiry = 30.0
+    Config.auto_check_updates = False
+    Config.confirm_active_actions = True
+    Config.auto_wps_pbc = False
+    Config.active_action_intensity = "normal"
     Config.silenced_bssids = []
     yield
 

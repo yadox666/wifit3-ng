@@ -49,6 +49,7 @@ class WlanArray:
         self._stray_beacon_channels: Dict[str, int] = {}  # bssid -> decoy channel; its beacons are ours
         self._evil_twin_bssids: Set[str] = set()          # our own twin APs; hidden from the scanner
         self._disconnect_callbacks: List[Callable[[Exception, int], None]] = []
+        self._packet_callbacks: List[Callable[[Packet], None]] = []
         self._name_counter = 0
         # Hop state: the channel partition is computed only in start_hopping; every membership change
         # while hopping re-invokes it so the SPREAD tracks the live pool. Nothing outside drives it.
@@ -179,6 +180,14 @@ class WlanArray:
         if cb not in self._disconnect_callbacks:
             self._disconnect_callbacks.append(cb)
 
+    def register_packet_callback(self, callback: Callable[[Packet], None]) -> None:
+        if callback not in self._packet_callbacks:
+            self._packet_callbacks.append(callback)
+
+    def unregister_packet_callback(self, callback: Callable[[Packet], None]) -> None:
+        if callback in self._packet_callbacks:
+            self._packet_callbacks.remove(callback)
+
     def _ingest(self, iface: WlanInterface, pkt: Packet) -> None:
         """One card's raw frame: drop our own transmissions, dedupe across cards, and fold the novel
         copy into the shared 802.11 state (every card still contributes its own signal on a dup)."""
@@ -197,6 +206,11 @@ class WlanArray:
         if novel_globally:
             self._sink.update(pkt, card_id, channel_hint=iface.current_channel)
             self._sink.dispatch_rx(pkt)
+            for callback in list(self._packet_callbacks):
+                try:
+                    callback(pkt)
+                except Exception:
+                    logger.exception("Packet observer failed")
         elif is_first_for_card:
             self._sink.record_signal(card_id, pkt.bssid, pkt.rssi)
 

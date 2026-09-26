@@ -24,6 +24,9 @@ dist/
 
 # Project specifics
 captures/
+targets.json
+hidden_ssids.json
+target_events*.jsonl
 driver_sources/
 driver_captures*/
 kali/

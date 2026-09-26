@@ -26,6 +26,19 @@ FULL_SCALE_RATE = 9.77
 _EMPTY = 0.22
 
 
+def dbm_style(signal: int, *, dim: bool = False) -> str:
+    """Shared dBm color scale for Wi-Fi APs, clients, and Bluetooth devices."""
+    if signal >= -50:
+        color = "bold green"
+    elif signal >= -67:
+        color = "cyan"
+    elif signal >= -80:
+        color = "yellow"
+    else:
+        color = "red"
+    return f"dim {color}" if dim else color
+
+
 def _hue(t: float) -> Tuple[int, int, int]:
     """Positional gradient: red (t=0) → yellow → green (t=1)."""
     t = 0.0 if t < 0 else 1.0 if t > 1 else t

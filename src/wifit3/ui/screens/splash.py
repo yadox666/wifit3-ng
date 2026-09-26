@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -16,7 +17,9 @@ from typing import TYPE_CHECKING
 from wifit3.ui.ansi_art import make_black_transparent, recolor_logo
 from wifit3.ui.screens.setup_error import SetupErrorDialog
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
+from wifit3.bluetooth import BluetoothScanError
 from wifit3.device.manager import Status
+from wifit3.id import oui_db
 
 if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
@@ -91,7 +94,9 @@ class SplashView(Screen):
     app: "WifiteApp"
 
     BINDINGS = [
-        ("q", "app.quit", "Quit"),
+        ("w", "start", "Wi-Fi"),
+        ("b", "start_bluetooth", "BLE"),
+        ("u", "update_oui", "Update OUI DB"),
         Binding("enter", "enter", "Start", priority=True),
     ]
 
@@ -118,10 +123,21 @@ class SplashView(Screen):
                     # checked) so the user picks the subset to bring up. render_devices shows one.
                     yield ListView(id="device-list")
                     yield SelectionList(id="device-select")
-                    with Vertical(id="button-col"):
-                        yield Button("START", id="start-btn", variant="success")
-                        # Reverses wifit3's driver/access changes for the highlighted card.
-                        yield Button("Uninstall", id="uninstall-btn", variant="error")
+            with Center():
+                with Horizontal(id="primary-actions"):
+                    yield Button(
+                        Text.from_markup("START [bold bright_yellow]W[/]I-FI"),
+                        id="start-btn",
+                        variant="success",
+                    )
+                    yield Button(
+                        Text.from_markup("SCAN [bold bright_yellow]B[/]LE"),
+                        id="bluetooth-btn",
+                        variant="primary",
+                    )
+            with Center():
+                # Reverses wifit3's driver/access changes for the highlighted card.
+                yield Button("Uninstall", id="uninstall-btn", variant="error")
         yield GlobalJobTracker()
         yield Footer()
 
@@ -139,6 +155,23 @@ class SplashView(Screen):
         logo = self.query_one("#ascii-art", Static)
         logo.update(self._logo())
 
+    @work(exclusive=True, group="oui-db")
+    async def action_update_oui(self) -> None:
+        try:
+            status = await asyncio.to_thread(oui_db.ensure, force=True)
+        except Exception:
+            self.notify(
+                "Could not download oui.txt",
+                title="OUI database",
+                severity="error",
+            )
+            return
+        self.notify(
+            status.message,
+            title="OUI database",
+            severity="information" if status.ok else "warning",
+        )
+
     def _enter_scanning_mode(self) -> None:
         """The 'pick a card' resting state."""
         self._is_initializing = False
@@ -152,6 +185,7 @@ class SplashView(Screen):
         multi_list.disabled = False
         multi_list.display = False
         self.query_one("#start-btn", Button).disabled = True
+        self.query_one("#bluetooth-btn", Button).disabled = False
         self.query_one("#uninstall-btn", Button).disabled = True
         self.query_one("#status-label", Label).update("Scanning for compatible hardware…")
 
@@ -217,13 +251,13 @@ class SplashView(Screen):
             start_btn.disabled = True
             uninstall_btn.disabled = True
 
-    def _show_error(self, message: str) -> None:
+    def _show_error(self, message: str, *, title: str = "Card bring-up failed") -> None:
         """Surface a recoverable bring-up failure: a persistent red label (which poll_usb leaves
         alone, unlike the status line) plus a toast."""
         label = self.query_one("#error-label", Label)
         label.update(f"[bold red]⚠  {message}[/bold red]")
         label.display = True
-        self.notify(message, title="Card bring-up failed", severity="error")
+        self.notify(message, title=title, severity="error")
 
     def _clear_error(self) -> None:
         label = self.query_one("#error-label", Label)
@@ -294,6 +328,8 @@ class SplashView(Screen):
             return
         if event.button.id == "start-btn":
             self.action_start()
+        elif event.button.id == "bluetooth-btn":
+            self.action_start_bluetooth()
         elif event.button.id == "uninstall-btn":
             dev = self._highlighted_device()
             if dev is not None:
@@ -306,6 +342,7 @@ class SplashView(Screen):
         single_list.disabled = True
         multi_list.disabled = True
         self.query_one("#start-btn", Button).disabled = True
+        self.query_one("#bluetooth-btn", Button).disabled = True
         self.query_one("#uninstall-btn", Button).disabled = True
 
     def _exit_busy(self) -> None:
@@ -314,9 +351,13 @@ class SplashView(Screen):
         single_list, multi_list = self._both_lists()
         single_list.disabled = False
         multi_list.disabled = False
-        self.query_one("#start-btn", Button).disabled = False
-        self.query_one("#uninstall-btn", Button).disabled = False
-        (multi_list if self._using_multi() else single_list).focus()
+        self.query_one("#start-btn", Button).disabled = not self._devices
+        self.query_one("#bluetooth-btn", Button).disabled = False
+        self.query_one("#uninstall-btn", Button).disabled = not self._devices
+        if self._devices:
+            (multi_list if self._using_multi() else single_list).focus()
+        else:
+            self.query_one("#bluetooth-btn", Button).focus()
 
     @work(exclusive=True)
     async def perform_start(self, devices) -> None:
@@ -340,11 +381,32 @@ class SplashView(Screen):
         if pooled > 0:
             if failures:
                 self.notify(f"{len(failures)} card(s) failed to start.", severity="warning")
+            self.app.locked_target_id = None
+            self.app.auto_lock_armed = True
             self.app.switch_screen("scanner")
         elif failures:
             self._show_error(failures[-1])
         else:  # all declined / nothing checked
             self.query_one("#status-label", Label).update(self._ready_prompt())
+
+    def action_start_bluetooth(self) -> None:
+        if not self._is_initializing:
+            self.perform_bluetooth_start()
+
+    @work(exclusive=True)
+    async def perform_bluetooth_start(self) -> None:
+        self._clear_error()
+        self._enter_busy()
+        try:
+            await self.app.bluetooth_manager.start()
+        except BluetoothScanError as exc:
+            self._exit_busy()
+            self._show_error(f"Bluetooth scan failed: {exc}", title="Bluetooth unavailable")
+            return
+        self._exit_busy()
+        self.app.locked_target_id = None
+        self.app.auto_lock_armed = True
+        self.app.switch_screen("bluetooth")
 
     @work(exclusive=True)
     async def perform_uninstall(self, device_id) -> None:

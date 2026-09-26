@@ -133,6 +133,15 @@ def _parse_file(path: Path, bssid: str) -> List[PersistedCapture]:
         count = _count_hashlines(path, "WPA*01*") if ext == "hc22000" else 0
         return [PersistedCapture(type=CaptureType.PMKID, timestamp=epoch, path=str(path),
                                  bssid=bssid, ssid=ssid, record_count=count)]
+    if kind == "packet_capture" and ext == "pcap":
+        return [PersistedCapture(
+            type=CaptureType.PCAP,
+            timestamp=epoch,
+            path=str(path),
+            bssid=bssid,
+            ssid=ssid,
+            record_count=0,
+        )]
     return []
 
 

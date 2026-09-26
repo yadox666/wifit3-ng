@@ -24,9 +24,10 @@ from wifit3.dot11.wsc.messages import (
     ATTR_DEV_NAME as ATTR_DEVICE_NAME,
 )
 from wifit3.dot11.packet import (
-    Packet, BeaconPacket, EapolPacket, WepDataPacket, AssocRequestPacket,
+    Packet, BeaconPacket, EapPacket, EapolPacket, WepDataPacket, AssocRequestPacket,
     AuthPacket, AssocRespPacket, DeauthPacket, ProbeReqPacket,
 )
+from wifit3.models.capabilities import AdvertisedCapabilities
 
 
 class WlanFrameParser:
@@ -110,6 +111,8 @@ class WlanFrameParser:
             fields: Dict[str, Any] = {
                 "type": type_str,
                 "ssid": tags.get("ssid"),
+                "timestamp_us": struct.unpack("<Q", frame[24:32])[0],
+                "capabilities": tags["capabilities"],
                 "encryption": tags.get("encryption", "OPEN"),
                 "wpa3": tags.get("wpa3", False),
                 "transition_mode": tags.get("transition_mode", False),
@@ -117,12 +120,20 @@ class WlanFrameParser:
                 "pmf_required": tags.get("pmf_required", False),
                 "beacon_protection": tags.get("beacon_protection", False),
                 "pairwise_cipher": tags.get("pairwise_cipher"),
+                "pairwise_ciphers": tags.get("pairwise_ciphers", []),
+                "group_cipher": tags.get("group_cipher"),
                 "akms": tags.get("akms", []),
                 "akm_suites": tags.get("akm_suites", []),
             }
+            fields["capabilities"].beacon_interval_tu = struct.unpack("<H", frame[32:34])[0]
+            fields["capabilities"].capability_flags.update(
+                cls._capability_flags(struct.unpack("<H", frame[34:36])[0])
+            )
+            if "Radio Measurement" in fields["capabilities"].capability_flags:
+                fields["capabilities"].radio_measurement = True
             # Copy channel / rsn_ie_raw / WPS only when the walker found them, so a missing
             # value keeps the field default.
-            for key in ("channel", "rsn_ie_raw", "wps", "wps_locked", "wps_version",
+            for key in ("channel", "country_code", "rsn_ie_raw", "wps", "wps_locked", "wps_version",
                         "wps_state", "wps_config_methods", "wps_device_password_id",
                         "wps_selected_registrar", "wsc_manufacturer", "wsc_model_name",
                         "wsc_model_number", "wsc_device_name", "wsc_device_type"):
@@ -134,25 +145,42 @@ class WlanFrameParser:
             tags = cls._parse_tags(frame, subtype)
             if tags is None:
                 return None
-            return ProbeReqPacket(**base, type="probe_req", ssid=tags.get("ssid"))
+            return ProbeReqPacket(
+                **base, type="probe_req", ssid=tags.get("ssid"),
+                capabilities=tags["capabilities"],
+            )
 
         if subtype == cls.SUBTYPE_ASSOC_REQ:
             tags = cls._parse_tags(frame, subtype)
             if tags is None:
                 return None
             # Client's selected AKM from the RSN IE (24 hdr + cap + listen = 28).
+            tags["capabilities"].capability_flags.update(
+                cls._capability_flags(struct.unpack("<H", frame[24:26])[0])
+            )
+            if "Radio Measurement" in tags["capabilities"].capability_flags:
+                tags["capabilities"].radio_measurement = True
+            tags["capabilities"].listen_interval = struct.unpack("<H", frame[26:28])[0]
             return AssocRequestPacket(
                 **base, type="assoc_req", ssid=tags.get("ssid"),
-                assoc_akm=cls._first_rsn_akm(frame, 28))
+                assoc_akm=cls._first_rsn_akm(frame, 28),
+                capabilities=tags["capabilities"])
 
         if subtype == cls.SUBTYPE_REASSOC_REQ:
             tags = cls._parse_tags(frame, subtype)
             if tags is None:
                 return None
             # 34 = assoc's 28 + 6-byte Current AP Address.
+            tags["capabilities"].capability_flags.update(
+                cls._capability_flags(struct.unpack("<H", frame[24:26])[0])
+            )
+            if "Radio Measurement" in tags["capabilities"].capability_flags:
+                tags["capabilities"].radio_measurement = True
+            tags["capabilities"].listen_interval = struct.unpack("<H", frame[26:28])[0]
             return AssocRequestPacket(
                 **base, type="reassoc_req", ssid=tags.get("ssid"),
-                assoc_akm=cls._first_rsn_akm(frame, 34))
+                assoc_akm=cls._first_rsn_akm(frame, 34),
+                capabilities=tags["capabilities"])
 
         if subtype == cls.SUBTYPE_ASSOC_RESP:
             # Body: Capability(2) + Status(2) + AID(2); status at offset 26.
@@ -218,6 +246,36 @@ class WlanFrameParser:
         # Length (2B BE), 99=Key Data.
         fields: Dict[str, Any] = {}
         eapol_start = header_len + sig_idx + 8
+        if len(frame) >= eapol_start + 8 and frame[eapol_start + 1] == 0:
+            eapol_length = struct.unpack(
+                ">H", frame[eapol_start + 2: eapol_start + 4],
+            )[0]
+            eap_start = eapol_start + 4
+            available = min(eapol_length, len(frame) - eap_start)
+            if available >= 4:
+                eap_code = frame[eap_start]
+                eap_identifier = frame[eap_start + 1]
+                eap_length = struct.unpack(
+                    ">H", frame[eap_start + 2: eap_start + 4],
+                )[0]
+                eap_type = (
+                    frame[eap_start + 4]
+                    if eap_code in (1, 2) and eap_length >= 5 and available >= 5
+                    else None
+                )
+                tls_types = {13, 21, 25, 43, 55}
+                eap_data = (
+                    bytes(frame[eap_start + 5: eap_start + min(eap_length, available)])
+                    if eap_type in tls_types else b""
+                )
+                return EapPacket(
+                    **base,
+                    type="eapol",
+                    eap_code=eap_code,
+                    eap_identifier=eap_identifier,
+                    eap_type=eap_type,
+                    eap_data=eap_data,
+                )
         if len(frame) >= eapol_start + 99 and frame[eapol_start + 1] == 3:  # EAPOL-Key
             key_info = struct.unpack(">H", frame[eapol_start + 5: eapol_start + 7])[0]
             key_data_len = struct.unpack(">H", frame[eapol_start + 97: eapol_start + 99])[0]
@@ -471,12 +529,47 @@ class WlanFrameParser:
     def _wps_text(value: bytes) -> str:
         return wps_text(value)
 
+    @staticmethod
+    def _signed_octet(value: int) -> int:
+        return value - 256 if value >= 128 else value
+
+    @staticmethod
+    def _capability_flags(value: int) -> set[str]:
+        names = {
+            0: "ESS", 1: "IBSS", 4: "Privacy", 5: "Short Preamble",
+            8: "Spectrum Management", 9: "QoS", 10: "Short Slot",
+            11: "APSD", 12: "Radio Measurement", 14: "Delayed Block Ack",
+            15: "Immediate Block Ack",
+        }
+        return {name for bit, name in names.items() if value & (1 << bit)}
+
+    @staticmethod
+    def _raise_spatial_streams(capabilities: AdvertisedCapabilities, streams: int | None) -> None:
+        if streams is None:
+            return
+        capabilities.max_spatial_streams = max(capabilities.max_spatial_streams or 0, streams)
+
+    @staticmethod
+    def _ht_spatial_streams(tag_data: bytes) -> int | None:
+        populated = [index for index, mask in enumerate(tag_data[3:7], start=1) if mask]
+        return max(populated, default=None)
+
+    @staticmethod
+    def _vht_spatial_streams(tag_data: bytes) -> int | None:
+        rx_mcs_map = int.from_bytes(tag_data[4:6], "little")
+        populated = [
+            stream for stream in range(1, 9)
+            if ((rx_mcs_map >> ((stream - 1) * 2)) & 0x03) != 0x03
+        ]
+        return max(populated, default=None)
+
     @classmethod
     def _parse_tags(cls, frame: bytes, subtype: int) -> Optional[Dict[str, Any]]:
         """Parse a management frame's Information Elements into a dict (ssid, channel,
         encryption, …), or None if the frame is corrupt.
         """
-        parsed = {}
+        capabilities = AdvertisedCapabilities()
+        parsed = {"capabilities": capabilities}
         ptr = cls._ie_offset(subtype)
         if ptr is None:
             return parsed
@@ -518,16 +611,80 @@ class WlanFrameParser:
                     if any(b < 0x20 and b not in (0x09, 0x0a, 0x0d) for b in tag_data):
                         return None # Corrupt frame masquerading as valid
                     parsed["ssid"] = tag_data.decode('utf-8', errors='ignore')
+            elif tag_id in (1, 50): # Supported Rates / Extended Supported Rates
+                capabilities.supported_rates_mbps.update(
+                    (rate & 0x7F) * 0.5 for rate in tag_data
+                )
             elif tag_id == 3: # DS Parameter Set (Channel)
                 if len(tag_data) == 1:
                     channel_ds = tag_data[0]
+            elif tag_id == 5: # TIM: DTIM period is the second body byte
+                if len(tag_data) >= 2:
+                    capabilities.dtim_period = tag_data[1]
+            elif tag_id == 7: # Country Information: 2-byte ISO 3166 country code
+                if len(tag_data) >= 3:
+                    code = tag_data[:2]
+                    if all(0x41 <= byte <= 0x5A for byte in code):
+                        parsed["country_code"] = code.decode("ascii")
+                        capabilities.country_environment = {
+                            0x49: "indoor", 0x4F: "outdoor", 0x20: "any",
+                        }.get(tag_data[2])
+                        capabilities.country_channels = [
+                            (tag_data[i], tag_data[i + 1], tag_data[i + 2])
+                            for i in range(3, len(tag_data) - 2, 3)
+                        ]
+            elif tag_id == 11: # BSS Load
+                if len(tag_data) >= 5:
+                    capabilities.station_count = int.from_bytes(tag_data[:2], "little")
+                    capabilities.channel_utilization = tag_data[2]
+                    capabilities.admission_capacity = int.from_bytes(tag_data[3:5], "little")
+            elif tag_id == 32: # Power Constraint
+                if tag_data:
+                    capabilities.power_constraint_db = tag_data[0]
+            elif tag_id == 33: # Power Capability
+                if len(tag_data) >= 2:
+                    capabilities.power_min_dbm = cls._signed_octet(tag_data[0])
+                    capabilities.power_max_dbm = cls._signed_octet(tag_data[1])
+            elif tag_id == 36: # Supported Channels
+                capabilities.supported_channel_ranges = [
+                    (tag_data[i], tag_data[i + 1])
+                    for i in range(0, len(tag_data) - 1, 2)
+                ]
+            elif tag_id == 45: # HT Capabilities
+                if len(tag_data) >= 7:
+                    capabilities.phy_modes.add("802.11n")
+                    capabilities.channel_widths_mhz.add(20)
+                    if int.from_bytes(tag_data[:2], "little") & 0x0002:
+                        capabilities.channel_widths_mhz.add(40)
+                    cls._raise_spatial_streams(capabilities, cls._ht_spatial_streams(tag_data))
+            elif tag_id == 54: # Mobility Domain
+                capabilities.fast_transition = True
             elif tag_id == 61: # HT Operation: primary channel = first byte
                 if len(tag_data) >= 1:
                     channel_ht = tag_data[0]
+            elif tag_id == 70: # RM Enabled Capabilities
+                capabilities.radio_measurement = True
+            elif tag_id == 71: # Multiple BSSID
+                capabilities.multi_bssid = True
+            elif tag_id == 191: # VHT Capabilities
+                if len(tag_data) >= 6:
+                    capabilities.phy_modes.add("802.11ac")
+                    capabilities.channel_widths_mhz.add(80)
+                    width_set = (int.from_bytes(tag_data[:4], "little") >> 2) & 0x03
+                    if width_set:
+                        capabilities.channel_widths_mhz.add(160)
+                    cls._raise_spatial_streams(capabilities, cls._vht_spatial_streams(tag_data))
             elif tag_id == 192: # VHT Operation: center freq seg 0 at byte 1
                 if len(tag_data) >= 2:
                     channel_vht = tag_data[1]
+                    capabilities.channel_widths_mhz.add(
+                        {0: 40, 1: 80, 2: 160, 3: 160}.get(tag_data[0], 20)
+                    )
+            elif tag_id == 201: # Reduced Neighbor Report
+                capabilities.reduced_neighbor_report = True
             elif tag_id == 127: # Extended Capabilities: bit 84 = Beacon Protection Enabled
+                if len(tag_data) >= 3:
+                    capabilities.bss_transition = bool(tag_data[2] & 0x08)
                 if len(tag_data) >= 11:
                     beacon_protection = bool(tag_data[10] & 0x10)   # bit 84 = octet 10, bit 4
             elif tag_id == 48: # RSN (WPA2/WPA3)
@@ -538,10 +695,14 @@ class WlanFrameParser:
                 rsn = cls._parse_rsn_ie(tag_data)
                 if rsn is not None:
                     pairwise_cipher = rsn["pairwise"]
+                    parsed["pairwise_ciphers"] = rsn["pairwise_ciphers"]
+                    parsed["group_cipher"] = rsn["group_cipher"]
                     akms = rsn["akms"]
                     akm_suites = rsn["akm_suites"]
                     pmf_capable = rsn["pmf_capable"]
                     pmf_required = rsn["pmf_required"]
+                    capabilities.pmf_capable = pmf_capable
+                    capabilities.pmf_required = pmf_required
                     # SAE-family => WPA3; SAE + a PSK-family suite => transition.
                     # Suite-number based so WPA3-H2E (SAE-EXT-KEY, 24) is caught.
                     has_wpa3 = bool(cls._SAE_SUITES.intersection(akm_suites))
@@ -549,18 +710,34 @@ class WlanFrameParser:
                         cls._PSK_SUITES.intersection(akm_suites)
                     )
             elif tag_id == 221: # Vendor Specific
-                if len(tag_data) >= 4:
+                if len(tag_data) >= 3:
                     oui = tag_data[:3]
+                    capabilities.vendor_ouis.add(":".join(f"{byte:02X}" for byte in oui))
+                if len(tag_data) >= 4:
                     oui_type = tag_data[3]
                     if oui == b'\x00\x50\xf2':
                         if oui_type == 1: # WPA
                             has_wpa = True
+                        elif oui_type == 2: # WMM
+                            capabilities.wmm = True
                         elif oui_type == 4: # WPS
                             # tag_data = OUI(3) + type(1) + WPS TLVs.
                             wps_payloads.append(tag_data[4:])
+            elif tag_id == 255 and tag_data: # Extension elements
+                extension_id = tag_data[0]
+                if extension_id in (35, 36):
+                    capabilities.phy_modes.add("802.11ax")
+                elif extension_id in (106, 108):
+                    capabilities.phy_modes.add("802.11be")
+                elif extension_id == 107:
+                    capabilities.multi_link = True
 
         if wps_payloads:
             parsed.update(cls._parse_wps_ie(b"".join(wps_payloads)))
+            capabilities.wps_manufacturer = parsed.get("wsc_manufacturer")
+            capabilities.wps_model = parsed.get("wsc_model_name") or parsed.get("wsc_model_number")
+            capabilities.wps_device_name = parsed.get("wsc_device_name")
+            capabilities.wps_device_type = parsed.get("wsc_device_type")
 
         # Channel preference: DS Param (tag 3, 2.4 GHz authoritative) → HT Op (tag 61, the
         # only cross-band source; 5 GHz often omits DS per 802.11-2020 9.4.2.3) → VHT Op
@@ -656,12 +833,14 @@ class WlanFrameParser:
             # Need at least version (2) + group cipher (4) + 2 size fields (2+2) = 10.
             if n < 10:
                 return None
+            group_cipher = cls._suite_name(tag_data[2:6], cls._CIPHER_NAMES)
             p = 6  # skip version + group cipher
             pairwise_count = int.from_bytes(tag_data[p:p+2], "little")
             p += 2
             if p + 4 * pairwise_count > n:
                 return None
             pairwise: Optional[str] = None
+            pairwise_ciphers: List[str] = []
             for i in range(pairwise_count):
                 name = cls._suite_name(tag_data[p:p+4], cls._CIPHER_NAMES)
                 # Stick with the first listed pairwise cipher (the AP's
@@ -669,6 +848,8 @@ class WlanFrameParser:
                 # CCMP is conventionally listed first.
                 if pairwise is None and name is not None:
                     pairwise = name
+                if name is not None and name not in pairwise_ciphers:
+                    pairwise_ciphers.append(name)
                 p += 4
             if p + 2 > n:
                 return None
@@ -697,6 +878,8 @@ class WlanFrameParser:
                 pmf_required = bool(rsn_caps & 0x0040)  # Bit 6 (MFPR)
             return {
                 "pairwise": pairwise,
+                "pairwise_ciphers": pairwise_ciphers,
+                "group_cipher": group_cipher,
                 "akms": akms,
                 "akm_suites": akm_suites,
                 "pmf_capable": pmf_capable,

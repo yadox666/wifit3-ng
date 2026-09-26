@@ -46,6 +46,7 @@ def test_fingerprinted_row_has_own_badge_column_marker_and_tooltip():
     assert w._fp_label.tooltip == "Ring device"
     assert w._mac_label.has_class("cl-bssid") and str(w._mac_label.content) == _MAC
     assert w._fp_label.has_class("fp-known") and w._mac_label.has_class("fp-known")
+    assert w._mfr_label.has_class("cl-mfr") and str(w._mfr_label.content) == "Ring"
 
 
 def test_unfingerprinted_row_blank_badge_no_marker():
@@ -83,6 +84,13 @@ def test_clicking_the_mac_of_a_fingerprinted_row_also_posts():
     assert isinstance(w.post_message.call_args.args[0], ClientWidget.FingerprintClicked)
 
 
+def test_clicking_the_manufacturer_also_posts():
+    w = _composed(_client(fingerprint=_RING))
+    w.post_message = Mock()
+    w.on_click(_click(w._mfr_label))
+    assert isinstance(w.post_message.call_args.args[0], ClientWidget.FingerprintClicked)
+
+
 def test_clicking_an_unfingerprinted_row_is_a_noop():
     w = _composed(_client(fingerprint=None))
     w.post_message = Mock()
@@ -106,6 +114,8 @@ async def test_sync_adds_updates_in_place_and_drops_by_mac():
     async with app.run_test() as pilot:
         cl = app.query_one("#clients", ClientsList)
         assert set(cl._rows) == {a_mac}
+        headers = [str(label.content) for label in cl.query(".client-columns Label")]
+        assert headers == ["", "CLIENT", "VENDOR", "PWR", "PKT", ""]
 
         cl.sync([_client(a_mac, power=-55, packets=9), _client(b_mac, power=-60, packets=2)])
         await pilot.pause()

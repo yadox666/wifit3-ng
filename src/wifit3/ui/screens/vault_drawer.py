@@ -7,6 +7,7 @@ from textual.binding import Binding
 
 from .vault_table import VaultTable
 from .vault_item import VaultItemView
+from .vault_import import VaultImportModal
 from wifit3.ui.vault.job_pane import JobTrackerPane
 
 class VaultDrawer(ModalScreen):
@@ -17,7 +18,7 @@ class VaultDrawer(ModalScreen):
         Binding("escape", "dismiss_drawer", "Close", show=True),
         Binding("z", "export_zip", "Export Zip", show=True),
         Binding("o", "show_directory", "Show Dir", show=True),
-        Binding("q", "app.quit", "Quit", show=True),
+        Binding("a", "add_credential", "Add", show=True),
     ]
 
     CSS = """
@@ -118,3 +119,12 @@ class VaultDrawer(ModalScreen):
             self.app.vault.open_directory()
         except OSError as exc:
             self.notify(f"Could not open captures dir: {exc}", severity="error")
+
+    def action_add_credential(self) -> None:
+        def imported(saved: bool | None) -> None:
+            if not saved:
+                return
+            self.query_one("#vault-table", VaultTable).reload_table()
+            self.notify("Credential added to the local Vault")
+
+        self.app.push_screen(VaultImportModal(), imported)

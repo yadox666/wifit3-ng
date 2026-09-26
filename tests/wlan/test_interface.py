@@ -78,6 +78,23 @@ async def test_hopper_surfaces_device_gone_and_stops(mocker):
     await iface.stop_hopping()
 
 
+async def test_interface_health_counters_track_rx_tx_and_tune_failures(mocker):
+    driver = mocker.MagicMock()
+    driver.set_channel = mocker.AsyncMock(return_value=False)
+    driver.inject_frame = mocker.AsyncMock(return_value=True)
+    iface = WlanInterface(driver_instance=driver, name="wlan0", description="t")
+
+    iface._on_frame_parsed(mocker.MagicMock())
+    await iface.send_no_wait(b"frame")
+    assert await iface.set_channel(6) is False
+
+    assert iface.received_frames == 1
+    assert iface.last_frame_at is not None
+    assert iface.transmitted_frames == 1
+    assert iface.tune_failures == 1
+    assert iface.visited_channels == set()
+
+
 async def test_deauth_sets_unicast_ack_nav(mocker):
     """A client-targeted deauth burst carries the unicast-ACK NAV (0x013A) in the duration
     of both spoofed frames: the destination (addr1) ACKs, so we reserve SIFS + a 1 Mbps

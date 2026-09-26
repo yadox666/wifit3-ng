@@ -88,6 +88,17 @@ class TestLoadCaptureIndex:
         caps = load_capture_index()[_BSSID_COLON]
         assert len(caps) == 1 and caps[0].type == CaptureType.HS
 
+    def test_focused_packet_capture_is_indexed_for_vault(self, tmp_path):
+        _write(
+            tmp_path,
+            f"TestNet_{_BSSID_DASH}_1700000008_packet_capture.pcap",
+            "binary-ish",
+        )
+        caps = load_capture_index()[_BSSID_COLON]
+        assert len(caps) == 1
+        assert caps[0].type == CaptureType.PCAP
+        assert caps[0].timestamp == 1700000008
+
     def test_handshake_hc22000_and_pcap_both_indexed(self, tmp_path):
         _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000021_handshake.hc22000", _HS_LINE)
         _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000021_handshake.pcap", "binary-ish")

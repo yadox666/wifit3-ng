@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from wifit3.models.identity import canonical_vendor
+from .oui_db import mapping as oui_mapping
 from .vendors import VENDOR_BY_OUI
 
 _PREFIX_LENGTHS = (9, 7, 6)
@@ -12,9 +13,17 @@ def hex_mac(mac: str) -> str:
 
 
 def lookup_oui(mac: str) -> str | None:
-    """Return raw vendor name from IEEE OUI registry, or None if unknown."""
+    """Return the vendor name for a MAC, or None if unknown."""
     oui = hex_mac(mac)
-    return next((VENDOR_BY_OUI[oui[:n]] for n in _PREFIX_LENGTHS if oui[:n] in VENDOR_BY_OUI), None)
+    live = oui_mapping()
+    for n in _PREFIX_LENGTHS:
+        key = oui[:n]
+        if key in live:
+            return live[key]
+        hit = VENDOR_BY_OUI.get(key)
+        if hit is not None:
+            return hit
+    return None
 
 
 def vendor_for_mac(mac: str) -> str | None:

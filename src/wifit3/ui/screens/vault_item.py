@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-import subprocess
-import os
 
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +19,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Select
 
 from wifit3.models import CaptureType, PersistedCapture
+from wifit3.persist.vault import _open_in_file_manager
 from wifit3.ui.vault.tools_ui import UI_TOOLS
 
 
@@ -90,7 +89,6 @@ class _CapturePanel(VerticalGroup):
     _CapturePanel .key-row { height: 1; align: left middle; margin-bottom: 1; }
     _CapturePanel .key-display { height: 1; margin-right: 3; margin-bottom: 1; }
     _CapturePanel .copy-btn { max-width: 6; height: 1; border: none; background: $background; color: $foreground; margin-right: 3 }
-    _CapturePanel .verify-btn { max-width: 8; height: 1; border: none }
     _CapturePanel .actions { height: auto; align: left middle; }
     _CapturePanel .spacer { width: 1fr; }
     """
@@ -118,6 +116,8 @@ class _CapturePanel(VerticalGroup):
             self.border_title = f"HASHCAT ({len(self._files)} .hc22000 files)"
         elif self._title == "HANDSHAKE":
             self.border_title = f"HANDSHAKE ({len(self._files)} .pcap files)"
+        elif self._title == "PACKET CAPTURE":
+            self.border_title = f"PACKET CAPTURE ({len(self._files)} .pcap files)"
         else:
             self.border_title = f"{self._title} ({len(self._files)})"
 
@@ -132,6 +132,7 @@ class _CapturePanel(VerticalGroup):
 
         with Horizontal(classes="actions"):
             yield Button("Open Directory", classes="open-dir")
+            yield Button("Validate", classes="validate")
             yield Label("", classes="spacer")
             yield Button("Delete", "error", classes="delete")
 
@@ -161,7 +162,6 @@ class _CapturePanel(VerticalGroup):
             return Horizontal(
                 Label(f"[bold dim]{label}:[/bold dim] [black bold on lightgreen] {escape(val)} [/]", classes="key-display"),
                 Button("Copy", id=btn_id, classes="copy-btn"),
-                Button("Verify", disabled=True, classes="verify-btn", tooltip="TODO: Connect to a live AP and validate credentials"),
                 classes="key-row"
             )
 
@@ -188,6 +188,8 @@ class _CapturePanel(VerticalGroup):
             kg.mount(Label(summary, classes="key-display"))
         elif self._title == "HANDSHAKE":
             kg.mount(Label("[italic]raw .pcap capture[/italic]", classes="key-display"))
+        elif self._title == "PACKET CAPTURE":
+            kg.mount(Label("[italic]focused AP packet capture[/italic]", classes="key-display"))
 
     @on(Select.Changed)
     def _file_changed(self, event: Select.Changed) -> None:
@@ -235,6 +237,19 @@ class _CapturePanel(VerticalGroup):
             self.post_message(VaultItemView.CapturesChanged())
 
         self.app.push_screen(ConfirmModal(f"Delete [bold]{escape(Path(cap.path).name)}[/]?"), after)
+
+    @on(Button.Pressed, ".validate")
+    def _validate(self, event: Button.Pressed) -> None:
+        event.stop()
+        cap = self._by_path.get(self.query_one(Select).value)
+        if cap is None:
+            return
+        valid, detail = self.app.vault.validate_capture(cap)
+        self.notify(
+            detail,
+            title="Capture valid" if valid else "Capture invalid",
+            severity="information" if valid else "error",
+        )
         
     @on(Button.Pressed, ".tool-btn")
     def _launch_tool(self, event: Button.Pressed) -> None:
@@ -243,6 +258,10 @@ class _CapturePanel(VerticalGroup):
         cap = self._by_path.get(selected_file)
         if not cap:
             logger.warning(f"Unable to launch tool for {selected_file}: Not found in index")
+            return
+        valid, detail = self.app.vault.validate_capture(cap)
+        if not valid:
+            self.notify(detail, title="Capture invalid", severity="error")
             return
         
         tool_name = next((c.replace("launch-tool-", "") for c in event.button.classes if c.startswith("launch-tool-")), None)
@@ -272,11 +291,7 @@ class _CapturePanel(VerticalGroup):
             logger.warning(f"Unable to open directory, {selected_file} not found in index")
             return
         try:
-            path = os.path.normpath(Path(cap.path).resolve())
-            if os.name == 'nt':
-                subprocess.Popen(['explorer.exe', '/select,', path])
-            else:
-                subprocess.Popen(['xdg-open', str(Path(path).parent)])
+            _open_in_file_manager(Path(cap.path).resolve().parent)
         except Exception as exc:
             logger.error(f"Failed to open directory for {cap}", exc)
             self.notify(f"Failed to open directory: {exc}", severity="error")
@@ -319,7 +334,11 @@ class VaultItemView(Vertical):
         self.border_title = f"[$background bold on $primary] {escape(name)} ({escape(bssid)}) [/]"
         
         groups = {
-            "HANDSHAKE": [c for c in captures if c.path.endswith(".pcap")],
+            "PACKET CAPTURE": [c for c in captures if c.type == CaptureType.PCAP],
+            "HANDSHAKE": [
+                c for c in captures
+                if c.path.endswith(".pcap") and c.type in (CaptureType.HS, CaptureType.PMKID)
+            ],
             "HASHCAT": [c for c in captures if c.path.endswith(".hc22000")],
             "WPA PSKs": [c for c in captures if c.type == CaptureType.WPA_PSK and c.value],
             "WPS PSKs": [c for c in captures if c.type in (CaptureType.WPS_PIN, CaptureType.WPS_PBC) and c.value],

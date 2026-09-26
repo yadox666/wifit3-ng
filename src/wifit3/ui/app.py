@@ -14,15 +14,24 @@ from textual.reactive import reactive
 from typing import List
 from wifit3.models.jobs import JobState, ToolCapability, ToolStatus
 from wifit3.persist.config import Config, ConfigError
+from wifit3.persist.hidden_ssids import HiddenSsidStore
+from wifit3.persist.targets import SavedTarget, TargetStore, TargetStoreError
 from wifit3.persist.vault import Vault
 from wifit3.errors import WifiteDeviceLostError, WifiteFatalError
+from wifit3.bluetooth import BluetoothManager
+from wifit3.bluetooth.capture import BluetoothEventCapture
 from wifit3.device.manager import DeviceManager, Status
 from wifit3.device.watch import DeviceWatch
 from wifit3.wlan.array import WlanArray
-from wifit3.models import AccessPoint
+from wifit3.models import AccessPoint, Client
 
 from .screens.splash import SplashView
 from .screens.scanner import ScannerView
+from .screens.bluetooth_scanner import BluetoothScannerView
+from .screens.bluetooth_focus import BluetoothFocusView
+from .screens.client_focus import ClientFocusView
+from .screens.about import AboutModal
+from .screens.diagnostics import AdapterDiagnosticsModal
 from .screens.focus_v2 import FocusViewV2
 from .screens.error_modals import FatalErrorModal, RecoverableErrorModal
 from .screens.new_device import NewDeviceDialog
@@ -30,6 +39,7 @@ from .screens.vault_drawer import VaultDrawer
 from .screens.vault_table import VaultTable
 from .pref import PreferencesModal
 from .themes import register_app_themes
+from wifit3.updates import check_for_update
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +56,9 @@ class WifiteApp(App):
 
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
+        Binding("ctrl+q", "quit", "Quit"),
         Binding("ctrl+p", "preferences", "Prefs"),
+        Binding("ctrl+d", "diagnostics", "Diagnostics"),
         Binding("v", "toggle_vault", "Vault")
     ]
 
@@ -64,16 +76,20 @@ class WifiteApp(App):
         align: center middle;
         margin-top: 1;
     }
-    #button-col {
+    #primary-actions {
         width: auto;
         height: auto;
+        align: center middle;
+        margin-top: 1;
+    }
+    #bluetooth-btn {
         margin-left: 2;
     }
-    #button-col Button {
+    #primary-actions Button, #uninstall-btn {
         width: 13;
         height: 3;
     }
-    #button-col Button:focus {
+    #primary-actions Button:focus, #uninstall-btn:focus {
         text-style: bold reverse;   /* clear cue when Tab lands on START / Uninstall */
     }
     #start-btn {
@@ -122,14 +138,22 @@ class WifiteApp(App):
             self._config_error = str(e)
         _configure_file_logging(cli_log_level)
         self.array: Optional[WlanArray] = None
+        self.bluetooth_manager = BluetoothManager()
+        self.bluetooth_target_capture: BluetoothEventCapture | None = None
         self.device_manager = DeviceManager(self)
         self.device_watch = DeviceWatch(device_manager=self.device_manager,
                                         on_change=self._on_devices_changed,
                                         on_fatal=self._on_usb_fatal)
         self.target_ap: Optional[AccessPoint] = None
+        self.target_client: Optional[Client] = None
         self.vault = Vault()
+        self.target_store = TargetStore()
+        self.hidden_ssid_store = HiddenSsidStore()
+        self.locked_target_id: str | None = None
+        self.target_missing_since: float | None = None
+        self.auto_lock_armed = True
         self._job_status: dict[str, ToolStatus] = {}
-        self.pbc_enabled: bool = True
+        self.pbc_enabled: bool = Config.auto_wps_pbc
         register_app_themes(self)
         self.theme = Config.theme
 
@@ -148,14 +172,60 @@ class WifiteApp(App):
         except ConfigError as e:
             self.notify(str(e), severity="error", title="Config")
 
+    @property
+    def locked_target(self) -> SavedTarget | None:
+        return self.target_store.get(self.locked_target_id)
+
+    def mark_target_locked(self, target: SavedTarget) -> bool:
+        try:
+            self.target_store.mark_locked(target)
+        except TargetStoreError as exc:
+            self.notify(str(exc), title="Targets", severity="error")
+            return False
+        self.locked_target_id = target.id
+        self.target_missing_since = None
+        self.auto_lock_armed = False
+        self.notify(f"Target {target.alias} locked", title="Target lock")
+        return True
+
+    def start_bluetooth_target_capture(
+        self, target: SavedTarget, device,
+    ) -> BluetoothEventCapture | None:
+        self.stop_bluetooth_target_capture()
+        try:
+            capture = BluetoothEventCapture(device.identifier, target.alias)
+        except OSError as exc:
+            self.notify(str(exc), title="Bluetooth capture failed", severity="error")
+            return None
+        self.bluetooth_target_capture = capture
+        self.bluetooth_manager.register_advertisement_callback(capture.record_advertisement)
+        self.bluetooth_manager.register_inspection_callback(capture.record_inspection)
+        capture.record_advertisement(device)
+        return capture
+
+    def stop_bluetooth_target_capture(self) -> None:
+        capture, self.bluetooth_target_capture = self.bluetooth_target_capture, None
+        if capture is None:
+            return
+        self.bluetooth_manager.unregister_advertisement_callback(capture.record_advertisement)
+        self.bluetooth_manager.unregister_inspection_callback(capture.record_inspection)
+        capture.close()
+
     def on_mount(self) -> None:
         """Register screens, push the splash, and start the always-on device watch."""
         if self._config_error:
             self.notify(self._config_error, severity="error", title="Config")
         for msg in self.vault.errors:
             self.notify(msg, severity="warning", title="Vault")
+        for msg in self.target_store.errors:
+            self.notify(msg, severity="warning", title="Targets")
+        for msg in self.hidden_ssid_store.errors:
+            self.notify(msg, severity="warning", title="Hidden SSIDs")
         self.install_screen(SplashView(), name="splash")
         self.install_screen(ScannerView(), name="scanner")
+        self.install_screen(BluetoothScannerView(), name="bluetooth")
+        self.install_screen(BluetoothFocusView(), name="bluetooth-focus")
+        self.install_screen(ClientFocusView(), name="client-focus")
         self.install_screen(FocusViewV2(), name="focus")
         
         self.push_screen("splash")
@@ -163,6 +233,8 @@ class WifiteApp(App):
         self.set_interval(2.0, self._poll_jobs)
         self.call_after_refresh(self.device_watch.poll)
         self.call_after_refresh(self._poll_jobs)
+        if Config.auto_check_updates:
+            self.check_updates()
 
     def _poll_jobs(self) -> None:
         self.vault.manager.poll_jobs()
@@ -210,7 +282,12 @@ class WifiteApp(App):
             return
         tool = self.vault.manager.tools.get(job.tool_name)
         if tool is not None and ToolCapability.KILLABLE in tool.capabilities:
-            tool.kill({'pid': job.pid, 'log_path': job.log_path, 'api_id': job.api_id})
+            tool.kill({
+                "pid": job.pid,
+                "log_path": job.log_path,
+                "api_id": job.api_id,
+                "config": job.config,
+            })
         self._poll_jobs()
 
     def clear_job(self, job_id: str) -> None:
@@ -295,15 +372,54 @@ class WifiteApp(App):
     def action_preferences(self) -> None:
         self.push_screen(PreferencesModal())
 
+    def action_about(self) -> None:
+        self.push_screen(AboutModal())
+
+    def action_diagnostics(self) -> None:
+        self.push_screen(AdapterDiagnosticsModal())
+
+    @work(thread=True, exclusive=True, group="updates")
+    def check_updates(self, *, show_current: bool = False) -> None:
+        try:
+            update = check_for_update()
+        except Exception as exc:
+            if show_current:
+                self.call_from_thread(
+                    self.notify, str(exc), title="Update check failed", severity="error",
+                )
+            return
+        if update.update_available:
+            self.call_from_thread(
+                self.notify,
+                f"Version {update.latest_version} is available\n{update.release_url}",
+                title="wifit3 update",
+                timeout=10,
+            )
+        elif show_current:
+            self.call_from_thread(
+                self.notify,
+                f"Version {update.current_version} is current",
+                title="wifit3 update",
+            )
+
     async def action_quit(self):
         self.persist_config()
         self.vault.manager.kill_all_running()
+        self.stop_bluetooth_target_capture()
+        focus = self.get_screen("focus", FocusViewV2)
+        focus.stop_packet_capture(notify=False)
+        client_focus = self.get_screen("client-focus", ClientFocusView)
+        client_focus.stop_capture(notify=False)
+        await self.bluetooth_manager.disconnect()
+        await self.bluetooth_manager.stop()
         if self.array:
             await self.array.close()
         self.exit()
 
     def action_toggle_vault(self) -> None:
         """Open the vault drawer."""
+        if isinstance(self.screen, (BluetoothScannerView, BluetoothFocusView)):
+            return
         if not isinstance(self.screen, VaultDrawer):
             self.vault_open = True
             
@@ -311,6 +427,13 @@ class WifiteApp(App):
                 self.vault_open = False
                 
             self.push_screen(VaultDrawer(), callback=_on_dismiss)
+
+    def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
+        if action == "toggle_vault" and isinstance(
+            self.screen, (BluetoothScannerView, BluetoothFocusView)
+        ):
+            return None
+        return True
 
 _FILE_LOGGING_CONFIGURED = False  # Avoid duplicate loggers
 

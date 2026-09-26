@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter, deque
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
 from rich.markup import escape
@@ -16,6 +17,8 @@ from wifit3.crack.wep import CRACK_READY_THRESHOLD
 from wifit3.crack.handshake import pmkid_crackable
 from wifit3.models import IdKey, IdSource
 from wifit3.persist.config import Config
+from wifit3.dot11.enterprise import EAP_TYPE_NAMES
+from wifit3.wlan.enterprise_risk import enterprise_findings, tls_cipher_name
 from ..campaigns.pin import WpsCampaign
 from ..campaigns.deauth import DeauthCampaign
 from ..campaigns.eviltwin import EvilTwinCampaign
@@ -163,10 +166,10 @@ def pmf_status_markup(ap) -> str:
     return "[dim]Disabled[/dim]"
 
 
-def router_identity_details(ap: AccessPoint) -> str | None:
+def _router_identity_rows(ap: AccessPoint) -> list[str]:
     ident = ap.identity
     if ident is None or not ident.summary:
-        return None
+        return []
     rows = [f"[bold]{escape(ident.summary)}[/bold]"]
     mfr_src: IdSource | None = None
     if ident.model:
@@ -197,8 +200,259 @@ def router_identity_details(ap: AccessPoint) -> str | None:
     oui_vendor = ident.get_source_value(IdKey.MANUFACTURER, IdSource.OUI)
     if oui_vendor and (oui_vendor != ident.manufacturer or mfr_src != IdSource.OUI):
         rows.append(f"[dim]IEEE OUI:[/dim] {escape(oui_vendor)}")
+    return rows
+
+
+def router_identity_details(ap: AccessPoint) -> str | None:
+    rows = _router_identity_rows(ap)
+    return "\n".join(rows) if rows else None
+
+
+def router_advertised_details(ap: AccessPoint) -> str:
+    rows = _router_identity_rows(ap)
+    if not rows:
+        rows = [f"[bold]{escape(ap.ssid or ap.bssid)}[/bold]"]
+    caps = ap.capabilities
+    radio = _radio_summary(caps)
+    if radio:
+        rows.append(f"[dim]Radio:[/dim] {escape(radio)}")
+    if caps.supported_rates_mbps:
+        rates = ", ".join(_rate_label(rate) for rate in sorted(caps.supported_rates_mbps))
+        rows.append(f"[dim]Legacy Rates:[/dim] {rates} Mbps")
+    timing = []
+    if caps.beacon_interval_tu is not None:
+        timing.append(f"beacon {caps.beacon_interval_tu} TU")
+    if caps.dtim_period is not None:
+        timing.append(f"DTIM {caps.dtim_period}")
+    if timing:
+        rows.append(f"[dim]Timing:[/dim] {' · '.join(timing)}")
+    load = []
+    if caps.station_count is not None:
+        load.append(f"{caps.station_count} stations")
+    if caps.channel_utilization is not None:
+        load.append(f"{round(caps.channel_utilization * 100 / 255)}% channel use")
+    if caps.admission_capacity is not None:
+        load.append(f"capacity {caps.admission_capacity}")
+    if load:
+        rows.append(f"[dim]BSS Load:[/dim] {' · '.join(load)}")
+    if ap.country_code:
+        country = ap.country_code
+        if caps.country_environment:
+            country += f" ({caps.country_environment})"
+        if caps.country_channels:
+            ranges = ", ".join(
+                f"CH {start}-{start + count - 1} ≤{power} dBm"
+                for start, count, power in caps.country_channels
+            )
+            country += f" · {ranges}"
+        rows.append(f"[dim]Country:[/dim] {escape(country)}")
+    power = []
+    if caps.power_constraint_db is not None:
+        power.append(f"constraint {caps.power_constraint_db} dB")
+    if caps.power_min_dbm is not None and caps.power_max_dbm is not None:
+        power.append(f"{caps.power_min_dbm}..{caps.power_max_dbm} dBm")
+    if power:
+        rows.append(f"[dim]Power:[/dim] {' · '.join(power)}")
+    security = []
+    if ap.group_cipher:
+        security.append(f"group {ap.group_cipher}")
+    if ap.pairwise_ciphers:
+        security.append(f"pairwise {'+'.join(ap.pairwise_ciphers)}")
+    if ap.akms:
+        security.append(f"AKM {'+'.join(ap.akms)}")
+    security.append(f"PMF {_plain_pmf(ap)}")
+    if any(suite in (0x18, 0x19) for suite in ap.akm_suites):
+        security.append("SAE H2E")
+    rows.append(f"[dim]Security:[/dim] {' · '.join(security)}")
+    features = _feature_labels(caps)
+    if ap.beacon_protection:
+        features.append("Beacon Protection")
+    if features:
+        rows.append(f"[dim]Features:[/dim] {' · '.join(features)}")
+    if caps.vendor_ouis:
+        rows.append(f"[dim]Vendor IEs:[/dim] {', '.join(sorted(caps.vendor_ouis))}")
+    if caps.capability_flags:
+        rows.append(f"[dim]Capability Flags:[/dim] {', '.join(sorted(caps.capability_flags))}")
+    rows.extend(_enterprise_profile_rows(ap.enterprise, ap))
 
     return "\n".join(rows)
+
+
+def _enterprise_profile_rows(profile, ap=None) -> list[str]:
+    if profile is None:
+        return []
+    methods = profile.server_eap_types | profile.client_eap_types
+    if not methods and not profile.tls_versions and not profile.certificates:
+        return []
+    rows = ["[bold cyan]Observed Enterprise authentication[/bold cyan]"]
+    if profile.server_eap_types:
+        rows.append(
+            "[dim]Server requests:[/dim] "
+            + ", ".join(
+                EAP_TYPE_NAMES.get(method, f"EAP type {method}")
+                for method in sorted(profile.server_eap_types)
+            )
+        )
+    if profile.client_eap_types:
+        rows.append(
+            "[dim]Client responses:[/dim] "
+            + ", ".join(
+                EAP_TYPE_NAMES.get(method, f"EAP type {method}")
+                for method in sorted(profile.client_eap_types)
+            )
+        )
+    if profile.tls_versions:
+        rows.append(
+            f"[dim]Outer TLS:[/dim] {', '.join(sorted(profile.tls_versions))}",
+        )
+    if profile.tls_cipher_suites:
+        rows.append(
+            "[dim]TLS ciphers:[/dim] "
+            + ", ".join(
+                tls_cipher_name(cipher)
+                for cipher in sorted(profile.tls_cipher_suites)
+            )
+        )
+    for certificate in profile.certificates.values():
+        validity = ""
+        if certificate.not_after is not None:
+            validity = datetime.fromtimestamp(certificate.not_after).strftime("%Y-%m-%d")
+        key = " ".join(
+            str(value) for value in (
+                certificate.public_key_algorithm,
+                certificate.public_key_bits,
+            ) if value is not None
+        )
+        rows.append(
+            f"[dim]RADIUS certificate:[/dim] "
+            f"{certificate.fingerprint[:12]}"
+            f"{f' · expires {validity}' if validity else ''}"
+            f"{f' · {escape(certificate.signature_algorithm)}' if certificate.signature_algorithm else ''}"
+            f"{f' · {escape(key)} bits' if key else ''}"
+        )
+    if ap is not None:
+        findings = enterprise_findings(ap)
+        if findings:
+            colors = {0: "cyan", 1: "yellow", 2: "orange1", 3: "red", 4: "bold red"}
+            for finding in findings:
+                rows.append(
+                    f"[{colors[finding.severity]}]Risk:[/] {escape(finding.label)} "
+                    f"[dim]· {escape(finding.evidence)} · confidence {finding.confidence}[/dim]"
+                )
+        else:
+            rows.append("[green]Risk:[/] no passive weakness observed")
+    rows.append(
+        "[dim]Passive evidence only; tunneled inner methods and client certificate "
+        "validation are not visible.[/dim]",
+    )
+    return rows
+
+
+def client_advertised_details(client) -> str:
+    from wifit3.models import AdvertisedCapabilities
+    rows = [f"[bold]{escape(client.mac)}[/bold]"]
+    from wifit3.id import vendor_for_mac
+    vendor = vendor_for_mac(client.mac)
+    if vendor:
+        rows.append(f"[dim]Manufacturer:[/dim] {escape(vendor)}")
+    try:
+        local = bool(int(client.mac.split(":", 1)[0], 16) & 0x02)
+    except (ValueError, IndexError):
+        local = False
+    rows.append(f"[dim]MAC Type:[/dim] {'locally administered / possibly randomized' if local else 'globally administered'}")
+    bssid = getattr(client, "bssid", None)
+    if bssid:
+        rows.append(f"[dim]Associated AP:[/dim] {escape(bssid)}")
+    caps = getattr(client, "capabilities", AdvertisedCapabilities())
+    radio = _radio_summary(caps)
+    if radio:
+        rows.append(f"[dim]Radio:[/dim] {escape(radio)}")
+    if caps.supported_rates_mbps:
+        rates = ", ".join(_rate_label(rate) for rate in sorted(caps.supported_rates_mbps))
+        rows.append(f"[dim]Legacy Rates:[/dim] {rates} Mbps")
+    akm_selected = getattr(client, "akm_selected", None)
+    if akm_selected is not None:
+        rows.append(f"[dim]Selected AKM:[/dim] {escape(_akm_label(akm_selected))}")
+    if caps.listen_interval is not None:
+        rows.append(f"[dim]Listen Interval:[/dim] {caps.listen_interval} beacons")
+    pmf = "required" if caps.pmf_required else "capable" if caps.pmf_capable else None
+    if pmf:
+        rows.append(f"[dim]PMF:[/dim] {pmf}")
+    power = []
+    if caps.power_min_dbm is not None and caps.power_max_dbm is not None:
+        power.append(f"{caps.power_min_dbm}..{caps.power_max_dbm} dBm")
+    if caps.supported_channel_ranges:
+        channels = ", ".join(
+            f"{start}-{start + count - 1}" for start, count in caps.supported_channel_ranges
+        )
+        power.append(f"channels {channels}")
+    if power:
+        rows.append(f"[dim]Radio Limits:[/dim] {' · '.join(power)}")
+    features = _feature_labels(caps)
+    if features:
+        rows.append(f"[dim]Features:[/dim] {' · '.join(features)}")
+    wps = [caps.wps_manufacturer, caps.wps_model, caps.wps_device_name, caps.wps_device_type]
+    if any(wps):
+        rows.append(f"[dim]WPS Identity:[/dim] {escape(' · '.join(value for value in wps if value))}")
+    if caps.vendor_ouis:
+        rows.append(f"[dim]Vendor IEs:[/dim] {', '.join(sorted(caps.vendor_ouis))}")
+    if caps.capability_flags:
+        rows.append(f"[dim]Capability Flags:[/dim] {', '.join(sorted(caps.capability_flags))}")
+    rows.extend(_enterprise_profile_rows(getattr(client, "enterprise", None)))
+    probed_ssids = getattr(client, "probed_ssids", set())
+    if probed_ssids:
+        rows.append(
+            f"[dim]Probed SSIDs:[/dim] {', '.join(escape(ssid) for ssid in sorted(probed_ssids))}"
+        )
+    return "\n".join(rows)
+
+
+def _radio_summary(caps) -> str:
+    parts = []
+    if caps.phy_modes:
+        parts.append("/".join(sorted(caps.phy_modes)))
+    if caps.channel_widths_mhz:
+        parts.append("/".join(str(width) for width in sorted(caps.channel_widths_mhz)) + " MHz")
+    if caps.max_spatial_streams:
+        parts.append(f"{caps.max_spatial_streams} spatial stream"
+                     + ("s" if caps.max_spatial_streams != 1 else ""))
+    return " · ".join(parts)
+
+
+def _feature_labels(caps) -> list[str]:
+    labels = []
+    for enabled, label in (
+        (caps.radio_measurement, "802.11k"),
+        (caps.fast_transition, "802.11r"),
+        (caps.bss_transition, "802.11v"),
+        (caps.wmm, "WMM/QoS"),
+        (caps.multi_bssid, "Multi-BSSID"),
+        (caps.reduced_neighbor_report, "RNR/6 GHz discovery"),
+        (caps.multi_link, "MLO"),
+    ):
+        if enabled:
+            labels.append(label)
+    return labels
+
+
+def _rate_label(rate: float) -> str:
+    return str(int(rate)) if rate.is_integer() else str(rate)
+
+
+def _plain_pmf(ap) -> str:
+    if ap.pmf_required:
+        return "required"
+    if ap.pmf_capable:
+        return "optional"
+    return "disabled"
+
+
+def _akm_label(suite: int) -> str:
+    return {
+        0x01: "EAP", 0x02: "PSK", 0x03: "FT-EAP", 0x04: "FT-PSK",
+        0x05: "EAP-SHA256", 0x06: "PSK-SHA256", 0x08: "SAE", 0x09: "FT-SAE",
+        0x12: "OWE", 0x18: "SAE-EXT-KEY", 0x19: "FT-SAE-EXT-KEY",
+    }.get(suite, f"00-0F-AC:{suite}")
 
 
 

@@ -218,3 +218,13 @@ async def test_forget_row_evicts_ap_and_its_clients():
         assert c2.mac in fake_array.clients
 
 
+def test_ap_expiry_uses_configured_timeout(monkeypatch):
+    scanner = ScannerView()
+    monkeypatch.setattr(Config, "scanner_ap_expiry", 120.0)
+    assert scanner._ap_has_expired(119.9) is False
+    assert scanner._ap_has_expired(120.0) is True
+
+    monkeypatch.setattr(Config, "scanner_ap_expiry", -1.0)
+    assert scanner._ap_has_expired(100_000.0) is False
+
+

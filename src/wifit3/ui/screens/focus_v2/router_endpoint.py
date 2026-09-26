@@ -20,7 +20,7 @@ from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, Label
 
-from ...signal_bar import render_signal_bar
+from ...signal_bar import dbm_style, render_signal_bar
 from .art import BreathingArt, art_size
 
 
@@ -39,6 +39,8 @@ class RouterEndpoint(Vertical):
 
     def __init__(self, *, essid: str = "", bssid: str = "", channel: int = 0,
                  power_dbm: int = -100, signal: float | None = None,
+                 uptime_us: int | None = None,
+                 country_code: str | None = None,
                  wps: bool = False, has_m1: bool = False,
                  probing: bool = False, probe_disabled: bool = False,
                  identity: str = "", identity_details: str | None = None, **kwargs) -> None:
@@ -48,6 +50,8 @@ class RouterEndpoint(Vertical):
         self._channel = channel
         self._power_dbm = power_dbm
         self._signal = signal
+        self._uptime_us = uptime_us
+        self._country_code = country_code
         self._wps = wps
         self._has_m1 = has_m1
         self._probing = probing
@@ -64,11 +68,12 @@ class RouterEndpoint(Vertical):
         yield art
         yield Label(self._essid_markup(self._essid), classes="ap-essid", id="ap-essid")
         yield Label(self._bssid, classes="ap-static", id="ap-bssid")
+        yield Label(self._uptime_label(), classes="ap-static", id="ap-uptime")
         with Horizontal(classes="ap-static", id="ap-identity-row"):
             identity = Button(self._identity_label(), id="ap-identity")
             identity.styles.line_pad = 0
-            identity.disabled = self._identity_details is None or not self._wps
-            if self._identity_details and self._wps:
+            identity.disabled = self._identity_details is None
+            if self._identity_details:
                 identity.add_class("identity-known")
             yield identity
             probe = Button(self._probe_icon(), id="ap-probe")
@@ -79,12 +84,16 @@ class RouterEndpoint(Vertical):
 
     def update(self, *, essid: str, bssid: str, channel: int,
                power_dbm: int, signal: float | None,
+               uptime_us: int | None = None,
+               country_code: str | None = None,
                wps: bool = False, has_m1: bool = False,
                probing: bool = False, probe_disabled: bool = False,
                identity: str = "", identity_details: str | None = None) -> None:
         """Update live power meter and target endpoint identity state."""
         self._essid, self._bssid, self._channel = essid, bssid, channel
         self._power_dbm, self._signal = power_dbm, signal
+        self._uptime_us = uptime_us
+        self._country_code = country_code
         self._wps, self._has_m1 = wps, has_m1
         self._probing, self._probe_disabled = probing, probe_disabled
         self._identity, self._identity_details = identity, identity_details
@@ -92,6 +101,7 @@ class RouterEndpoint(Vertical):
         self.query_one("#router-art", BreathingArt).tooltip = identity_details
         self._push("#ap-essid", self._essid_markup(essid))
         self._push("#ap-bssid", bssid)
+        self._push("#ap-uptime", self._uptime_label())
 
         show_probe = self._wps and not self._has_m1
         probe_btn = self.query_one("#ap-probe", Button)
@@ -104,8 +114,8 @@ class RouterEndpoint(Vertical):
         self._push("#ap-identity", self._identity_label())
         ident_btn = self.query_one("#ap-identity", Button)
         ident_btn.styles.line_pad = 0
-        ident_btn.disabled = identity_details is None or not self._wps
-        ident_btn.set_class(bool(identity_details and self._wps), "identity-known")
+        ident_btn.disabled = identity_details is None
+        ident_btn.set_class(bool(identity_details), "identity-known")
 
     def _push(self, sel: str, value: str) -> None:
         """Update the label only when its value changed: skip the no-op repaint."""
@@ -123,7 +133,7 @@ class RouterEndpoint(Vertical):
         self.query_one(BreathingArt).pulse()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "ap-identity" and self._identity_details and self._wps:
+        if event.button.id == "ap-identity" and self._identity_details:
             event.stop()
             self.post_message(self.IdentityRequested(self._identity_details))
         elif event.button.id == "ap-probe":
@@ -151,6 +161,26 @@ class RouterEndpoint(Vertical):
     def _probe_icon(self) -> str:
         return "❌" if self._probing else "🔍"
 
+    def _uptime_label(self) -> str:
+        if self._uptime_us is None:
+            uptime = "uptime unknown"
+        else:
+            seconds = self._uptime_us // 1_000_000
+            days, remainder = divmod(seconds, 86400)
+            hours, remainder = divmod(remainder, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            if days:
+                uptime = f"uptime {days}d {hours:02}h"
+            elif hours:
+                uptime = f"uptime {hours}h {minutes:02}m"
+            elif minutes:
+                uptime = f"uptime {minutes}m {seconds:02}s"
+            else:
+                uptime = f"uptime {seconds}s"
+        if self._country_code:
+            return f"{uptime} · {self._country_code}"
+        return uptime
+
     @staticmethod
     def _essid_markup(essid: str) -> str:
         """The ESSID as a black-on-cyan chip so it pops as the AP's identity (it
@@ -170,5 +200,5 @@ class RouterEndpoint(Vertical):
         line = Text(no_wrap=True)
         line.append_text(render_signal_bar(self._signal, width=bar_w, pulse=pulse))
         line.append(" ")
-        line.append(dbm)
+        line.append(dbm, style=dbm_style(self._power_dbm))
         return line

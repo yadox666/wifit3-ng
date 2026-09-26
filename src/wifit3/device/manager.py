@@ -26,6 +26,7 @@ from wifit3.errors import BringUpError, BringUpPermissionsError, WifiteFatalErro
 from wifit3.models.device_id import DeviceID
 from wifit3.setup.base import Setup, SetupResult
 from wifit3.wlan.array import WlanArray
+from wifit3.wlan.sink import WlanSink
 from wifit3.wlan.interface import WlanInterface
 
 if TYPE_CHECKING:
@@ -452,7 +453,9 @@ class DeviceManager:
 
     def _ensure_array(self) -> WlanArray:
         if self.app.array is None:
-            array = WlanArray()
+            array = WlanArray(
+                sink=WlanSink(getattr(self.app, "hidden_ssid_store", None)),
+            )
             array.register_disconnect_callback(self.app.notify_device_lost)
             self.app.array = array
         return self.app.array

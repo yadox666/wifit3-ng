@@ -9,6 +9,8 @@ import types
 import pytest_asyncio
 from textual.app import App
 
+from wifit3.models import AccessPoint
+from wifit3.campaigns.pin import WpsCampaign
 from wifit3.ui import focus_model as fm
 from wifit3.ui.screens.focus_v2 import FocusViewV2
 from wifit3.ui.screens.focus_v2.art import BreathingArt, art_size, breathe
@@ -56,7 +58,7 @@ async def test_layout_geometry():
 
             log, clients = reg("#log"), reg("#clients")
             # Clients is a fixed exact-fit column; log takes the rest; no overlap.
-            assert clients.width == 40
+            assert clients.width == 54
             assert log.x == 0 and log.right == clients.x and clients.right == w
 
             header, footer = reg("Header"), reg("Footer")
@@ -79,6 +81,21 @@ def test_dashboard_rows_and_rate_vs_count():
     # eapol reads as a recent count (a handshake is ~4 frames); the rest /s.
     assert as_rate["eapol"] is False
     assert all(as_rate[k] for k in ("beacon", "data", "inject", "deauth"))
+
+
+def test_wps_info_hotkey_is_shown_only_when_probe_is_available():
+    screen = FocusViewV2()
+    ap = AccessPoint(bssid="00:11:22:33:44:55", wps=True)
+    screen._target_ap = ap
+
+    assert screen.check_action("wps_info", ()) is True
+    ap.wps = False
+    assert screen.check_action("wps_info", ()) is None
+    assert any(
+        binding.key == "i" and binding.description == "WPS Info"
+        for binding in FocusViewV2.BINDINGS
+    )
+    assert WpsCampaign.hotkey == ("n", "WPS PIN")
 
 
 def test_breathe_changes_green_leds():

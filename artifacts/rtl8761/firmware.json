@@ -1,0 +1,30 @@
+{
+  "artifact": "Realtek RTL8761B/RTL8761BU Bluetooth firmware",
+  "source_repository": "https://gitlab.com/kernel-firmware/linux-firmware",
+  "source_revision": "a06a853ae6c43f66bc0e3d3ba6d12efc5fd95c9c",
+  "retrieved": "2026-09-26",
+  "files": {
+    "rtl8761b_fw.bin": {
+      "transport": "UART",
+      "size": 45444,
+      "sha256": "4c50dac2714bad1a75944d1b770304fa3fbf84cd898942489c7eb2ef497ad53b"
+    },
+    "rtl8761b_config.bin": {
+      "transport": "UART",
+      "size": 25,
+      "sha256": "6ddeb15f23588053e00cb08d25588bd7cf98d60fa93d9478efcef4ae8064a7ac"
+    },
+    "rtl8761bu_fw.bin": {
+      "transport": "USB",
+      "size": 44484,
+      "sha256": "1d7a9597349ad89344fa16c1913d3e39e9a12e966e417ca16871bc79bbe59edb"
+    },
+    "rtl8761bu_config.bin": {
+      "transport": "USB",
+      "size": 6,
+      "sha256": "6c28a3f07c6a30ed208c4b64862a23f02b7d93543ea980edd24df16bab45095f"
+    }
+  },
+  "license": "LICENCE.rtlwifi_firmware.txt",
+  "redistribution": "Verbatim files from linux-firmware; do not modify."
+}

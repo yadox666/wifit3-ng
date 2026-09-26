@@ -7,6 +7,7 @@ from textual.app import App
 from textual.widgets import Button, SelectionList
 
 from wifit3.ui.screens.channel_filter import ChannelFilterDialog
+from wifit3.ui.screens.scanner import ScannerView
 
 # More channels than fit any small dialog, so the list must scroll and the
 # buttons must not be pushed out.
@@ -45,7 +46,13 @@ async def test_list_not_collapsed_when_roomy():
     async with app.run_test(size=(100, 40)) as pilot:
         await pilot.pause(0)
         dialog = app.screen
+        assert dialog.query_one("#title").render().plain == "Channel Lock"
         assert dialog.query_one(SelectionList).region.height >= 12
         for bid in ("#btn-ok", "#btn-cancel"):
             r = dialog.query_one(bid, Button).region
             assert r.height > 0 and r.bottom <= 40
+
+    assert any(
+        binding.key == "c" and binding.description == "Channel Lock"
+        for binding in ScannerView.BINDINGS
+    )

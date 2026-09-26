@@ -144,7 +144,7 @@ class WpsCampaign(Campaign):
 
     button_id = "btn-wps-pin"
     key = "wps"
-    hotkey = ("i", "WPS PIN")
+    hotkey = ("n", "WPS PIN")
     idle_label = "WPS PIN"
     run_label = "Stop PIN"
     idle_variant = "primary"

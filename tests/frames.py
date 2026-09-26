@@ -7,8 +7,10 @@ by ``d["type"]``. Dict keys use the parser's old internal dialect, including the
 call sites, even though the parser itself now builds the subclasses directly.
 """
 from wifit3.dot11.packet import (
-    AssocRequestPacket, BeaconPacket, EapolPacket, Packet, WepDataPacket,
+    AssocRequestPacket, BeaconPacket, EapPacket, EapolPacket, Packet, ProbeReqPacket,
+    WepDataPacket,
 )
+from wifit3.models import AdvertisedCapabilities
 
 _BASE = {
     "type_id": 0, "subtype_id": 0, "bssid": "00:00:00:00:00:00",
@@ -28,9 +30,21 @@ def pkt(d: dict) -> Packet:
     if t in ("beacon", "probe_resp"):
         return BeaconPacket(**r)
     if t in ("assoc_req", "reassoc_req"):
+        r.setdefault("capabilities", AdvertisedCapabilities())
         return AssocRequestPacket(**r)
+    if t == "probe_req":
+        r.setdefault("capabilities", AdvertisedCapabilities())
+        return ProbeReqPacket(**r)
     base = {k: r[k] for k in _BASE_FIELDS if k in r}
     if t == "eapol":
+        if "eap_type" in r:
+            return EapPacket(
+                **base,
+                eap_code=r.get("eap_code", 0),
+                eap_identifier=r.get("eap_identifier", 0),
+                eap_type=r.get("eap_type"),
+                eap_data=r.get("eap_data", b""),
+            )
         return EapolPacket(
             **base,
             msg_num=r.get("eapol_msg_num", 0),

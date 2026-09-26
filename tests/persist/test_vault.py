@@ -283,6 +283,13 @@ def test_open_directory_uses_platform_launcher(tmp_path, mocker):
     popen.assert_called_once_with(["xdg-open", str(tmp_path)])
 
 
+def test_open_directory_uses_open_on_macos(tmp_path, mocker):
+    mocker.patch.object(sys, "platform", "darwin")
+    popen = mocker.patch("wifit3.persist.vault.subprocess.Popen")
+    Vault().open_directory()
+    popen.assert_called_once_with(["open", str(tmp_path)])
+
+
 def test_capture_payload_value_then_file(tmp_path):
     v = Vault()
     ap = _ap_with_hs()
@@ -293,3 +300,23 @@ def test_capture_payload_value_then_file(tmp_path):
     v.save_wep_key(ap, b"abcde")
     wep_cap = next(c for c in v.persisted(ap.bssid) if c.type == CaptureType.WEP)
     assert v.capture_payload(wep_cap) == b"abcde".hex()
+
+
+def test_manual_wpa_credential_is_indexed_and_validated():
+    vault = Vault()
+    ap = AccessPoint(bssid="00:11:22:33:44:55", ssid="Test Network")
+    result = vault.save_wpa_psk(ap, "TEST_PASSPHRASE")
+    assert result is not None
+    capture = vault.persisted(ap.bssid)[0]
+    assert capture.type == CaptureType.WPA_PSK
+    assert vault.validate_capture(capture) == (True, "Credential structure is valid")
+
+
+def test_validation_rejects_corrupt_hashcat_capture(tmp_path):
+    path = tmp_path / "Test_00-11-22-33-44-55_1700000000_handshake.hc22000"
+    path.write_text("not a hashcat record\n", encoding="utf-8")
+    vault = Vault()
+    capture = vault.persisted("00:11:22:33:44:55")[0]
+    valid, detail = vault.validate_capture(capture)
+    assert valid is False
+    assert detail == "No valid Hashcat 22000 records"

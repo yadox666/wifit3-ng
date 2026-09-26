@@ -12,6 +12,7 @@ from textual.message import Message
 from textual.widgets import Button, Input, Label, Select
 
 from wifit3.models import AccessPoint
+from wifit3.id import vendor_for_mac
 from wifit3.ui.encryption_format import EncryptionType
 from wifit3.wlan.channels import band_ranges
 
@@ -57,10 +58,24 @@ _FILTER_TYPES = {
 class ScanFilter:
     text: str = ""
     encryption: EncryptionFilter = EncryptionFilter.ALL
+    min_signal: int = -100
+    wps: Optional[bool] = None
+    association: str = "all"
 
     def matches(self, ap: AccessPoint, *, ssid: Optional[str] = None) -> bool:
         """``ssid`` overrides ap.ssid so a hidden AP is searchable by its guessed name."""
-        return self.encryption.matches(ap) and text_matches(self.text, ap.bssid, ssid or ap.ssid)
+        searchable = " ".join(filter(None, (
+            ssid or ap.ssid,
+            vendor_for_mac(ap.bssid),
+            ap.identity.summary,
+            ap.country_code,
+        )))
+        return (
+            self.encryption.matches(ap)
+            and ap.signal >= self.min_signal
+            and (self.wps is None or ap.wps is self.wps)
+            and text_matches(self.text, ap.bssid, searchable)
+        )
 
 
 class FilterBar(Horizontal):
@@ -77,9 +92,11 @@ class FilterBar(Horizontal):
         border-title-style: bold;
     }
     FilterBar > Label { margin-right: 1; color: $text-muted; }
-    FilterBar > #filter-encryption { width: 12; margin-right: 2; }
-    FilterBar > #filter-channels { margin-right: 2; }
-    FilterBar > Input { width: 32; }
+    FilterBar > Select { width: 12; margin-right: 1; }
+    FilterBar > #filter-wps { width: 10; }
+    FilterBar > #filter-association { width: 14; }
+    FilterBar > #filter-channels { margin-right: 1; }
+    FilterBar > Input { width: 1fr; min-width: 18; }
     FilterBar Select.-expanded SelectOverlay { border: round $primary !important; background: $surface; }
     """
 
@@ -96,6 +113,8 @@ class FilterBar(Horizontal):
     def __init__(self, supported_channels: List[int]) -> None:
         super().__init__()
         self._supported = sorted(set(supported_channels))
+        self._view_mode = "aps"
+        self._paused = False
         self.border_title = "FILTER"
 
     def compose(self) -> ComposeResult:
@@ -106,8 +125,24 @@ class FilterBar(Horizontal):
             [(f.value, f) for f in EncryptionFilter], value=EncryptionFilter.ALL,
             allow_blank=False, id="filter-encryption", compact=True,
         )
+        yield Select(
+            [("Any power", -100), ("≥ -80 dBm", -80), ("≥ -70 dBm", -70),
+             ("≥ -60 dBm", -60), ("≥ -50 dBm", -50)],
+            value=-100, allow_blank=False, id="filter-signal", compact=True,
+        )
+        yield Select(
+            [("Any WPS", "all"), ("WPS only", "yes"), ("No WPS", "no")],
+            value="all", allow_blank=False, id="filter-wps", compact=True,
+        )
+        association = Select(
+            [("Any client", "all"), ("Connected", "connected"),
+             ("Unassociated", "unassociated")],
+            value="all", allow_blank=False, id="filter-association", compact=True,
+        )
+        association.display = False
+        yield association
         yield Button(self._channels_text(None), id="filter-channels", compact=True)
-        yield Input(placeholder="filter by ssid…", id="filter-text", compact=True)
+        yield Input(placeholder="SSID, vendor, country…", id="filter-text", compact=True)
 
     def focus_text(self) -> None:
         self.query_one("#filter-text", Input).focus()
@@ -116,6 +151,25 @@ class FilterBar(Horizontal):
         select = self.query_one("#filter-encryption", Select)
         select.focus()
         select.expanded = True
+
+    def set_view(self, view_mode: str) -> None:
+        self._view_mode = view_mode
+        text = self.query_one("#filter-text", Input)
+        text.placeholder = (
+            "client, AP, vendor, or probe…"
+            if view_mode == "clients"
+            else "SSID, vendor, country…"
+        )
+        self._update_title()
+        self.query_one("#filter-association", Select).display = view_mode == "clients"
+
+    def set_paused(self, paused: bool) -> None:
+        self._paused = paused
+        self._update_title()
+
+    def _update_title(self) -> None:
+        title = "CLIENT FILTER" if self._view_mode == "clients" else "AP FILTER"
+        self.border_title = f"{title} · PAUSED" if self._paused else title
 
     def set_channels(self, active: Optional[List[int]]) -> None:
         button = self.query_one("#filter-channels", Button)
@@ -151,7 +205,19 @@ class FilterBar(Horizontal):
     def _emit_scan_filter(self) -> None:
         text = self.query_one("#filter-text", Input).value
         encryption = self.query_one("#filter-encryption", Select).value
-        self.post_message(self.ScanFilterChanged(ScanFilter(text=text, encryption=encryption)))
+        min_signal = int(self.query_one("#filter-signal", Select).value)
+        raw_wps = self.query_one("#filter-wps", Select).value
+        wps = None if raw_wps == "all" else raw_wps == "yes"
+        association = str(self.query_one("#filter-association", Select).value)
+        self.post_message(self.ScanFilterChanged(
+            ScanFilter(
+                text=text,
+                encryption=encryption,
+                min_signal=min_signal,
+                wps=wps,
+                association=association,
+            )
+        ))
 
     def _focus_table(self) -> None:
         tables = self.screen.query("#ap-table")

@@ -7,6 +7,7 @@ from wifit3.persist.save import (
     consolidate_hc_files,
     save_handshake,
     save_pmkid,
+    save_wpa_psk,
     save_wep_key,
     save_wps_pbc,
     save_wps_pin,
@@ -419,6 +420,16 @@ class TestConsolidateHcFiles:
 
         lines = target.read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 2
+
+
+def test_save_wpa_psk_uses_dedicated_type_and_dedupes(tmp_path):
+    ap = AccessPoint(bssid="aa:bb:cc:dd:ee:ff", ssid="HomeNet")
+    first = save_wpa_psk(ap, "correct horse battery staple")
+    second = save_wpa_psk(ap, "correct horse battery staple")
+    assert first is not None and first.was_new is True
+    assert first.path.name.endswith("_wpa_psk.txt")
+    assert second is not None and second.was_new is False
+    assert second.path == first.path
 
 
 # ---- HcFiles class ---------------------------------------------------------

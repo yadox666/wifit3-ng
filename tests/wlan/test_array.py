@@ -172,6 +172,24 @@ def test_ingest_dedupes_same_air_across_cards():
     assert folds["n"] == 1                    # sink.update folds the novel copy only
 
 
+def test_packet_observer_receives_only_novel_frames_and_can_unregister():
+    a_card = FakeIface("wlan0", [6])
+    b_card = FakeIface("wlan1", [6])
+    array = _pool(a_card, b_card)
+    observed = []
+    callback = observed.append
+    array.register_packet_callback(callback)
+    raw = _raw()
+
+    a_card.emit(_beacon(raw))
+    b_card.emit(_beacon(raw))
+    assert len(observed) == 1
+
+    array.unregister_packet_callback(callback)
+    a_card.emit(_beacon(_raw(seq=b"\x10\x00")))
+    assert len(observed) == 1
+
+
 def test_ingest_drops_our_own_forged_frames():
     card = FakeIface("wlan0", [6])
     a = _pool(card)

@@ -10,9 +10,10 @@ from textual.containers import Horizontal, Vertical, VerticalGroup
 from textual.events import Event
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Button, Checkbox, Input, Label, Select
+from textual.widgets import Button, Checkbox, Footer, Input, Label, Select
 
 from wifit3.persist.config import Config
+from wifit3.ui.screens.targets import TargetsModal
 
 
 class ThemeSetting(VerticalGroup):
@@ -74,6 +75,53 @@ class SortDelaySetting(VerticalGroup):
             Config.scanner_sort_delay = float(event.value)
 
 
+class ApExpirySetting(VerticalGroup):
+    DEFAULT_CSS = """
+    ApExpirySetting { border: round $primary }
+    """
+
+    OPTIONS: list[tuple[str, float]] = [
+        ("15 seconds", 15.0),
+        ("30 seconds", 30.0),
+        ("1 minute", 60.0),
+        ("2 minutes", 120.0),
+        ("5 minutes", 300.0),
+        ("10 minutes", 600.0),
+        ("Never", -1.0),
+    ]
+
+    def compose(self) -> ComposeResult:
+        self.border_title = "Hide inactive access points"
+        current = Config.scanner_ap_expiry
+        values = [value for _, value in self.OPTIONS]
+        value = current if current in values else 30.0
+        yield Select(self.OPTIONS, id="ap_expiry", value=value, allow_blank=False)
+
+    @on(Select.Changed, "#ap_expiry")
+    def select_ap_expiry(self, event: Select.Changed) -> None:
+        if event.value is not None:
+            Config.scanner_ap_expiry = float(event.value)
+
+
+class ActiveIntensitySetting(VerticalGroup):
+    DEFAULT_CSS = """
+    ActiveIntensitySetting { border: round $primary }
+    """
+
+    def compose(self) -> ComposeResult:
+        self.border_title = "Active action intensity"
+        yield Select(
+            [
+                ("Low · 3 client rounds / 6 broadcast frames", "low"),
+                ("Normal · 10 client rounds / 20 broadcast frames", "normal"),
+                ("High · 20 client rounds / 40 broadcast frames", "high"),
+            ],
+            value=Config.active_action_intensity,
+            allow_blank=False,
+            id="active_action_intensity",
+        )
+
+
 class CapturesDirSetting(VerticalGroup):
     DEFAULT_CSS = """
     CapturesDirSetting { border: round $primary }
@@ -81,6 +129,40 @@ class CapturesDirSetting(VerticalGroup):
     def compose(self) -> ComposeResult:
         self.border_title = "Save directory"
         yield Input(Config.captures_dir, id="captures_dir")
+
+
+class TargetCaptureSetting(VerticalGroup):
+    DEFAULT_CSS = """
+    TargetCaptureSetting { border: round $primary }
+    """
+
+    def compose(self) -> ComposeResult:
+        self.border_title = "Target reacquisition and capture rotation"
+        yield Select(
+            [
+                ("Reacquire for 30 seconds", 30.0),
+                ("Reacquire for 1 minute", 60.0),
+                ("Reacquire for 2 minutes", 120.0),
+                ("Reacquire for 5 minutes", 300.0),
+            ],
+            value=Config.target_reacquire_timeout,
+            allow_blank=False,
+            id="target_reacquire_timeout",
+        )
+        yield Select(
+            [("25 MiB per file", 25), ("50 MiB per file", 50),
+             ("100 MiB per file", 100), ("250 MiB per file", 250)],
+            value=Config.target_capture_max_mb,
+            allow_blank=False,
+            id="target_capture_max_mb",
+        )
+        yield Select(
+            [("1 capture part", 1), ("3 capture parts", 3),
+             ("5 capture parts", 5), ("10 capture parts", 10)],
+            value=Config.target_capture_max_parts,
+            allow_blank=False,
+            id="target_capture_max_parts",
+        )
 
 
 class SaveFooter(Horizontal):
@@ -101,13 +183,18 @@ class SaveFooter(Horizontal):
 
 
 class PreferencesModal(ModalScreen):
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("a", "about", "About"),
+        Binding("t", "targets", "Targets"),
+    ]
 
     DEFAULT_CSS = """
     PreferencesModal { align: center middle; }
     PreferencesModal #dialog {
         width: 44; height: auto;
         max-height: 100%;
+        overflow-y: auto;
         border: thick $primary; background: $surface; padding: 0 2;
     }
     PreferencesModal #dialog > * { width: 100% }
@@ -122,13 +209,38 @@ class PreferencesModal(ModalScreen):
             yield Label("Preferences", id="title")
             yield ThemeSetting()
             yield SortDelaySetting()
+            yield ApExpirySetting()
+            yield ActiveIntensitySetting()
             yield CapturesDirSetting()
+            yield TargetCaptureSetting()
+            yield Checkbox(
+                "Automatically check for updates",
+                value=Config.auto_check_updates,
+                id="auto_check_updates",
+            )
+            yield Checkbox(
+                "Confirm active wireless actions",
+                value=Config.confirm_active_actions,
+                id="confirm_active_actions",
+            )
+            yield Checkbox(
+                "WPS PBC automatic capture",
+                value=Config.auto_wps_pbc,
+                id="auto_wps_pbc",
+            )
+            yield Checkbox(
+                "Auto-lock saved targets",
+                value=Config.auto_lock_targets,
+                id="auto_lock_targets",
+            )
             yield Checkbox("Save .pcap handshakes", value=Config.save_pcap, id="save_pcap")
             yield SaveFooter()
+        yield Footer()
 
     def on_mount(self) -> None:
         self._original_theme = self.app.theme
         self._original_sort_delay = Config.scanner_sort_delay
+        self._original_ap_expiry = Config.scanner_ap_expiry
 
     @on(Button.Pressed, "#save")
     def save_pressed(self, event: Event):
@@ -136,7 +248,25 @@ class PreferencesModal(ModalScreen):
         Config.captures_dir = self.query_one("#captures_dir", Input).value
         self.app.vault.refresh()
         Config.save_pcap = self.query_one("#save_pcap", Checkbox).value
+        Config.auto_check_updates = self.query_one("#auto_check_updates", Checkbox).value
+        Config.confirm_active_actions = self.query_one("#confirm_active_actions", Checkbox).value
+        Config.auto_wps_pbc = self.query_one("#auto_wps_pbc", Checkbox).value
+        self.app.pbc_enabled = Config.auto_wps_pbc
+        Config.auto_lock_targets = self.query_one("#auto_lock_targets", Checkbox).value
+        Config.target_reacquire_timeout = float(
+            self.query_one("#target_reacquire_timeout", Select).value
+        )
+        Config.target_capture_max_mb = int(
+            self.query_one("#target_capture_max_mb", Select).value
+        )
+        Config.target_capture_max_parts = int(
+            self.query_one("#target_capture_max_parts", Select).value
+        )
+        Config.active_action_intensity = str(
+            self.query_one("#active_action_intensity", Select).value
+        )
         Config.scanner_sort_delay = float(self.query_one("#sort_delay", Select).value)
+        Config.scanner_ap_expiry = float(self.query_one("#ap_expiry", Select).value)
         self._save_and_dismiss()
 
     def _save_and_dismiss(self) -> None:
@@ -153,5 +283,12 @@ class PreferencesModal(ModalScreen):
     def action_cancel(self) -> None:
         self.app.theme = self._original_theme
         Config.scanner_sort_delay = self._original_sort_delay
+        Config.scanner_ap_expiry = self._original_ap_expiry
         self.dismiss()
+
+    def action_about(self) -> None:
+        self.app.action_about()
+
+    def action_targets(self) -> None:
+        self.app.push_screen(TargetsModal())
 

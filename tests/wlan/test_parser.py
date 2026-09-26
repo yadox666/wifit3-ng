@@ -12,6 +12,7 @@ from wifit3.dot11.packet import (
 def _build_beacon(
     *,
     ssid: str = "TestNet",
+    timestamp_us: int = 0,
     rsn_ie: bytes = b"",
     wpa_vendor_ie: bytes = b"",
     privacy_bit: bool = False,
@@ -30,7 +31,7 @@ def _build_beacon(
     cap_info = 0x0001  # ESS (bit 0)
     if privacy_bit:
         cap_info |= 0x0010  # Privacy (bit 4)
-    fixed = b"\x00" * 8 + b"\x64\x00" + struct.pack("<H", cap_info)
+    fixed = struct.pack("<Q", timestamp_us) + b"\x64\x00" + struct.pack("<H", cap_info)
 
     ssid_bytes = ssid.encode("utf-8")
     tag_ssid = bytes([0x00, len(ssid_bytes)]) + ssid_bytes
@@ -94,6 +95,61 @@ def test_wps_open_beacon():
     assert r.wps is True
     assert r.wps_locked is False
     assert r.wps_version == "1.0"
+
+
+def test_beacon_timestamp_is_parsed_as_ap_uptime_microseconds():
+    r = WlanFrameParser.parse_80211_frame(
+        _build_beacon(timestamp_us=3_723_000_000), -50,
+    )
+    assert r.timestamp_us == 3_723_000_000
+
+
+def test_beacon_advertised_country_is_parsed():
+    country_ie = b"\x07\x06US " + bytes([1, 11, 20])
+    r = WlanFrameParser.parse_80211_frame(_build_beacon() + country_ie, -50)
+    assert r.country_code == "US"
+    assert r.capabilities.country_environment == "any"
+
+
+def test_malformed_country_code_is_ignored():
+    country_ie = b"\x07\x06u1 " + bytes([1, 11, 20])
+    r = WlanFrameParser.parse_80211_frame(_build_beacon() + country_ie, -50)
+    assert r.country_code is None
+
+
+def test_beacon_extracts_advertised_radio_load_roaming_and_discovery_fields():
+    tim = bytes([5, 4, 0, 3, 0, 0])
+    bss_load = bytes([11, 5]) + struct.pack("<HBH", 12, 128, 300)
+    power = bytes([32, 1, 4])
+    ht = bytes([45, 26]) + b"\x02\x00\x00\xff\xff" + b"\x00" * 21
+    mobility = bytes([54, 3, 1, 2, 3])
+    rm = bytes([70, 1, 1])
+    multi_bssid = bytes([71, 1, 2])
+    vht_map = sum(0 if stream < 2 else 3 << (stream * 2) for stream in range(8))
+    vht = bytes([191, 12]) + struct.pack("<IH", 0x04, vht_map) + b"\x00" * 6
+    ext = bytes([127, 11]) + b"\x00\x00\x08" + b"\x00" * 7 + b"\x10"
+    rnr = bytes([201, 1, 0])
+    wmm = bytes.fromhex("DD060050F2020101")
+    he = bytes([255, 1, 35])
+    eht = bytes([255, 1, 108])
+    mlo = bytes([255, 1, 107])
+    frame = (
+        _build_beacon(timestamp_us=1_000_000) + tim + bss_load + power + ht
+        + mobility + rm + multi_bssid + vht + ext + rnr + wmm + he + eht + mlo
+    )
+    parsed = WlanFrameParser.parse_80211_frame(frame, -50)
+    caps = parsed.capabilities
+    assert caps.beacon_interval_tu == 100
+    assert caps.capability_flags == {"ESS"}
+    assert caps.dtim_period == 3
+    assert (caps.station_count, caps.channel_utilization, caps.admission_capacity) == (12, 128, 300)
+    assert caps.power_constraint_db == 4
+    assert caps.phy_modes == {"802.11n", "802.11ac", "802.11ax", "802.11be"}
+    assert caps.channel_widths_mhz == {20, 40, 80, 160}
+    assert caps.max_spatial_streams == 2
+    assert caps.fast_transition and caps.radio_measurement and caps.bss_transition
+    assert caps.wmm and caps.multi_bssid and caps.reduced_neighbor_report and caps.multi_link
+    assert "00:50:F2" in caps.vendor_ouis
 
 
 def test_wps_locked_beacon():
@@ -284,7 +340,10 @@ def test_wpa3_sae_ext_key_h2e_flags_as_wpa3():
 
 # ---- (Re)Assoc Request client-AKM extraction (Phase 2) ----------------------
 
-def _build_assoc_req(rsn_ie: bytes, *, reassoc: bool = False, ssid: bytes = b"Net") -> bytes:
+def _build_assoc_req(
+    rsn_ie: bytes, *, reassoc: bool = False, ssid: bytes = b"Net",
+    extra_ies: bytes = b"",
+) -> bytes:
     """An Assoc (or Reassoc) Request from a client carrying SSID + rates + the
     given RSN IE. Reassoc inserts a (non-zero) 6-byte Current AP Address, shifting
     the IE list from offset 28 to 34, so a wrong offset misparses, not silently
@@ -299,7 +358,7 @@ def _build_assoc_req(rsn_ie: bytes, *, reassoc: bool = False, ssid: bytes = b"Ne
         fixed += bytes.fromhex("998877665544")      # Current AP Address (non-zero)
     ssid_ie = bytes([0x00, len(ssid)]) + ssid
     rates_ie = bytes([0x01, 0x04]) + b"\x82\x84\x8b\x96"
-    return hdr + fixed + ssid_ie + rates_ie + rsn_ie
+    return hdr + fixed + ssid_ie + rates_ie + rsn_ie + extra_ies
 
 
 def test_assoc_req_client_akm_extracted():
@@ -328,6 +387,46 @@ def test_assoc_req_extracts_ssid():
     parsed = WlanFrameParser.parse_80211_frame(_build_assoc_req(b"", ssid=b"HiddenNet"), -50)
     assert parsed.type == "assoc_req"
     assert parsed.ssid == "HiddenNet"
+
+
+def test_assoc_req_extracts_client_radio_power_and_feature_capabilities():
+    ht = bytes([45, 26]) + b"\x02\x00\x00\xff\xff" + b"\x00" * 21
+    power = bytes([33, 2, 0xF6, 20])
+    channels = bytes([36, 4, 1, 11, 36, 4])
+    rm = bytes([70, 1, 1])
+    mobility = bytes([54, 3, 1, 2, 3])
+    ext = bytes([127, 3, 0, 0, 0x08])
+    wmm = bytes.fromhex("DD060050F2020101")
+    parsed = WlanFrameParser.parse_80211_frame(
+        _build_assoc_req(
+            _rsn_ie(akms=(0x08,), rsn_caps=0x0080),
+            extra_ies=ht + power + channels + rm + mobility + ext + wmm,
+        ),
+        -50,
+    )
+    caps = parsed.capabilities
+    assert caps.phy_modes == {"802.11n"}
+    assert caps.channel_widths_mhz == {20, 40}
+    assert caps.max_spatial_streams == 2
+    assert (caps.power_min_dbm, caps.power_max_dbm) == (-10, 20)
+    assert caps.supported_channel_ranges == [(1, 11), (36, 4)]
+    assert caps.radio_measurement and caps.fast_transition and caps.bss_transition and caps.wmm
+    assert caps.pmf_capable and not caps.pmf_required
+    assert caps.listen_interval == 1
+    assert {"ESS", "Privacy"} <= caps.capability_flags
+
+
+def test_assoc_req_extracts_client_wps_identity():
+    parsed = WlanFrameParser.parse_80211_frame(
+        _build_assoc_req(b"", extra_ies=_wps_ie(
+            manufacturer=b"Acme", model_name=b"Phone X", device_name=b"Alice Phone",
+        )),
+        -50,
+    )
+    caps = parsed.capabilities
+    assert caps.wps_manufacturer == "Acme"
+    assert caps.wps_model == "Phone X"
+    assert caps.wps_device_name == "Alice Phone"
 
 
 def test_reassoc_req_extracts_ssid_past_current_ap_field():
