@@ -72,10 +72,40 @@ async def test_bluetooth_focus_renders_identity_traffic_and_gatt_table():
         assert row[4].plain == "LOW"
         assert "L1" in str(screen.query_one("#bt-connection").render())
 
+        local = screen.query_one("#bt-local").region
+        center = screen.query_one("#bt-center").region
         device = screen.query_one("#bt-device").region
         traffic = screen.query_one("#bt-traffic").region
         connection = screen.query_one("#bt-connection").region
-        assert device.right == traffic.x
-        assert traffic.right == connection.x
-        assert connection.right == 120
+        assert local.right == center.x
+        assert center.right == device.x
+        assert local.x == 120 - device.right
+        assert connection.x == traffic.x == center.x
+        assert connection.bottom == traffic.y
+
+        local_art = screen.query_one("#bt-local").render()
+        device_art = screen.query_one("#bt-device").render()
+        assert "THIS LAPTOP" in local_art.plain
+        assert "Wifit3-ng" in local_art.plain
+        assert "Test Sensor" in device_art.plain
+        assert any("rgb(0,120,255)" in str(span.style) for span in device_art.spans)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_focus_keeps_remote_art_visible_while_disconnected():
+    app = WifiteApp()
+    app.bluetooth_manager.connection = None
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen("bluetooth-focus")
+        await pilot.pause(0)
+        screen = app.screen
+
+        device_art = screen.query_one("#bt-device").render()
+        link = screen.query_one("#bt-connection").render()
+        assert "BLUETOOTH DEVICE" in device_art.plain
+        assert "Waiting for connection" in device_art.plain
+        assert "██" in device_art.plain
+        assert "DISCONNECTED" in str(link)
 

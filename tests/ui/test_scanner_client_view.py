@@ -111,6 +111,7 @@ async def test_scanner_switches_between_ap_and_client_tables():
 async def test_saved_targets_mark_only_ap_ssid_and_full_client_row_red(tmp_path):
     ap = AccessPoint(
         bssid="00:03:93:11:22:33", ssid="Office", channel=6, wps=True,
+        encryption="WPA2", akms=["PSK"],
     )
     client = Client(mac="18:7f:88:aa:bb:cc", bssid=ap.bssid)
     app = _Host(_Array(ap, [client]))
@@ -188,10 +189,8 @@ async def test_same_ssid_aps_collapse_into_expandable_infrastructure():
         await pilot.press("enter")
         await pilot.pause(0)
         assert table.row_count == 2
-        assert all(
-            table.get_row_at(index)[0].plain.startswith("└ ")
-            for index in range(2)
-        )
+        assert table.get_row_at(0)[0].plain == "Hotel WiFi"
+        assert table.get_row_at(1)[0].plain == "└ Hotel WiFi"
 
         scanner.action_toggle_infrastructure()
         await pilot.pause(0)

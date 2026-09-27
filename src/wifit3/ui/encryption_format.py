@@ -11,7 +11,7 @@ from wifit3.models import AccessPoint
 #   bright_green = attackable today (we have an attack)
 #   yellow       = interesting but no attack yet (PRs welcome)
 #   red          = out of scope (we don't support cracking this protocol)
-#   dim (muted)  = no attack needed (OPEN networks)
+#   bright_red   = critically weak / unsafe (OPEN, WPA3 labels)
 _ATTACKABLE = "bright_green"
 _NO_ATTACK_YET = "yellow"
 _OUT_OF_SCOPE = "red"
@@ -130,7 +130,7 @@ def format_encryption_markup(
         return head + _detail_markup(akms_tok, cipher, show_cipher, muted)
 
     if enc_type is EncryptionType.OPEN:
-        return f"[{muted}]OPEN[/{muted}]"
+        return "[bright_red]OPEN[/bright_red]"
 
     if enc_type is EncryptionType.WEP:
         # Attackable now (IV capture → replay → crack).

@@ -3,6 +3,7 @@ from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
+from rich.text import Text
 from textual.widgets import DataTable, Input, Select
 from textual.widgets.data_table import ColumnKey
 
@@ -10,6 +11,7 @@ from wifit3.models import BluetoothDevice
 from wifit3.persist.targets import TargetStore
 from wifit3.ui.app import WifiteApp
 from wifit3.ui.screens.bluetooth_scanner import (
+    _BluetoothSortReadout,
     BluetoothScannerView,
     _group_anonymous_apple_devices,
 )
@@ -233,6 +235,31 @@ async def test_bluetooth_scanner_cycles_sort_column_and_direction():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_sort_change_shows_toast_and_header_status():
+    app = WifiteApp()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        toasts = []
+        scanner.notify = lambda message, **kwargs: toasts.append(
+            (kwargs.get("title"), message)
+        )
+        readout = scanner.query_one(_BluetoothSortReadout)
+
+        assert readout.summary == "Sorted: FIRST SEEN (>)"
+        scanner.action_cycle_sort()
+        assert readout.summary == "Sorted: LAST SEEN (>)"
+        assert toasts[-1] == ("Sort changed", "Sorted by LAST SEEN descending")
+
+        scanner.action_toggle_sort_dir()
+        assert readout.summary == "Sorted: LAST SEEN (<)"
+        assert toasts[-1] == ("Sort changed", "Sorted by LAST SEEN ascending")
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
 async def test_bluetooth_scanner_filters_by_power_type_and_text():
     app = WifiteApp()
     audio = replace(
@@ -300,6 +327,74 @@ async def test_default_sort_keeps_new_devices_at_the_bottom():
             "Second",
             "Newcomer",
         ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_default_first_seen_order_stays_put_as_labels_tick(monkeypatch):
+    app = WifiteApp()
+    base = 1_700_000_000.0
+    clock = {"now": base}
+    monkeypatch.setattr(
+        "wifit3.ui.screens.bluetooth_scanner.time.time",
+        lambda: clock["now"],
+    )
+    earlier = replace(
+        _anonymous_apple("99:99:99:99:99:99"),
+        name="Earlier",
+        first_seen=base - 5.2,
+        last_seen=base,
+    )
+    later = replace(
+        _anonymous_apple("11:11:11:11:11:11"),
+        name="Later",
+        first_seen=base - 4.8,
+        last_seen=base,
+    )
+    app.bluetooth_manager.devices = lambda: [later, earlier]
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        table = scanner.query_one("#bluetooth-table", DataTable)
+        scanner.refresh_table()
+        assert [table.get_row_at(i)[0].plain for i in range(2)] == ["Earlier", "Later"]
+
+        clock["now"] = base + 0.3
+        scanner.refresh_table()
+        assert table.get_row_at(0)[5].plain == "5s ago"
+        assert table.get_row_at(1)[5].plain == "5s ago"
+        assert [table.get_row_at(i)[0].plain for i in range(2)] == ["Earlier", "Later"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_first_seen_sort_uses_timestamps_not_formatted_ages():
+    app = WifiteApp()
+    now = time.time()
+    older = replace(
+        _anonymous_apple("99:99:99:99:99:99"), name="Older", first_seen=now - 65
+    )
+    newer = replace(
+        _anonymous_apple("11:11:11:11:11:11"), name="Newer", first_seen=now - 25
+    )
+    app.bluetooth_manager.devices = lambda: [newer, older]
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        table = scanner.query_one("#bluetooth-table", DataTable)
+        scanner.refresh_table()
+
+        table.update_cell(older.identifier, "first_seen", Text("1 minute ago"))
+        table.update_cell(newer.identifier, "first_seen", Text("25 secs ago"))
+        scanner._apply_sort()
+        assert [table.get_row_at(i)[0].plain for i in range(2)] == ["Older", "Newer"]
+
+        scanner.action_toggle_sort_dir()
+        assert [table.get_row_at(i)[0].plain for i in range(2)] == ["Newer", "Older"]
 
 
 def test_anonymous_apple_identifiers_form_approximate_group():
@@ -371,8 +466,12 @@ async def test_connect_key_connects_selected_device_and_opens_focus(monkeypatch)
         scanner = app.screen
         scanner.refresh_table()
         monkeypatch.setattr(app, "push_screen", pushed.append)
+        assert not any(binding.key == "c" for binding in scanner.BINDINGS)
+        enter_binding = next(binding for binding in scanner.BINDINGS if binding.key == "enter")
+        assert enter_binding.action == "connect"
+        assert enter_binding.show is False
 
-        scanner.action_connect()
+        await pilot.press("enter")
         for _ in range(40):
             await pilot.pause(0)
             if pushed:

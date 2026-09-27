@@ -659,9 +659,25 @@ class WlanFrameParser:
                     cls._raise_spatial_streams(capabilities, cls._ht_spatial_streams(tag_data))
             elif tag_id == 54: # Mobility Domain
                 capabilities.fast_transition = True
-            elif tag_id == 61: # HT Operation: primary channel = first byte
+            elif tag_id == 61: # HT Operation: primary channel + active 20/40 MHz layout
                 if len(tag_data) >= 1:
                     channel_ht = tag_data[0]
+                if len(tag_data) >= 2:
+                    info = tag_data[1]
+                    raw_offset = info & 0x03
+                    offset = {0: 0, 1: 1, 3: -1}.get(raw_offset)
+                    uses_40mhz = bool(info & 0x04) and offset in (-1, 1)
+                    if (
+                        capabilities.operating_width_mhz is None
+                        or capabilities.operating_width_mhz <= 40
+                    ):
+                        capabilities.operating_width_mhz = 40 if uses_40mhz else 20
+                        capabilities.secondary_channel_offset = offset if uses_40mhz else 0
+                        capabilities.center_channel_0 = (
+                            channel_ht + (2 * offset)
+                            if uses_40mhz and channel_ht is not None and offset is not None
+                            else channel_ht
+                        )
             elif tag_id == 70: # RM Enabled Capabilities
                 capabilities.radio_measurement = True
             elif tag_id == 71: # Multiple BSSID
@@ -674,12 +690,15 @@ class WlanFrameParser:
                     if width_set:
                         capabilities.channel_widths_mhz.add(160)
                     cls._raise_spatial_streams(capabilities, cls._vht_spatial_streams(tag_data))
-            elif tag_id == 192: # VHT Operation: center freq seg 0 at byte 1
+            elif tag_id == 192: # VHT Operation: width + center-frequency segments
                 if len(tag_data) >= 2:
                     channel_vht = tag_data[1]
-                    capabilities.channel_widths_mhz.add(
-                        {0: 40, 1: 80, 2: 160, 3: 160}.get(tag_data[0], 20)
-                    )
+                    capabilities.center_channel_0 = channel_vht or capabilities.center_channel_0
+                    width = {1: 80, 2: 160, 3: 160}.get(tag_data[0])
+                    if width is not None:
+                        capabilities.operating_width_mhz = width
+                if len(tag_data) >= 3 and tag_data[2]:
+                    capabilities.center_channel_1 = tag_data[2]
             elif tag_id == 201: # Reduced Neighbor Report
                 capabilities.reduced_neighbor_report = True
             elif tag_id == 127: # Extended Capabilities: bit 84 = Beacon Protection Enabled
@@ -739,15 +758,22 @@ class WlanFrameParser:
             capabilities.wps_device_name = parsed.get("wsc_device_name")
             capabilities.wps_device_type = parsed.get("wsc_device_type")
 
-        # Channel preference: DS Param (tag 3, 2.4 GHz authoritative) → HT Op (tag 61, the
-        # only cross-band source; 5 GHz often omits DS per 802.11-2020 9.4.2.3) → VHT Op
-        # (tag 192, last resort). Caller falls back to its tuned channel if none present.
-        if channel_ds is not None:
+        # DS Param and HT Operation both identify the *primary* 20 MHz channel. VHT
+        # Operation does not: its byte 1 is a center-frequency segment (for example
+        # center 42 for an 80 MHz BSS whose primary is 36), so it must never be used
+        # as the tune target. On missing or contradictory primary-channel evidence,
+        # leave the channel absent and let the caller use the receiving radio's tuned
+        # channel rather than risking a tune to a center or stale advertised channel.
+        if (
+            channel_ds is not None
+            and channel_ht is not None
+            and channel_ds != channel_ht
+        ):
+            capabilities.channel_conflict = True
+        elif channel_ds is not None:
             parsed["channel"] = channel_ds
         elif channel_ht is not None:
             parsed["channel"] = channel_ht
-        elif channel_vht is not None:
-            parsed["channel"] = channel_vht
 
         parsed["wpa3"] = has_wpa3
         parsed["transition_mode"] = transition_mode

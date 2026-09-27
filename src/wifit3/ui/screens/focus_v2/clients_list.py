@@ -39,27 +39,41 @@ class ClientWidget(Horizontal):
             self.offset = offset
 
     def __init__(self, client, **kwargs) -> None:
-        super().__init__(id=_widget_id(client.mac), classes="client-row", **kwargs)
+        is_fake = bool(getattr(client, "is_fake", False))
+        classes = "client-row fake-client" if is_fake else "client-row"
+        super().__init__(id=_widget_id(client.mac), classes=classes, **kwargs)
         self._client = client
         self._mac = client.mac
-        self._fp = client.fingerprint
-        self._manufacturer = vendor_for_mac(client.mac) or ""
+        self._is_fake = is_fake
+        self._fp = None if self._is_fake else client.fingerprint
+        self._manufacturer = (
+            "Fake-Connect" if self._is_fake else vendor_for_mac(client.mac) or ""
+        )
         self._power = client.signal
         self._packets = client.packets
 
     def compose(self) -> ComposeResult:
-        self._fp_label = Label(self._fp.emoji if self._fp else "", classes="cl-fp")
+        badge = "[yellow]◈[/yellow]" if self._is_fake else self._fp.emoji if self._fp else ""
+        self._fp_label = Label(badge, classes="cl-fp")
         self._mac_label = Label(self._mac, classes="cl-bssid")
         self._mfr_label = Label(self._manufacturer, classes="cl-mfr")
+        power = "--" if self._is_fake else str(self._power)
         self._pwr_label = Label(
-            Text(str(self._power), style=dbm_style(self._power)), classes="cl-pwr",
+            Text(power, style="yellow" if self._is_fake else dbm_style(self._power)),
+            classes="cl-pwr",
         )
         self._pkts_label = Label(str(self._packets), classes="cl-pkts")
-        if self._fp is not None:
+        if self._is_fake:
+            self._fp_label.tooltip = "Temporary fake client created by Fake-Connect"
+            self._mac_label.tooltip = self._fp_label.tooltip
+        elif self._fp is not None:
             self._fp_label.tooltip = self._fp.label
             self._fp_label.add_class("fp-known")
             self._mac_label.add_class("fp-known")
         self._deauth = Button("✕", classes="cl-deauth", tooltip="Deauthenticate Client")
+        if self._is_fake:
+            self._deauth.disabled = True
+            self._deauth.tooltip = "Use Disconnect to remove this fake client"
         yield self._fp_label
         yield self._mac_label
         yield self._mfr_label
@@ -70,20 +84,27 @@ class ClientWidget(Horizontal):
     def update_stats(self, power: int, packets: int) -> None:
         """Repaint power/packets in place, only on a real change (a blind ``Label.update`` at 10 Hz
         wipes text selection and burns CPU)."""
-        if power != self._power:
+        if power != self._power and not self._is_fake:
             self._power = power
             self._pwr_label.update(Text(str(power), style=dbm_style(power)))
         if packets != self._packets:
             self._packets = packets
             self._pkts_label.update(str(packets))
-        manufacturer = vendor_for_mac(self._mac) or ""
+        manufacturer = (
+            "Fake-Connect" if self._is_fake else vendor_for_mac(self._mac) or ""
+        )
         if manufacturer != self._manufacturer:
             self._manufacturer = manufacturer
             self._mfr_label.update(manufacturer)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
+        if self._is_fake:
+            return
         self.post_message(self.DeauthRequested(self._mac))
+
+    def set_deauth_enabled(self, enabled: bool) -> None:
+        self._deauth.disabled = self._is_fake or not enabled
 
     def on_click(self, event: events.Click) -> None:
         targets = (self._mac_label, self._mfr_label)
@@ -122,7 +143,9 @@ class FingerprintModal(ModalScreen[None]):
     DEFAULT_CSS = """
     FingerprintModal { background: $background 0%; }
     FingerprintModal > #fp-box {
-        width: auto; height: auto; border: round $primary; background: $panel; padding: 0 1;
+        width: auto; max-width: 90%; height: auto; max-height: 90%;
+        overflow-y: auto;
+        border: round $primary; background: $panel; padding: 0 1;
     }
     """
 
@@ -221,9 +244,8 @@ class ClientsList(Vertical):
 
     def set_deauth_enabled(self, enabled: bool) -> None:
         """Enable/disable every deauth control (✕)."""
-        disabled = not enabled
-        for btn in self.query(Button):
-            btn.disabled = disabled
+        for row in self._rows.values():
+            row.set_deauth_enabled(enabled)
 
     def _update_title(self) -> None:
         self.border_title = f"CLIENTS ({len(self._rows)})"

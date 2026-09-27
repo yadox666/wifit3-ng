@@ -232,6 +232,14 @@ class WlanSink:
             self._record_ap_signal(ap, card_id, rssi)
             self._recompute_siblings_for(bssid)
             if self._is_real_ssid(ssid):
+                # Keep every confirmed BSSID→SSID sighting, not only APs that happened
+                # to be observed hidden first.  A later session may see only cloaked
+                # beacons and still needs the previously discovered name.
+                if self.hidden_ssids is not None:
+                    try:
+                        self.hidden_ssids.remember(bssid, ssid, frame_type)
+                    except HiddenSsidStoreError:
+                        logger.warning("Could not persist confirmed SSID", exc_info=True)
                 logger.trace('[RXFRAME] %-9s New AP on Ch %s: %s ("%s")',
                              "beacon", channel, bssid, ssid)
         else:
@@ -571,6 +579,19 @@ class WlanSink:
         """Inverse of ``register_own_mac``."""
         mac_str = mac_to_str(mac) if isinstance(mac, (bytes, bytearray)) else str(mac).lower()
         self.own_macs.discard(mac_str)
+
+    def register_fake_client(self, mac, bssid: str) -> Client:
+        """Expose one campaign-owned station in Focus without ingesting it as a real client."""
+        mac_str = self.register_own_mac(mac)
+        client = Client(mac=mac_str, bssid=bssid.casefold(), is_fake=True)
+        self.clients[mac_str] = client
+        return client
+
+    def unregister_fake_client(self, mac) -> None:
+        mac_str = mac_to_str(mac) if isinstance(mac, (bytes, bytearray)) else str(mac).lower()
+        client = self.clients.get(mac_str)
+        if client is not None and client.is_fake:
+            self.clients.pop(mac_str, None)
 
     # Back-compat alias the campaigns still call; funnels to the single own-MAC set.
     def register_forged_mac(self, mac) -> None:

@@ -22,12 +22,16 @@ from wifit3.wlan.enterprise_risk import enterprise_findings, tls_cipher_name
 from ..campaigns.pin import WpsCampaign
 from ..campaigns.deauth import DeauthCampaign
 from ..campaigns.eviltwin import EvilTwinCampaign
+from ..campaigns.fake_connect import FakeConnectCampaign
 
 if TYPE_CHECKING:
     from wifit3.models.access_point import AccessPoint
 
 # Attack-button campaigns in button-row order.
-BUTTON_CAMPAIGNS = [WepCampaign, DeauthCampaign, PmkidHarvestAttack, WpsCampaign, EvilTwinCampaign]
+BUTTON_CAMPAIGNS = [
+    WepCampaign, DeauthCampaign, PmkidHarvestAttack, FakeConnectCampaign,
+    WpsCampaign, EvilTwinCampaign,
+]
 
 
 CAMPAIGN_BY_KEY = {cls.key: cls for cls in BUTTON_CAMPAIGNS}
@@ -91,6 +95,28 @@ def truncate_ssid(ssid: str, maxlen: int = 24) -> str:
     if len(ssid) <= maxlen:
         return ssid
     return ssid[:maxlen - 1].rstrip() + "…"
+
+
+def best_named_sibling_ssid(ap, array) -> Optional[str]:
+    """Strongest confirmed SSID among same-radio siblings of a hidden AP."""
+    if array is None or not ap.siblings:
+        return None
+    best_ssid: Optional[str] = None
+    best_beacons = -1
+    for sibling_bssid in ap.siblings:
+        sibling = array.access_points.get(sibling_bssid)
+        if sibling and sibling.ssid and sibling.beacons > best_beacons:
+            best_ssid = sibling.ssid
+            best_beacons = sibling.beacons
+    return best_ssid
+
+
+def display_ssid(ap, array) -> tuple[Optional[str], Optional[str]]:
+    """SSID plus evidence source: confirmed, history, sibling guess, or absent."""
+    if ap.ssid:
+        return ap.ssid, "history" if ap.decloak_method == "history" else "confirmed"
+    sibling = best_named_sibling_ssid(ap, array)
+    return (sibling, "sibling") if sibling else (None, None)
 
 
 def beacon_rate(ap, samples: deque, now: float, window_s: float = 5.0):
@@ -213,9 +239,16 @@ def router_advertised_details(ap: AccessPoint) -> str:
     if not rows:
         rows = [f"[bold]{escape(ap.ssid or ap.bssid)}[/bold]"]
     caps = ap.capabilities
+    operation = channel_technical_summary(ap)
+    rows.append(f"[dim]Operating Channel:[/dim] {escape(operation)}")
+    if caps.channel_conflict:
+        rows.append(
+            "[yellow]Channel evidence conflicted; using the channel on which "
+            "the frame was actually received.[/yellow]"
+        )
     radio = _radio_summary(caps)
     if radio:
-        rows.append(f"[dim]Radio:[/dim] {escape(radio)}")
+        rows.append(f"[dim]Supported Radio:[/dim] {escape(radio)}")
     if caps.supported_rates_mbps:
         rates = ", ".join(_rate_label(rate) for rate in sorted(caps.supported_rates_mbps))
         rows.append(f"[dim]Legacy Rates:[/dim] {rates} Mbps")
@@ -416,6 +449,38 @@ def _radio_summary(caps) -> str:
     if caps.max_spatial_streams:
         parts.append(f"{caps.max_spatial_streams} spatial stream"
                      + ("s" if caps.max_spatial_streams != 1 else ""))
+    return " · ".join(parts)
+
+
+def channel_plain_summary(ap: AccessPoint) -> str:
+    """Short, jargon-free operating-channel label for the router endpoint."""
+    width = ap.capabilities.operating_width_mhz
+    return (
+        f"channel {ap.channel} · {width} MHz"
+        if width is not None
+        else f"channel {ap.channel}"
+    )
+
+
+def channel_technical_summary(ap: AccessPoint) -> str:
+    """Primary/width/secondary/center details decoded from Operation IEs."""
+    caps = ap.capabilities
+    parts = [f"primary CH {ap.channel}"]
+    width = caps.operating_width_mhz
+    if width is not None:
+        parts.append(f"{width} MHz")
+    if width == 40 and caps.secondary_channel_offset in (-1, 1):
+        direction = "above" if caps.secondary_channel_offset == 1 else "below"
+        parts.append(f"secondary {direction}")
+    centers = [
+        center for center in (caps.center_channel_0, caps.center_channel_1)
+        if center is not None
+    ]
+    if centers:
+        label = "center CH" if len(centers) == 1 else "center segments"
+        parts.append(f"{label} {'/'.join(str(center) for center in centers)}")
+    elif width is None:
+        parts.append("width not advertised")
     return " · ".join(parts)
 
 

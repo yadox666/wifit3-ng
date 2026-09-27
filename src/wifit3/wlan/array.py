@@ -268,6 +268,12 @@ class WlanArray:
     def unregister_own_mac(self, mac) -> None:
         self._sink.unregister_own_mac(mac)
 
+    def register_fake_client(self, mac, bssid: str) -> Client:
+        return self._sink.register_fake_client(mac, bssid)
+
+    def unregister_fake_client(self, mac) -> None:
+        self._sink.unregister_fake_client(mac)
+
     def record_injected_eapol(self, frame) -> None:
         self._sink.record_injected_eapol(frame)
 

@@ -1,4 +1,6 @@
 """Unit tests for the interface Lease: config on enter, restore on exit."""
+import pytest
+
 from wifit3.wlan.lease import Lease, SPOOFABLE
 
 
@@ -65,6 +67,20 @@ async def test_lease_channel_only_restores_original():
     iface, arr = FakeIface(channel=3), FakeArray()
     async with Lease(arr, iface, channel=11):
         assert iface.current_channel == 11
+    assert iface.current_channel == 3
+
+
+async def test_lease_refuses_to_run_when_channel_tune_fails():
+    iface, arr = FakeIface(channel=3), FakeArray()
+
+    async def reject_tune(ch, scan=False):
+        iface.calls.append(("set_channel", ch))
+        return False
+
+    iface.set_channel = reject_tune
+    with pytest.raises(RuntimeError, match="could not tune to channel 11"):
+        async with Lease(arr, iface, channel=11):
+            raise AssertionError("campaign body must not run off-channel")
     assert iface.current_channel == 3
 
 

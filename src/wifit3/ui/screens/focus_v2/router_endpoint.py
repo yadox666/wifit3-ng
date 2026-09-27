@@ -38,9 +38,11 @@ class RouterEndpoint(Vertical):
         """User clicked probe button to cancel active probe."""
 
     def __init__(self, *, essid: str = "", bssid: str = "", channel: int = 0,
+                 channel_label: str = "",
                  power_dbm: int = -100, signal: float | None = None,
                  uptime_us: int | None = None,
                  country_code: str | None = None,
+                 ssid_note: str = "",
                  wps: bool = False, has_m1: bool = False,
                  probing: bool = False, probe_disabled: bool = False,
                  identity: str = "", identity_details: str | None = None, **kwargs) -> None:
@@ -48,10 +50,12 @@ class RouterEndpoint(Vertical):
         self._essid = essid
         self._bssid = bssid
         self._channel = channel
+        self._channel_label = channel_label
         self._power_dbm = power_dbm
         self._signal = signal
         self._uptime_us = uptime_us
         self._country_code = country_code
+        self._ssid_note = ssid_note
         self._wps = wps
         self._has_m1 = has_m1
         self._probing = probing
@@ -66,7 +70,10 @@ class RouterEndpoint(Vertical):
         art = BreathingArt("focus-ap.ans", classes="endpoint-art", id="router-art")
         art.tooltip = self._identity_details
         yield art
-        yield Label(self._essid_markup(self._essid), classes="ap-essid", id="ap-essid")
+        yield Label(
+            self._essid_markup(self._essid, self._ssid_note),
+            classes="ap-essid", id="ap-essid",
+        )
         yield Label(self._bssid, classes="ap-static", id="ap-bssid")
         yield Label(self._uptime_label(), classes="ap-static", id="ap-uptime")
         with Horizontal(classes="ap-static", id="ap-identity-row"):
@@ -82,24 +89,27 @@ class RouterEndpoint(Vertical):
             probe.disabled = False if self._probing else self._probe_disabled
             yield probe
 
-    def update(self, *, essid: str, bssid: str, channel: int,
+    def update(self, *, essid: str, bssid: str, channel: int, channel_label: str,
                power_dbm: int, signal: float | None,
                uptime_us: int | None = None,
                country_code: str | None = None,
+               ssid_note: str = "",
                wps: bool = False, has_m1: bool = False,
                probing: bool = False, probe_disabled: bool = False,
                identity: str = "", identity_details: str | None = None) -> None:
         """Update live power meter and target endpoint identity state."""
         self._essid, self._bssid, self._channel = essid, bssid, channel
+        self._channel_label = channel_label
         self._power_dbm, self._signal = power_dbm, signal
         self._uptime_us = uptime_us
         self._country_code = country_code
+        self._ssid_note = ssid_note
         self._wps, self._has_m1 = wps, has_m1
         self._probing, self._probe_disabled = probing, probe_disabled
         self._identity, self._identity_details = identity, identity_details
         self.query_one("#ap-power", Label).update(self._power_line())
         self.query_one("#router-art", BreathingArt).tooltip = identity_details
-        self._push("#ap-essid", self._essid_markup(essid))
+        self._push("#ap-essid", self._essid_markup(essid, ssid_note))
         self._push("#ap-bssid", bssid)
         self._push("#ap-uptime", self._uptime_label())
 
@@ -150,13 +160,7 @@ class RouterEndpoint(Vertical):
         return text[:max_len - 1] + "…"
 
     def _identity_label(self) -> str:
-        if not self._wps:
-            return f"channel {self._channel}"
-        if self._has_m1:
-            text = self._identity or f"channel {self._channel}"
-            return self._truncate(text, 20)
-        text = self._identity or f"ch {self._channel}"
-        return self._truncate(text, 16)
+        return self._truncate(self._channel_label or f"channel {self._channel}", 20)
 
     def _probe_icon(self) -> str:
         return "❌" if self._probing else "🔍"
@@ -182,12 +186,15 @@ class RouterEndpoint(Vertical):
         return uptime
 
     @staticmethod
-    def _essid_markup(essid: str) -> str:
+    def _essid_markup(essid: str, note: str = "") -> str:
         """The ESSID as a black-on-cyan chip so it pops as the AP's identity (it
         kept blending in as plain bold white). A cloaked AP stays a dim italic
         marker: no chip on a name we don't have."""
         if essid == "‹hidden›":
             return "[dim italic]‹hidden›[/dim italic]"
+        if note:
+            label = escape(f"{essid} [{note}]")
+            return f"[black bold on yellow] {label} [/black bold on yellow]"
         return f"[black bold on cyan] {escape(essid)} [/black bold on cyan]"
 
     def _power_line(self) -> Text:

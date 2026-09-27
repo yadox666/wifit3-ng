@@ -107,6 +107,19 @@ def _wpa_ap(*, wps_pbc_psk=None):
     )
 
 
+def test_hidden_ap_focus_uses_strongest_named_sibling_as_uncertain_ssid():
+    hidden = AccessPoint(bssid="02:00:00:00:00:01", ssid=None, siblings=[
+        "02:00:00:00:00:02", "02:00:00:00:00:03",
+    ])
+    weak = AccessPoint(bssid="02:00:00:00:00:02", ssid="Weak sibling", beacons=10)
+    strong = AccessPoint(bssid="02:00:00:00:00:03", ssid="Shown in Focus", beacons=50)
+    array = types.SimpleNamespace(access_points={
+        hidden.bssid: hidden, weak.bssid: weak, strong.bssid: strong,
+    })
+
+    assert fm.display_ssid(hidden, array) == ("Shown in Focus", "sibling")
+
+
 def test_headline_persisted_wep_idle_shows_recovered(tmp_path):
     """A prior-session WEP key on disk, no campaign → the recovered-key banner."""
     _seed_wep(tmp_path, "aa-bb-cc-dd-ee-ff")
@@ -378,6 +391,8 @@ def test_router_advertised_details_includes_radio_load_security_and_features():
     caps = ap.capabilities
     caps.phy_modes.update({"802.11ax", "802.11be"})
     caps.channel_widths_mhz.update({20, 80, 160})
+    caps.operating_width_mhz = 80
+    caps.center_channel_0 = 42
     caps.max_spatial_streams = 4
     caps.beacon_interval_tu = 100
     caps.dtim_period = 3
@@ -389,6 +404,8 @@ def test_router_advertised_details_includes_radio_load_security_and_features():
     caps.multi_link = True
 
     details = fm.router_advertised_details(ap)
+    assert "Operating Channel:[/dim] primary CH 1 · 80 MHz · center CH 42" in details
+    assert "Supported Radio:" in details
     assert "802.11ax/802.11be" in details
     assert "20/80/160 MHz" in details and "4 spatial streams" in details
     assert "beacon 100 TU" in details and "DTIM 3" in details
@@ -396,6 +413,18 @@ def test_router_advertised_details_includes_radio_load_security_and_features():
     assert "group CCMP" in details and "AKM SAE" in details and "SAE H2E" in details
     assert "802.11k" in details and "802.11r" in details and "802.11v" in details
     assert "MLO" in details and "Country:[/dim] US" in details
+
+
+def test_channel_summaries_separate_simple_and_technical_information():
+    ap = AccessPoint(bssid="02:00:00:00:00:01", channel=6)
+    ap.capabilities.operating_width_mhz = 40
+    ap.capabilities.secondary_channel_offset = 1
+    ap.capabilities.center_channel_0 = 8
+
+    assert fm.channel_plain_summary(ap) == "channel 6 · 40 MHz"
+    assert fm.channel_technical_summary(ap) == (
+        "primary CH 6 · 40 MHz · secondary above · center CH 8"
+    )
 
 
 def test_router_details_show_enterprise_evidence_risk_and_limitations():
@@ -475,7 +504,10 @@ async def buttons_screen():
         yield app.screen
 
 
-_BTN_IDS = ("btn-gen-ivs", "btn-chop", "btn-deauth", "btn-pmkid", "btn-wps-pin", "btn-eviltwin")
+_BTN_IDS = (
+    "btn-gen-ivs", "btn-chop", "btn-deauth", "btn-pmkid", "btn-fake-connect",
+    "btn-wps-pin", "btn-eviltwin",
+)
 
 
 def _buttons(screen, ap):
@@ -497,6 +529,8 @@ async def test_derive_buttons_wep_labels_and_variants(buttons_screen):
     idle = _buttons(buttons_screen, _wep_btn_ap())
     assert str(idle["btn-gen-ivs"].label) == "ARP Replay" and idle["btn-gen-ivs"].variant == "success"
     assert str(idle["btn-chop"].label) == "ChopChop" and idle["btn-chop"].disabled is True
+    assert idle["btn-fake-connect"].display is True
+    assert idle["btn-fake-connect"].disabled is False
     Campaign.active = _FakeWep(chop=True)
     run = _buttons(buttons_screen, _wep_btn_ap())
     assert str(run["btn-gen-ivs"].label) == "Stop Replay" and run["btn-gen-ivs"].variant == "error"
@@ -626,12 +660,35 @@ def test_deauth_blocked_by_mutex_or_pmf():
 
 
 @pytest.mark.asyncio(loop_scope="module")
-async def test_buttons_open_hides_pmkid(buttons_screen):
-    """THE FIX: an open network has no PSK AKM → no PMKID button (was shown)."""
+async def test_buttons_open_hides_attacks_and_shows_fake_connect(buttons_screen):
+    """OPEN has no PMKID/deauth attack, but can accept temporary open association."""
     b = _buttons(buttons_screen, _rsn_ap(encryption="OPEN", akms=()))
     assert b["btn-pmkid"].display is False
+    assert b["btn-fake-connect"].display is True
+    assert b["btn-fake-connect"].disabled is False
     assert all(not b[bid].display for bid in
                ("btn-gen-ivs", "btn-chop", "btn-deauth", "btn-wps-pin", "btn-eviltwin"))
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_footer_fake_connect_label_toggles_to_disconnect(buttons_screen):
+    ap = _rsn_ap(encryption="OPEN", akms=())
+    buttons_screen._target_ap = ap
+
+    def label():
+        return next(
+            active.binding.description
+            for active in buttons_screen.active_bindings.values()
+            if active.binding.action == "campaign('fake_connect')"
+        )
+
+    buttons_screen._controls._campaign = None
+    assert label() == "Fake-Connect"
+    buttons_screen._controls._campaign = types.SimpleNamespace(key="fake_connect")
+    try:
+        assert label() == "Disconnect"
+    finally:
+        buttons_screen._controls._campaign = None
 
 
 @pytest.mark.asyncio(loop_scope="module")

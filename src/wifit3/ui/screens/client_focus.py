@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -7,7 +8,7 @@ from typing import TYPE_CHECKING
 from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
@@ -15,14 +16,21 @@ from wifit3.id import vendor_for_mac
 from wifit3.dot11.enterprise import EAP_TYPE_NAMES
 from wifit3.persist.common import bssid_to_dashed, safe_ssid
 from wifit3.persist.config import Config
+from wifit3.persist.network_metadata import (
+    NetworkMetadataStore, NetworkMetadataStoreError,
+)
 from wifit3.persist.pcap import PcapWriter
-from wifit3.ui.recording_indicator import recording_indicator
+from wifit3.ui.network_metadata_panel import NetworkMetadataPanel
+from wifit3.ui.recording_indicator import pcap_progress, recording_indicator
 from wifit3.ui.signal_bar import dbm_style
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
 from wifit3.wlan.enterprise_risk import enterprise_findings
+from wifit3.wlan.network_metadata import PassiveNetworkAnalyzer
 
 if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
+
+logger = logging.getLogger(__name__)
 
 
 class ClientFocusView(Screen):
@@ -41,9 +49,11 @@ class ClientFocusView(Screen):
         width: 20; content-align: center middle; text-align: center;
     }
     #client-focus-body { height: 1fr; }
-    #client-summary, #client-network {
+    #client-summary, #client-right {
         width: 1fr; height: 100%; border: round $primary; padding: 1 2;
     }
+    #client-network { width: 100%; height: 1fr; }
+    #client-network-metadata { margin-top: 1; }
     """
 
     def __init__(self) -> None:
@@ -51,6 +61,9 @@ class ClientFocusView(Screen):
         self._writer: PcapWriter | None = None
         self._array = None
         self._client_mac: str | None = None
+        self._network_bssid: str | None = None
+        self._network_store: NetworkMetadataStore | None = None
+        self._network_analyzer: PassiveNetworkAnalyzer | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -61,9 +74,12 @@ class ClientFocusView(Screen):
             summary = Static("", id="client-summary")
             summary.border_title = "CLIENT TARGET"
             yield summary
-            network = Static("", id="client-network")
-            network.border_title = "ASSOCIATION & CAPTURE"
-            yield network
+            with Vertical(id="client-right") as right:
+                right.border_title = "ASSOCIATION & CAPTURE"
+                yield Static("", id="client-network")
+                panel = NetworkMetadataPanel(id="client-network-metadata")
+                panel.display = False
+                yield panel
         yield GlobalJobTracker()
         yield Footer()
 
@@ -122,7 +138,11 @@ class ClientFocusView(Screen):
             lock_status
         )
         self.query_one("#client-pcap-recording", Static).update(
-            recording_indicator("PCAP RECORDING", self._writer is not None),
+            recording_indicator(
+                "PCAP RECORDING",
+                self._writer is not None,
+                detail=pcap_progress(self._writer) if self._writer else None,
+            ),
         )
         self.query_one("#client-summary", Static).update(
             f"[bold]{escape(client.mac)}[/bold]\n\n"
@@ -155,6 +175,17 @@ class ClientFocusView(Screen):
             f"[dim]Security[/dim]  {escape(ap.encryption or 'Unknown') if ap else '-'}\n\n"
             f"{capture}{risk}"
         )
+        if self._network_store is not None:
+            try:
+                self._network_store.flush_if_due()
+            except NetworkMetadataStoreError as exc:
+                logger.warning("%s", exc)
+        panel = self.query_one("#client-network-metadata", NetworkMetadataPanel)
+        panel.set_metadata(
+            self._network_store.metadata if self._network_store is not None else None,
+            live=self._writer is not None and self._network_analyzer is not None,
+            client_mac=client.mac,
+        )
 
     def _start_capture(self, client, ap) -> None:
         if self._writer is not None or self.app.array is None:
@@ -180,16 +211,37 @@ class ClientFocusView(Screen):
             return
         self._array = self.app.array
         self._client_mac = client.mac
+        self._network_bssid = ap.bssid.casefold()
+        if self._is_open_ap(ap):
+            self._network_store = NetworkMetadataStore(
+                Path(Config.captures_dir), ap.bssid, ap.ssid,
+            )
+            self._network_analyzer = PassiveNetworkAnalyzer(
+                self._network_store.metadata,
+            )
+            self.query_one("#client-network-metadata").display = True
+        else:
+            self._network_store = None
+            self._network_analyzer = None
+            self.query_one("#client-network-metadata").display = False
         self._array.register_packet_callback(self._capture_packet)
 
     def _capture_packet(self, packet) -> None:
         writer = self._writer
+        if writer is None or self._client_mac is None:
+            return
+        packet_client = getattr(packet, "client_mac", None)
+        touched = set()
         if (
-            writer is None
-            or self._client_mac is None
-            or not packet.client_mac
-            or packet.client_mac.casefold() != self._client_mac.casefold()
+            self._network_analyzer is not None
+            and (getattr(packet, "bssid", "") or "").casefold() == self._network_bssid
         ):
+            touched = self._network_analyzer.observe(packet)
+        direct = (
+            packet_client is not None
+            and packet_client.casefold() == self._client_mac.casefold()
+        )
+        if not direct and self._client_mac.casefold() not in touched:
             return
         writer.write(packet.raw, time.time())
 
@@ -201,7 +253,16 @@ class ClientFocusView(Screen):
             self._array.unregister_packet_callback(self._capture_packet)
         self._array = None
         self._client_mac = None
+        self._network_bssid = None
         writer.close()
+        if self._network_store is not None:
+            try:
+                self._network_store.save()
+            except NetworkMetadataStoreError as exc:
+                logger.warning("%s", exc)
+                if notify:
+                    self.notify(str(exc), title="Metadata save failed", severity="warning")
+        self._network_analyzer = None
         self.app.vault.refresh()
         if notify:
             self.notify(
@@ -223,3 +284,7 @@ class ClientFocusView(Screen):
     async def action_go_back(self) -> None:
         self.stop_capture()
         self.app.pop_screen()
+
+    @staticmethod
+    def _is_open_ap(ap) -> bool:
+        return (ap.encryption or "").casefold() == "open" and not ap.akm_suites

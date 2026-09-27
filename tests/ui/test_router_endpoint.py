@@ -25,3 +25,17 @@ def test_router_uptime_includes_advertised_country():
 
     router = RouterEndpoint(country_code="DE")
     assert router._uptime_label() == "uptime unknown · DE"
+
+
+def test_router_shows_plain_operating_channel_summary():
+    router = RouterEndpoint(channel=36, channel_label="channel 36 · 80 MHz")
+    assert router._identity_label() == "channel 36 · 80 MHz"
+
+
+def test_historical_ssid_is_marked_yellow_without_modifying_name():
+    markup = RouterEndpoint._essid_markup("Seen Before", note="history")
+
+    assert "on yellow" in markup
+    assert "Seen Before" in markup
+    assert "history" in markup
+    assert "Seen Before?" not in markup

@@ -39,7 +39,8 @@ from wifit3.ui.screens.confirm_active import ConfirmActiveActionModal
 from ..capture_events import (
     CAPTURE_TOAST_TITLES, DECLOAK_METHOD_LABELS, CaptureEvent, CaptureEventDetector, CaptureKind,
 )
-from ..encryption_format import format_encryption_markup, wep_key_ascii
+from .. import focus_model as fm
+from ..encryption_format import EncryptionType, format_encryption_markup, wep_key_ascii
 from wifit3.wlan.channels import band_ranges
 
 from .channel_filter import ChannelFilterDialog
@@ -145,7 +146,7 @@ def device_scan_summary(members) -> Optional[str]:
 
 
 class _ChannelReadout(HeaderClock):
-    """Header right slot: the live hopped channel(s), polled from the pool, not a clock."""
+    """Header right slot: active sort and live hopped channels."""
     DEFAULT_CSS = "_ChannelReadout { width: auto; }"
     # layout=True so a change re-sizes this auto-width slot; a plain repaint
     # leaves it 0-wide until the next resize.
@@ -158,7 +159,10 @@ class _ChannelReadout(HeaderClock):
     def _poll(self) -> None:
         array = getattr(self.app, "array", None)
         members = array.members if array else []
-        self.channels = " | ".join(f"CH:{m.current_channel:>3}" for m in members)
+        channel_text = " | ".join(f"CH:{m.current_channel:>3}" for m in members)
+        sort_summary = getattr(self.screen, "_sort_summary", None)
+        sort_text = sort_summary() if callable(sort_summary) else ""
+        self.channels = "  |  ".join(part for part in (sort_text, channel_text) if part)
 
     def render(self) -> RenderResult:
         return Text(self.channels)
@@ -173,7 +177,7 @@ class _ScannerHeader(Header):
 
 
 class _APScanTable(DataTable):
-    """AP list table that can re-pin its row cursor without moving the viewport."""
+    """Scanner table with stable column sizing and deterministic row sorting."""
 
     BINDINGS = [
         Binding("j", "cursor_down", "Down", show=False),
@@ -218,7 +222,7 @@ class _APScanTable(DataTable):
         super()._scroll_cursor_into_view(animate=animate)
 
     def pin_cursor_row(self, row: int) -> None:
-        """Move the row cursor to ``row`` without scrolling the viewport."""
+        """Move the highlight with its selected key without moving the viewport."""
         self._suppress_scroll = True
         self.move_cursor(row=row, animate=False)
         self.call_after_refresh(self._release_scroll)
@@ -226,14 +230,62 @@ class _APScanTable(DataTable):
     def _release_scroll(self) -> None:
         self._suppress_scroll = False
 
-    def sort_aps(self, sort_key: str, key_func: Callable[[str, Any], Any], reverse: bool) -> bool:
-        """Sort rows by key_func(row_key, cell_value). Returns True if row order changed."""
+    def sort_aps(
+        self,
+        sort_key: str,
+        key_func: Callable[[str, Any], Any],
+        reverse: bool,
+        *,
+        child_parents: dict[str, str] | None = None,
+        keep_together: dict[str, str] | None = None,
+    ) -> bool:
+        """Sort rows, keep expanded infrastructures contiguous, and pin guesses.
+
+        ``keep_together`` maps a row key to a group id. Members of a group stay
+        in their relative sort order, anchored where the lead member sorted.
+        ``child_parents`` then places each child immediately after its parent,
+        so a hidden guess stays under the sibling or collapsed group that
+        supplied its displayed SSID.
+        """
         ordered_rows = sorted(
             self._data.items(),
             key=lambda r: key_func(r[0].value, r[1].get(sort_key)),
             reverse=reverse,
         )
         ordered_keys = [row_key for row_key, _ in ordered_rows]
+        if keep_together:
+            members_by_group: dict[str, list[RowKey]] = {}
+            for key in ordered_keys:
+                group_id = keep_together.get(key.value)
+                if group_id:
+                    members_by_group.setdefault(group_id, []).append(key)
+            emitted: set[str] = set()
+            clustered: list[RowKey] = []
+            for key in ordered_keys:
+                group_id = keep_together.get(key.value)
+                if not group_id:
+                    clustered.append(key)
+                    continue
+                if group_id in emitted:
+                    continue
+                emitted.add(group_id)
+                clustered.extend(members_by_group[group_id])
+            ordered_keys = clustered
+        if child_parents:
+            by_value = {key.value: key for key in ordered_keys}
+            children: dict[str, list[RowKey]] = {}
+            for key in ordered_keys:
+                parent = child_parents.get(key.value)
+                if parent in by_value and parent != key.value:
+                    children.setdefault(parent, []).append(key)
+            child_keys = {key for values in children.values() for key in values}
+            grouped: list[RowKey] = []
+            for key in ordered_keys:
+                if key in child_keys:
+                    continue
+                grouped.append(key)
+                grouped.extend(children.get(key.value, ()))
+            ordered_keys = grouped
         if ordered_keys == list(self._row_locations):
             return False
         self._row_locations = TwoWayDict(
@@ -339,6 +391,7 @@ class ScannerView(Screen):
         self._infrastructure_members: dict[str, tuple[AccessPoint, ...]] = {}
         self._expanded_infrastructures: set[str] = set()
         self._expanded_member_ssids: dict[str, str] = {}
+        self._secondary_member_bssids: set[str] = set()
 
     # ----- Compose / mount ---------------------------------------------------
 
@@ -403,6 +456,19 @@ class ScannerView(Screen):
 
     def _active_columns(self) -> list[tuple[str, str]]:
         return self._CLIENT_COLUMNS if self._view_mode == "clients" else self._COLUMNS
+
+    def _sort_summary(self) -> str:
+        key, label = self._active_columns()[self._sort_idx]
+        label = {"beacons": "BEACONS", "clients": "CLIENTS"}.get(key, label)
+        direction = ">" if self._sort_reverse else "<"
+        return f"Sorted: {label} ({direction})"
+
+    def _announce_sort(self) -> None:
+        key, label = self._active_columns()[self._sort_idx]
+        label = {"beacons": "BEACONS", "clients": "CLIENTS"}.get(key, label)
+        direction = "descending" if self._sort_reverse else "ascending"
+        self.notify(f"Sorted by {label} {direction}", title="Sort changed")
+        self.query_one(_ChannelReadout)._poll()
 
     def _update_column_headers(self) -> None:
         table = self.query_one("#ap-table", DataTable)
@@ -639,6 +705,8 @@ class ScannerView(Screen):
 
         if self._should_sort():
             self._apply_sort(scroll_to_cursor=False)
+        else:
+            self._sync_infrastructure_levels(table)
 
     def _grouped_access_points(
         self,
@@ -990,6 +1058,9 @@ class ScannerView(Screen):
 
     def _encryption_markup(self, ap: AccessPoint) -> str:
         markup = format_encryption_markup(ap, muted=self._theme_fg)
+        if EncryptionType.from_ap(ap) is EncryptionType.OPEN:
+            # Align with weak WPA labels such as "WPA2 (PSK) !WEAK".
+            return f"{markup}{' ' * (10 - len('OPEN'))} [bold red]!WEAK[/bold red]"
         members = self._infrastructure_members.get(ap.bssid, (ap,))
         highest = max(
             (
@@ -1011,7 +1082,7 @@ class ScannerView(Screen):
     _SSID_CELL_MAX = 32
 
     def _ssid_cell(self, ap: AccessPoint, target: bool = False) -> Text:
-        """badges (left) + name (bold=named, italic=hidden, +'?'=sibling guess), right-aligned."""
+        """Badges plus confirmed, historical, or sibling-guessed SSID."""
         infrastructure = self._infrastructure_members.get(ap.bssid)
         if infrastructure is not None:
             name = Text(
@@ -1025,13 +1096,13 @@ class ScannerView(Screen):
                 else "bold yellow" if historical
                 else f"{self._theme_fg} bold"
             )
-            name = Text(f"{ap.ssid}?" if historical else ap.ssid, style=name_style)
-            if ap.bssid in self._expanded_member_ssids:
+            name = Text(f"{ap.ssid} [history]" if historical else ap.ssid, style=name_style)
+            if ap.bssid in self._secondary_member_bssids:
                 name = Text("└ ", style="dim cyan") + name
         else:
             sib = self._best_named_sibling_ssid(ap)
-            name_style = "red italic" if target else f"{self._theme_fg} italic"
-            name = Text(f"{sib}?" if sib else "<Hidden>", style=name_style)
+            name_style = "red bold" if target else "bold yellow" if sib else f"{self._theme_fg} italic"
+            name = Text(f"{sib} [guess]" if sib else "<Hidden>", style=name_style)
 
         chips_markup = self._ssid_chips_markup(ap)  # ✗S, ✓HS, ✓PMK, ✓WEP, ✓WPS
         chips_text = Text.from_markup(chips_markup, emoji=False) if chips_markup else None
@@ -1049,17 +1120,76 @@ class ScannerView(Screen):
 
     def _best_named_sibling_ssid(self, ap: AccessPoint) -> Optional[str]:
         """Guess the sibling SSID to display for a hidden AP."""
+        return fm.best_named_sibling_ssid(ap, self.app.array)
+
+    def _guess_child_parents(self) -> dict[str, str]:
+        """Map each hidden guess to the visible row of its named sibling."""
+        child_parents: dict[str, str] = {}
         array = self.app.array
-        if not array or not ap.siblings:
-            return None
-        best_ssid: Optional[str] = None
-        best_beacons = -1
-        for sib_bssid in ap.siblings:
-            sib_ap = array.access_points.get(sib_bssid)
-            if sib_ap and sib_ap.ssid and sib_ap.beacons > best_beacons:
-                best_ssid = sib_ap.ssid
-                best_beacons = sib_ap.beacons
-        return best_ssid
+        for ap in self.ap_cache.values():
+            if ap.ssid or not ap.siblings or array is None:
+                continue
+            named = [
+                array.access_points.get(bssid)
+                for bssid in ap.siblings
+            ]
+            named = [
+                sibling for sibling in named
+                if sibling is not None and sibling.ssid
+            ]
+            if not named:
+                continue
+            parent = max(named, key=lambda sibling: sibling.beacons)
+            child_parents[ap.bssid] = self._visible_guess_parent(parent)
+        return child_parents
+
+    def _visible_guess_parent(self, parent: AccessPoint) -> str:
+        """Row key that currently stands for ``parent``.
+
+        A collapsed infrastructure replaces the member BSSIDs with one group
+        row. An expanded infrastructure shows the member itself.
+        """
+        if not parent.ssid:
+            return parent.bssid
+        group_key = f"{_INFRASTRUCTURE_PREFIX}{parent.ssid.casefold()}"
+        if group_key not in self._infrastructure_members:
+            return parent.bssid
+        if group_key not in self._expanded_infrastructures:
+            return group_key
+        if parent.bssid in self._expanded_member_ssids:
+            return parent.bssid
+        for member in self._infrastructure_members.get(group_key, ()):
+            if member.bssid in self.ap_cache:
+                return member.bssid
+        return parent.bssid
+
+    def _sync_infrastructure_levels(self, table: DataTable) -> None:
+        """Keep the first expanded member primary and the rest secondary."""
+        seen_groups: set[str] = set()
+        secondary: set[str] = set()
+        for key in table._row_locations:
+            group_key = self._expanded_member_ssids.get(key.value)
+            if not group_key:
+                continue
+            if group_key in seen_groups:
+                secondary.add(key.value)
+            else:
+                seen_groups.add(group_key)
+        changed = (self._secondary_member_bssids ^ secondary) & set(
+            self._expanded_member_ssids
+        )
+        self._secondary_member_bssids = secondary
+        for bssid in changed:
+            ap = self.ap_cache.get(bssid)
+            state = self._row_states.get(bssid)
+            if ap is None or state is None:
+                continue
+            table.update_cell(
+                bssid,
+                "ssid",
+                self._render_target_cell(ap, "ssid", state.is_stale),
+                update_width=True,
+            )
 
     def _ssid_chips_markup(self, ap: AccessPoint) -> str:
         """Badges to the left of SSID for HS, PMK, WEP, WPS, silenced."""
@@ -1167,22 +1297,18 @@ class ScannerView(Screen):
         return (time.time() - self._last_sort_time) >= delay
 
     def _apply_sort(self, *, scroll_to_cursor: bool = True) -> None:
-        """Re-sort the table, maintaining selected item.
-        ``scroll_to_cursor`` controls whether the viewport follows the cursor."""
+        """Re-sort while keeping the same selected BSSID/client highlighted."""
         self._last_sort_time = time.time()
         table = self.query_one("#ap-table", _APScanTable)
         if table.row_count == 0:
             return
-        if self._view_mode == "clients":
-            self._apply_client_sort(table, scroll_to_cursor=scroll_to_cursor)
-            return
-
         try:
-            current_key = table.coordinate_to_cell_key(
-                table.cursor_coordinate
-            ).row_key
+            current_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
         except Exception:
             current_key = None
+        if self._view_mode == "clients":
+            self._apply_client_sort(table, current_key, scroll_to_cursor)
+            return
 
         sort_key, _ = self._COLUMNS[self._sort_idx]
         reverse = self._sort_reverse
@@ -1254,23 +1380,17 @@ class ScannerView(Screen):
             sentinel = int(is_empty != reverse)
             return (sentinel, s.lower(), sec_sig, bssid)
 
-        order_changed = table.sort_aps(sort_key, key_func=_key, reverse=reverse)
+        order_changed = table.sort_aps(
+            sort_key, key_func=_key, reverse=reverse,
+            child_parents=self._guess_child_parents(),
+            keep_together=dict(self._expanded_member_ssids) or None,
+        )
+        self._restore_selected_key(table, current_key, order_changed, scroll_to_cursor)
+        self._sync_infrastructure_levels(table)
 
-        if current_key and (order_changed or scroll_to_cursor):
-            try:
-                new_idx = table.get_row_index(current_key)
-                if scroll_to_cursor:
-                    table.move_cursor(row=new_idx, animate=False)
-                elif order_changed:
-                    table.pin_cursor_row(new_idx)
-            except Exception:
-                pass
-
-    def _apply_client_sort(self, table: _APScanTable, *, scroll_to_cursor: bool) -> None:
-        try:
-            current_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
-        except Exception:
-            current_key = None
+    def _apply_client_sort(
+        self, table: _APScanTable, current_key: RowKey | None, scroll_to_cursor: bool,
+    ) -> None:
         sort_key, _ = self._CLIENT_COLUMNS[self._sort_idx]
         reverse = self._sort_reverse
 
@@ -1294,15 +1414,25 @@ class ScannerView(Screen):
             return (sentinel, normalized, mac)
 
         order_changed = table.sort_aps(sort_key, key_func=_key, reverse=reverse)
-        if current_key and (order_changed or scroll_to_cursor):
-            try:
-                new_idx = table.get_row_index(current_key)
-                if scroll_to_cursor:
-                    table.move_cursor(row=new_idx, animate=False)
-                elif order_changed:
-                    table.pin_cursor_row(new_idx)
-            except Exception:
-                pass
+        self._restore_selected_key(table, current_key, order_changed, scroll_to_cursor)
+
+    @staticmethod
+    def _restore_selected_key(
+        table: _APScanTable,
+        current_key: RowKey | None,
+        order_changed: bool,
+        scroll_to_cursor: bool,
+    ) -> None:
+        if current_key is None or not (order_changed or scroll_to_cursor):
+            return
+        try:
+            row = table.get_row_index(current_key)
+            if scroll_to_cursor:
+                table.move_cursor(row=row, animate=False)
+            else:
+                table.pin_cursor_row(row)
+        except Exception:
+            pass
 
     # ----- Actions -----------------------------------------------------------
 
@@ -1795,6 +1925,7 @@ class ScannerView(Screen):
             self.app.persist_config()
         self._update_column_headers()
         self._apply_sort()
+        self._announce_sort()
 
     def action_toggle_sort_dir(self) -> None:
         self._sort_reverse = not self._sort_reverse
@@ -1803,6 +1934,7 @@ class ScannerView(Screen):
             self.app.persist_config()
         self._update_column_headers()
         self._apply_sort()
+        self._announce_sort()
 
     def action_toggle_pause(self) -> None:
         self._paused = not self._paused
@@ -1940,4 +2072,5 @@ class ScannerView(Screen):
                 self.app.persist_config()
             self._update_column_headers()
             self._apply_sort()
+            self._announce_sort()
             return

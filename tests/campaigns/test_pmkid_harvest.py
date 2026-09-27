@@ -74,6 +74,7 @@ class _FakeIface:
 
     async def set_channel(self, ch):
         self.current_channel = ch
+        return True
 
     @staticmethod
     def _auth_resp(our_mac: bytes, bssid: bytes) -> bytes:

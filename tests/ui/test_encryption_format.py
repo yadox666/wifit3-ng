@@ -1,10 +1,22 @@
 """Tests for encryption / WEP / AKM-variant markup (format_encryption_markup)."""
 from wifit3.models import AccessPoint, WepStats
 from wifit3.ui.encryption_format import format_encryption_markup
+from wifit3.ui.screens.scanner import ScannerView
 
 
 def _ap(**kw) -> AccessPoint:
     return AccessPoint(bssid="aa:bb:cc:dd:ee:ff", **kw)
+
+
+def test_open_is_red_and_scanner_marks_it_weak():
+    ap = _ap(encryption="OPEN")
+    scanner = ScannerView()
+    scanner._theme_fg = "dim"
+
+    assert format_encryption_markup(ap) == "[bright_red]OPEN[/bright_red]"
+    assert scanner._encryption_markup(ap) == (
+        "[bright_red]OPEN[/bright_red]       [bold red]!WEAK[/bold red]"
+    )
 
 
 # ---- WEP ENCRYPT cell (attackable, carries an IV count) --------------------

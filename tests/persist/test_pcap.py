@@ -70,11 +70,14 @@ def test_streaming_pcap_writer_rotates_and_limits_parts(tmp_path):
     writer = PcapWriter(path, max_bytes=50, max_parts=2)
     assert writer.write(b"first")
     assert writer.write(b"second")
+    assert writer.part_count == 2
+    assert writer.total_bytes == 91
     assert writer.write(b"third") is False
     writer.close()
 
     assert writer.count == 2
     assert writer.dropped == 1
+    assert writer.total_bytes == 91
     assert [item.name for item in writer.paths] == [
         "Net_aa-bb-cc-dd-ee-ff_1700000000_packet_capture.pcap",
         "Net_aa-bb-cc-dd-ee-ff_1700000001_packet_capture.pcap",

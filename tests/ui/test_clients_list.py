@@ -13,8 +13,11 @@ _MAC = "18:7f:88:aa:bb:cc"
 _RING = Fingerprint("🔔", "Ring device")
 
 
-def _client(mac=_MAC, power=-50, packets=3, fingerprint=None):
-    return SimpleNamespace(mac=mac, signal=power, packets=packets, fingerprint=fingerprint)
+def _client(mac=_MAC, power=-50, packets=3, fingerprint=None, is_fake=False):
+    return SimpleNamespace(
+        mac=mac, signal=power, packets=packets,
+        fingerprint=fingerprint, is_fake=is_fake,
+    )
 
 
 def _composed(client) -> ClientWidget:
@@ -54,6 +57,16 @@ def test_unfingerprinted_row_blank_badge_no_marker():
     assert str(w._fp_label.content) == "" and w._fp_label.tooltip is None
     assert str(w._mac_label.content) == _MAC
     assert not w._fp_label.has_class("fp-known") and not w._mac_label.has_class("fp-known")
+
+
+def test_fake_client_has_distinct_badge_label_and_no_deauth():
+    w = _composed(_client(is_fake=True))
+
+    assert "◈" in str(w._fp_label.content)
+    assert w._fp_label.tooltip == "Temporary fake client created by Fake-Connect"
+    assert str(w._mfr_label.content) == "Fake-Connect"
+    assert str(w._pwr_label.content) == "--"
+    assert w._deauth.disabled is True
 
 
 # ----- messages -------------------------------------------------------------

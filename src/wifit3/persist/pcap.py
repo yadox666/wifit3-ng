@@ -38,6 +38,7 @@ class PcapWriter:
         self._max_bytes = max_bytes
         self._max_parts = max_parts
         self.paths = [path]
+        self._completed_bytes = 0
         self.count = 0
         self.dropped = 0
         self._write_header()
@@ -57,6 +58,7 @@ class PcapWriter:
     def _rotate(self) -> bool:
         if len(self.paths) >= self._max_parts:
             return False
+        self._completed_bytes += self._stream.tell()
         self._stream.flush()
         self._stream.close()
         match = re.match(r"^(.*_)(\d+)(_packet_capture\.pcap)$", self.path.name)
@@ -103,9 +105,23 @@ class PcapWriter:
         with self._lock:
             if self._closed:
                 return
+            self._completed_bytes += self._stream.tell()
             self._stream.flush()
             self._stream.close()
             self._closed = True
+
+    @property
+    def total_bytes(self) -> int:
+        """Current bytes across every rotated part, including libpcap headers."""
+        with self._lock:
+            if self._closed:
+                return self._completed_bytes
+            return self._completed_bytes + self._stream.tell()
+
+    @property
+    def part_count(self) -> int:
+        with self._lock:
+            return len(self.paths)
 
     def __enter__(self) -> PcapWriter:
         return self

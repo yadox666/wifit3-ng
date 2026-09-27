@@ -44,6 +44,7 @@ def _iface():
 
     async def _set_channel(ch, *a, **k):
         ns.current_channel = ch
+        return True
     ns.set_channel = _set_channel
     ns.register_own_mac = lambda mac: mac if isinstance(mac, str) else ":".join(f"{b:02x}" for b in mac)
     ns.unregister_own_mac = lambda _mac: None

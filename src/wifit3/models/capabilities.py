@@ -9,6 +9,11 @@ class AdvertisedCapabilities:
 
     phy_modes: set[str] = field(default_factory=set)
     channel_widths_mhz: set[int] = field(default_factory=set)
+    operating_width_mhz: int | None = None
+    secondary_channel_offset: int | None = None
+    center_channel_0: int | None = None
+    center_channel_1: int | None = None
+    channel_conflict: bool = False
     max_spatial_streams: int | None = None
     supported_rates_mbps: set[float] = field(default_factory=set)
     capability_flags: set[str] = field(default_factory=set)
@@ -48,6 +53,14 @@ class AdvertisedCapabilities:
         self.vendor_ouis.update(newer.vendor_ouis)
         if newer.max_spatial_streams is not None:
             self.max_spatial_streams = newer.max_spatial_streams
+        operation_fields = (
+            "operating_width_mhz", "secondary_channel_offset",
+            "center_channel_0", "center_channel_1",
+        )
+        if any(getattr(newer, name) is not None for name in operation_fields):
+            for name in operation_fields:
+                setattr(self, name, getattr(newer, name))
+        self.channel_conflict = newer.channel_conflict
         for name in (
             "beacon_interval_tu", "listen_interval", "dtim_period", "station_count", "channel_utilization",
             "admission_capacity", "power_constraint_db", "power_min_dbm", "power_max_dbm",

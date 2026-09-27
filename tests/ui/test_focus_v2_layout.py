@@ -14,6 +14,7 @@ from wifit3.campaigns.pin import WpsCampaign
 from wifit3.ui import focus_model as fm
 from wifit3.ui.screens.focus_v2 import FocusViewV2
 from wifit3.ui.screens.focus_v2.art import BreathingArt, art_size, breathe
+from wifit3.ui.screens.focus_v2.screen import _client_connection_segments
 
 _TOPBAR_H = 3
 _CHROME_H = 2          # Header (1 row) + Footer (1 row)
@@ -73,6 +74,29 @@ async def test_layout_geometry():
             assert bot.height == avail - expected_center
 
 
+async def test_client_connector_is_overlaid_only_while_clients_exist():
+    app = _Host()
+    async with app.run_test(size=(120, 40)):
+        screen = app.screen
+        screen._target_ap = types.SimpleNamespace()
+        original = screen._client_list
+        screen._client_list = lambda: [types.SimpleNamespace(is_fake=False)]
+        try:
+            screen._refresh_client_connector()
+            horizontal = screen.query_one("#client-connector-horizontal")
+            vertical = screen.query_one("#client-connector-vertical")
+            junction = screen.query_one("#client-connector-junction")
+            assert horizontal.display is True
+            assert horizontal.styles.width.value > 1
+            assert vertical.display is True
+            assert vertical.styles.width.value == 1
+            assert junction.display is True
+        finally:
+            screen._client_list = original
+            screen._refresh_client_connector()
+        assert all(piece.display is False for piece in (horizontal, vertical, junction))
+
+
 def test_dashboard_rows_and_rate_vs_count():
     # WPA family: beacon + data + eapol + inject + deauth.
     rows = fm.dashboard_rows(types.SimpleNamespace(encryption="WPA2"))
@@ -128,6 +152,18 @@ def test_art_pure_black_is_transparent():
         for span in _transparent(name).spans:
             assert not is_black(span.style.color)
             assert not is_black(span.style.bgcolor)
+
+
+def test_client_connector_points_both_ways():
+    right_h, right_v, right_join = _client_connection_segments(10, 16, 4)
+    left_h, left_v, left_join = _client_connection_segments(16, 10, 4)
+
+    assert "━━━━━━┓" in right_h
+    assert "┃\n┃" in right_v
+    assert "┴" in right_join
+    assert "┏━━━━━━" in left_h
+    assert "┃\n┃" in left_v
+    assert "┴" in left_join
 
 
 def test_flicker_spikes_above_the_breathe_band():

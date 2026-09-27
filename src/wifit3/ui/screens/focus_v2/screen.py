@@ -21,6 +21,7 @@ import logging
 import re
 import time
 from collections import deque
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Set
@@ -28,8 +29,9 @@ from typing import TYPE_CHECKING, Optional, Set
 from rich.markup import escape
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.binding import ActiveBinding, Binding
+from textual.containers import Horizontal, Vertical
+from textual.geometry import Offset
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Static
 
@@ -38,6 +40,7 @@ from wifit3.campaigns.campaign import Campaign
 from wifit3.campaigns.pmkid import PmkidHarvestAttack
 from wifit3.campaigns.wep import WepCampaign
 from wifit3.campaigns.eviltwin import EvilTwinCampaign, EvilTwinInput
+from wifit3.campaigns.fake_connect import CONNECTIVITY_URL, FakeConnectCampaign
 from wifit3.ui.screens.focus_v2.eviltwin_modal import EvilTwinInputModal
 from wifit3.ui.screens.confirm_active import ConfirmActiveActionModal
 from wifit3.campaigns.pin import WpsCampaign, load_run_state, run_progress_line
@@ -51,10 +54,18 @@ from wifit3.models import AccessPoint, IdSource
 from wifit3.safety import deauth_limits
 from wifit3.persist.config import Config
 from wifit3.persist.common import bssid_to_dashed, safe_ssid
+from wifit3.persist.network_metadata import (
+    NetworkMetadataStore, NetworkMetadataStoreError,
+)
 from wifit3.persist.pcap import PcapWriter
-from wifit3.ui.recording_indicator import recording_indicator
+from wifit3.ui.network_metadata_panel import (
+    NetworkMetadataPanel,
+    client_network_details,
+)
+from wifit3.ui.recording_indicator import pcap_progress, recording_indicator
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
 from wifit3.wlan.enterprise_risk import enterprise_findings
+from wifit3.wlan.network_metadata import PassiveNetworkAnalyzer
 
 from ... import focus_model as fm
 from ...capture_events import (
@@ -94,7 +105,8 @@ _PBC_RETRY_COOLDOWN_S = 3.0
 
 _ATTACK_BUTTONS = [
     ("btn-gen-ivs", "ARP Replay"), ("btn-chop", "ChopChop"), ("btn-deauth", "AutoDeauth"),
-    ("btn-pmkid", "PMKID"), ("btn-wps-pin", "WPS PIN"), ("btn-eviltwin", "EvilTwin"),
+    ("btn-pmkid", "PMKID"), ("btn-fake-connect", "Fake-Connect"),
+    ("btn-wps-pin", "WPS PIN"), ("btn-eviltwin", "EvilTwin"),
     ("btn-stop-pbc", "Stop PBC"),
 ]
 
@@ -106,6 +118,8 @@ _BUTTON_TIPS = {
     "Stop Chop": "Interrupt chopping and return to ARP replay",
     "AutoDeauth": "De-authenticate clients 1-by-1, then de-authenticates broadcast. Loops.",
     "PMKID": "Associate to extract PMKID\n(some APs not applicable)",
+    "Fake-Connect": "Associate a fake client; OPEN networks also test Internet access",
+    "Disconnect": "Send a client-leaving frame and end the temporary association",
     "WPS PIN": "PIN attacks: PixieDust, default vendor PINs, then brute-force",
     "EvilTwin": "Punt clients onto a WPA2 twin to capture a crackable handshake",
     "Stop EvilTwin": "Tear down the twin and return clients to the AP",
@@ -130,6 +144,28 @@ def _wep_key_chip(key_hex) -> str:
     if not key_hex:
         return "[dim]?[/dim]"
     return f"[black bold on cyan] {wep_key_ascii(key_hex)} [/black bold on cyan]"
+
+
+def _client_connection_segments(
+    source_x: int,
+    target_x: int,
+    height: int,
+) -> tuple[str, str, str]:
+    """Return horizontal, vertical, and border-junction connector segments."""
+    distance = abs(target_x - source_x)
+    if distance < 2 or height < 2:
+        return "", "", ""
+    if source_x < target_x:
+        horizontal = "━" * distance + "┓"
+    else:
+        horizontal = "┏" + "━" * distance
+    vertical = "\n".join("┃" for _ in range(height - 2))
+    style = "bold bright_cyan"
+    return (
+        f"[{style}]{horizontal}[/]",
+        f"[{style}]{vertical}[/]" if vertical else "",
+        f"[{style}]┴[/]",
+    )
 
 
 class FocusViewV2(Screen):
@@ -186,7 +222,17 @@ class FocusViewV2(Screen):
     #ap-probe:focus { text-style: bold reverse; }
 
     #bottom { height: 1fr; }
-    #log { width: 1fr; height: 100%%; border: round %(border)s;
+    #client-connector-horizontal,
+    #client-connector-vertical,
+    #client-connector-junction {
+        position: absolute; layer: connector;
+        height: 1; width: 1; background: transparent;
+        text-wrap: nowrap;
+        display: none;
+    }
+    #activity { width: 1fr; height: 100%%; overflow-y: auto; }
+    #network-metadata { margin: 0 0 1 0; }
+    #log { width: 1fr; height: 1fr; border: round %(border)s;
            border-title-color: %(border)s; border-title-style: bold; padding: 0 1; }
     #log-rich { width: 100%%; height: 1fr; background: transparent; border: none; padding: 0; }
     #clients { width: 54; height: 100%%; border: round %(border)s;
@@ -198,6 +244,7 @@ class FocusViewV2(Screen):
                  background: $error; color: $text; content-align: center middle; }
     .client-columns { height: 1; width: 100%%; color: $text-muted; text-style: bold; }
     .client-row { height: 1; width: 100%%; }
+    .fake-client .cl-bssid, .fake-client .cl-mfr { color: yellow; text-style: bold; }
     .cl-fp { width: 2; }
     /* A known fingerprint is clickable (pops up the detail popup): underline + accent color on
        the MAC marks it, same as any other actionable text. Not on the emoji itself -- the
@@ -230,11 +277,13 @@ class FocusViewV2(Screen):
         self._packet_capture: PcapWriter | None = None
         self._packet_capture_array = None
         self._packet_capture_bssid: str | None = None
+        self._network_store: NetworkMetadataStore | None = None
+        self._network_analyzer: PassiveNetworkAnalyzer | None = None
         self._prev_stats = None
         self._campaign_toggles = {
             "wep": self._toggle_generate_ivs, "pmkid": self._toggle_pmkid,
             "wps": self._toggle_wps_pin, "chop": self._toggle_chop,
-            "deauth": self._toggle_deauth,
+            "deauth": self._toggle_deauth, "fake_connect": self._toggle_fake_connect,
         }
         self._binding_sig: Optional[tuple] = None
         self._rspacer_w = -1                          # last-set spacer width; skip no-op relayouts
@@ -263,8 +312,15 @@ class FocusViewV2(Screen):
             yield PacketDashboard(self._dashboard_rows(), id="dashboard")
             yield RouterEndpoint(**self._router_values(), id="router")
         with Horizontal(id="bottom"):
-            yield LogBand([], id="log")
+            with Vertical(id="activity"):
+                panel = NetworkMetadataPanel(id="network-metadata")
+                panel.display = False
+                yield panel
+                yield LogBand([], id="log")
             yield ClientsList(self._client_list(), id="clients")
+        yield Static("", id="client-connector-horizontal")
+        yield Static("", id="client-connector-vertical")
+        yield Static("", id="client-connector-junction")
         yield GlobalJobTracker()
         yield Footer()
 
@@ -312,15 +368,23 @@ class FocusViewV2(Screen):
         deque, so this is its single caller per tick."""
         ap = self.app.target_ap
         if ap is None:
-            return dict(essid="", bssid="", channel=0, power_dbm=-100, signal=None,
+            return dict(essid="", bssid="", channel=0, channel_label="channel unknown",
+                        power_dbm=-100, signal=None,
                         uptime_us=None, country_code=None,
+                        ssid_note="",
                         wps=False, has_m1=False, probing=False, probe_disabled=False,
                         identity="", identity_details=None)
-        essid = fm.truncate_ssid(ap.ssid) if ap.ssid else "‹hidden›"
+        display_ssid, ssid_source = fm.display_ssid(ap, self.app.array)
+        essid = fm.truncate_ssid(display_ssid) if display_ssid else "‹hidden›"
         rate, _ = fm.beacon_rate(ap, self._beacon_samples, time.time())
         return dict(essid=essid, bssid=ap.bssid, channel=ap.channel,
+                    channel_label=fm.channel_plain_summary(ap),
                     power_dbm=ap.signal, signal=rate, uptime_us=ap.uptime_us,
                     country_code=ap.country_code,
+                    ssid_note=(
+                        "history" if ssid_source == "history"
+                        else "guess" if ssid_source == "sibling" else ""
+                    ),
                     wps=bool(ap.wps),
                     has_m1=ap.identity.has_source(IdSource.WSC_M1),
                     probing=self._is_probing(),
@@ -348,8 +412,7 @@ class FocusViewV2(Screen):
         return fm.dashboard_rows(ap) if ap is not None else []
 
     def _client_list(self) -> list:
-        """The live target's clients. Forged/own MACs are already excluded by the sink;
-        other APs' clients are filtered here by BSSID. Empty when there's no target."""
+        """The target's real clients plus explicitly exposed Fake-Connect station."""
         ap = self.app.target_ap
         array = self.app.array
         if ap is None or array is None:
@@ -444,6 +507,9 @@ class FocusViewV2(Screen):
 
         ap = getattr(self.app, "target_ap", None)
         self._target_ap = ap
+        self._refresh_client_connector()
+        self._network_store = None
+        self._network_analyzer = None
         if ap is None:
             return
         array = self.app.array
@@ -454,6 +520,7 @@ class FocusViewV2(Screen):
         self._eapol_agg.reset()
         self._prev_stats = None        # drop the old target's counters
         self.query_one("#log", LogBand).clear()
+        self._load_network_metadata(ap)
 
         status = self._status()
         self._last_status = status
@@ -463,15 +530,25 @@ class FocusViewV2(Screen):
         self._sync_card()
         self.query_one("#router", RouterEndpoint).update(**self._router_values())
         self.query_one("#clients", ClientsList).sync(self._client_list())
+        self._refresh_network_metadata()
         self.refresh_buttons()
         self._balance_status()
         self._refresh_status_footer()  # dashboard footer (cleared by reconfigure)
 
         # Log initial "target acquired"
         enc = fm.encryption_chip(ap)
-        if ap.ssid:
-            chip = f"[black bold on cyan] {escape(ap.ssid)} [/black bold on cyan]"
-            self._log(f"[bold]Target acquired:[/bold] {chip}")
+        display_ssid, ssid_source = fm.display_ssid(ap, self.app.array)
+        if display_ssid:
+            if ssid_source in ("history", "sibling"):
+                label = "HISTORY" if ssid_source == "history" else "SIBLING GUESS"
+                chip = f"[black bold on yellow] {escape(display_ssid)} [/black bold on yellow]"
+                self._log(
+                    f"[bold]Target acquired:[/bold] {chip} "
+                    f"[black bold on yellow] {label} [/black bold on yellow]"
+                )
+            else:
+                chip = f"[black bold on cyan] {escape(display_ssid)} [/black bold on cyan]"
+                self._log(f"[bold]Target acquired:[/bold] {chip}")
         else:
             self._log("[bold]Target acquired:[/bold] "
                       "[dim italic]cloaked network (hidden SSID)[/dim italic]")
@@ -581,6 +658,8 @@ class FocusViewV2(Screen):
         # WEP recovers its key while still running; WPS reaches a terminal phase while its
         # task drains. Ask them to stop so they reap (below) on a following tick.
         cur = self._controls.current
+        if isinstance(cur, FakeConnectCampaign):
+            self._record_fake_connect_offer(cur)
         if cur is not None and cur.check_auto_stop():
             self._controls.request_stop()
 
@@ -606,13 +685,24 @@ class FocusViewV2(Screen):
         clients = self.query_one("#clients", ClientsList)
         clients.sync(self._client_list())
         clients.set_deauth_enabled(not fm.deauth_blocked(ap))
+        self._refresh_client_connector()
         self.refresh_buttons()
         self._balance_status()
         self._sync_bindings()
         self._refresh_status_footer()
         self.query_one("#pcap-recording", Static).update(
-            recording_indicator("PCAP RECORDING", self._packet_capture is not None),
+            recording_indicator(
+                "PCAP RECORDING",
+                self._packet_capture is not None,
+                detail=pcap_progress(self._packet_capture) if self._packet_capture else None,
+            ),
         )
+        if self._network_store is not None:
+            try:
+                self._network_store.flush_if_due()
+            except NetworkMetadataStoreError as exc:
+                logger.warning("%s", exc)
+        self._refresh_network_metadata()
         array = self.app.array
         self._drive_leds(ap, array)
         self._drain_capture_events(ap, array.forged_macs if array else set(), time.time())
@@ -639,6 +729,59 @@ class FocusViewV2(Screen):
         pad = max(0, round((self.size.width - _PAD_START) * _PAD_RATE))
         mid.styles.padding = (0, pad, 0, pad)
         self._balance_status()
+        self._refresh_client_connector()
+
+    def _refresh_client_connector(self) -> None:
+        """Show a thin AP-to-panel link while connected clients are present."""
+        horizontal = self.query_one("#client-connector-horizontal", Static)
+        vertical = self.query_one("#client-connector-vertical", Static)
+        junction = self.query_one("#client-connector-junction", Static)
+        pieces = (horizontal, vertical, junction)
+        if (
+            not self.is_mounted
+            or self._target_ap is None
+            or not self._client_list()
+        ):
+            for piece in pieces:
+                piece.display = False
+            return
+        router_art = self.query_one("#router-art").region
+        clients = self.query_one("#clients").region
+        # The art canvas has two transparent cells to the right of the visible
+        # router body. Start immediately beside the body, one row below its
+        # former top-edge alignment.
+        source_x = router_art.right - 2
+        source_y = router_art.y + router_art.height // 2 + 1
+        target_x = clients.x + clients.width // 2
+        target_y = clients.y
+        height = target_y - source_y + 1
+        horizontal_markup, vertical_markup, junction_markup = _client_connection_segments(
+            source_x,
+            target_x,
+            height,
+        )
+        if height < 2 or abs(target_x - source_x) < 2:
+            for piece in pieces:
+                piece.display = False
+            return
+        left = min(source_x, target_x)
+        horizontal.styles.offset = Offset(left, source_y)
+        horizontal.styles.width = abs(target_x - source_x) + 1
+        horizontal.update(horizontal_markup)
+        horizontal.display = True
+
+        vertical_height = height - 2
+        if vertical_height:
+            vertical.styles.offset = Offset(target_x, source_y + 1)
+            vertical.styles.height = vertical_height
+            vertical.update(vertical_markup)
+            vertical.display = True
+        else:
+            vertical.display = False
+
+        junction.styles.offset = Offset(target_x, target_y)
+        junction.update(junction_markup)
+        junction.display = True
 
     def _balance_status(self) -> None:
         """Center the status label over the sparklines despite the button row on its left."""
@@ -763,6 +906,8 @@ class FocusViewV2(Screen):
             self._request_campaign("deauth")
         elif bid == "btn-pmkid":
             self._request_campaign("pmkid")
+        elif bid == "btn-fake-connect":
+            self._request_campaign("fake_connect")
         elif bid == "btn-wps-pin":
             self._request_campaign("wps")
         elif bid == "btn-eviltwin":
@@ -778,8 +923,18 @@ class FocusViewV2(Screen):
         self._request_client_deauth(event.mac)
 
     def on_client_widget_fingerprint_clicked(self, event: ClientWidget.FingerprintClicked) -> None:
+        metadata = (
+            self._network_store.metadata
+            if self._network_store is not None
+            else None
+        )
+        details = (
+            event.details
+            + "\n"
+            + client_network_details(metadata, event.mac)
+        )
         self.app.push_screen(FingerprintModal(
-            event.mac, event.fingerprint, details=event.details, offset=event.offset,
+            event.mac, event.fingerprint, details=details, offset=event.offset,
         ))
 
     def on_router_endpoint_identity_requested(self, event: RouterEndpoint.IdentityRequested) -> None:
@@ -860,6 +1015,24 @@ class FocusViewV2(Screen):
 
     # ----- command-bar (footer hotkeys) --------------------------------------
 
+    @property
+    def active_bindings(self) -> dict[str, ActiveBinding]:
+        """Use the footer label that matches Fake-Connect's current toggle action."""
+        bindings = super().active_bindings
+        current = self._controls.current
+        disconnect = current is not None and current.key == "fake_connect"
+        description = "Disconnect" if disconnect else "Fake-Connect"
+        for key, active in tuple(bindings.items()):
+            if active.binding.action != "campaign('fake_connect')":
+                continue
+            bindings[key] = ActiveBinding(
+                active.node,
+                replace(active.binding, description=description),
+                active.enabled,
+                active.tooltip,
+            )
+        return bindings
+
     def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
         """Drive the footer keys off the same state as the buttons."""
         if self._is_probing():
@@ -920,7 +1093,11 @@ class FocusViewV2(Screen):
                    Config.is_silenced(ap.bssid),
                    bool(ap.wps),
                    ap.identity.has_source(IdSource.WSC_M1),
-                   probing)
+                   probing,
+                   bool(
+                       self._controls.current is not None
+                       and self._controls.current.key == "fake_connect"
+                   ))
         if sig != self._binding_sig:
             self._binding_sig = sig
             self.refresh_bindings()
@@ -970,6 +1147,13 @@ class FocusViewV2(Screen):
         self._packet_capture = writer
         self._packet_capture_array = array
         self._packet_capture_bssid = ap.bssid.lower()
+        if self._is_open_ap(ap):
+            if self._network_store is None:
+                self._load_network_metadata(ap)
+            if self._network_store is not None:
+                self._network_analyzer = PassiveNetworkAnalyzer(
+                    self._network_store.metadata,
+                )
         array.register_packet_callback(self._capture_packet)
         self._log(
             f"[bold cyan]PCAP capture started[/bold cyan] for [bold]{escape(ap.bssid)}[/bold]"
@@ -981,6 +1165,8 @@ class FocusViewV2(Screen):
         target = self._packet_capture_bssid
         if writer is None or target is None or (packet.bssid or "").lower() != target:
             return
+        if self._network_analyzer is not None:
+            self._network_analyzer.observe(packet)
         writer.write(packet.raw, time.time())
 
     def stop_packet_capture(self, *, notify: bool = True) -> None:
@@ -991,6 +1177,14 @@ class FocusViewV2(Screen):
         if array is not None:
             array.unregister_packet_callback(self._capture_packet)
         writer.close()
+        if self._network_store is not None:
+            try:
+                self._network_store.save()
+            except NetworkMetadataStoreError as exc:
+                logger.warning("%s", exc)
+                if notify:
+                    self.notify(str(exc), title="Metadata save failed", severity="warning")
+        self._network_analyzer = None
         self.app.vault.refresh()
         self._packet_capture = None
         self._packet_capture_array = None
@@ -1004,6 +1198,33 @@ class FocusViewV2(Screen):
                 timeout=6,
             )
 
+    @staticmethod
+    def _is_open_ap(ap) -> bool:
+        """True only for clear-text OPEN, never OWE/Enhanced Open."""
+        return (ap.encryption or "").casefold() == "open" and not ap.akm_suites
+
+    def _load_network_metadata(self, ap) -> None:
+        panel = self.query_one("#network-metadata", NetworkMetadataPanel)
+        if not self._is_open_ap(ap):
+            panel.display = False
+            self._network_store = None
+            self._network_analyzer = None
+            return
+        self._network_store = NetworkMetadataStore(
+            Path(Config.captures_dir), ap.bssid, ap.ssid,
+        )
+        panel.display = True
+        for error in self._network_store.errors:
+            logger.warning("%s", error)
+
+    def _refresh_network_metadata(self) -> None:
+        panel = self.query_one("#network-metadata", NetworkMetadataPanel)
+        store = self._network_store
+        panel.set_metadata(
+            store.metadata if store is not None else None,
+            live=self._packet_capture is not None and self._network_analyzer is not None,
+        )
+
     def _request_campaign(self, camp_key: str) -> None:
         toggle = self._campaign_toggles.get(camp_key)
         if toggle is None:
@@ -1016,8 +1237,23 @@ class FocusViewV2(Screen):
             "deauth": "Transmits repeated deauthentication frames and may disconnect clients.",
             "wep": "Transmits replay traffic to generate IVs on the target network.",
             "pmkid": "Actively associates with the access point to request authentication data.",
+            "fake_connect": (
+                "Authenticates and associates a randomized temporary client with the open AP, "
+                "claims and releases a DHCP lease, then contacts "
+                f"{CONNECTIVITY_URL} to test Internet/captive-portal access."
+            ),
             "wps": "Actively attempts WPS enrollment and PIN recovery.",
         }
+        ap = self._target_ap
+        if (
+            camp_key == "fake_connect"
+            and ap is not None
+            and (ap.encryption or "").casefold() == "wep"
+        ):
+            impacts[camp_key] = (
+                "Authenticates and associates a randomized temporary client with the WEP AP. "
+                "It does not send encrypted data, request DHCP, or test Internet access."
+            )
         self._confirm_active(fm.CAMPAIGN_BY_KEY[camp_key].idle_label, impacts[camp_key], toggle)
 
     def _request_evil_twin(self) -> None:
@@ -1206,6 +1442,80 @@ class FocusViewV2(Screen):
             self._log(treelog.leaf_fail("[bright_red bold]Stopped harvest[/]"))
         else:
             self._emit_lines(pmkid_log.verdict_failure(camp.fail_reason))
+
+    # ----- Fake-Connect ------------------------------------------------------
+
+    def _toggle_fake_connect(self) -> None:
+        cur = self._controls.current
+        if cur is not None and cur.key == "fake_connect":
+            self._controls.request_stop()
+        else:
+            ap = self._target_ap
+            array = self.app.array
+            if not ap or not array:
+                self._log("[red]✗ No target / interface. Aborting Fake-Connect.[/red]")
+                return
+            self._log(
+                f"[bold cyan]Fake-Connect[/bold cyan] → "
+                f"[bold]{escape(ap.ssid or ap.bssid)}[/bold]"
+            )
+            self._controls.start(
+                FakeConnectCampaign, array, ap,
+                log=lambda message: self._log(treelog.branch(message)),
+            )
+        self.refresh_buttons()
+
+    def _finish_fake_connect(self, camp) -> None:
+        self._record_fake_connect_offer(camp)
+        if camp.fail_reason and not camp.stopped:
+            self._log(treelog.leaf_fail(f"Fake-Connect failed: {escape(camp.fail_reason)}"))
+        else:
+            self._log(treelog.leaf("[dim]Fake client disconnected[/dim]"))
+
+    def _record_fake_connect_offer(self, camp: FakeConnectCampaign) -> None:
+        """Publish Fake-Connect network evidence to the panel and durable JSON."""
+        store = self._network_store
+        if store is None:
+            return
+        changed = False
+        now = time.time()
+        if camp.dhcp_offer is not None and not camp.metadata_recorded:
+            changed |= store.metadata.observe_dhcp_offer(
+                camp.dhcp_offer,
+                client_mac=camp.client_mac,
+                now=now,
+            )
+            camp.metadata_recorded = True
+        lease = getattr(camp, "dhcp_lease", None)
+        if lease is not None and not getattr(camp, "lease_recorded", False):
+            changed |= store.metadata.observe_dhcp_offer(
+                lease,
+                client_mac=camp.client_mac,
+                now=now,
+                source="dhcp_ack_active",
+            )
+            camp.lease_recorded = True
+        connectivity = getattr(camp, "connectivity_result", None)
+        if connectivity is not None and not getattr(camp, "connectivity_recorded", False):
+            expires_at = (
+                now + lease.lease_seconds
+                if lease is not None and lease.lease_seconds is not None
+                else None
+            )
+            changed |= store.metadata.observe_connectivity(
+                connectivity,
+                client_mac=camp.client_mac,
+                now=now,
+                expires_at=expires_at,
+            )
+            camp.connectivity_recorded = True
+        if not changed:
+            return
+        try:
+            store.save()
+        except NetworkMetadataStoreError as exc:
+            logger.warning("%s", exc)
+        self._refresh_network_metadata()
 
     # ----- Deauth ------------------------------------------------------------
 

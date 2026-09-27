@@ -98,6 +98,7 @@ class Association:
                  our_mac: Optional[bytes] = None, assoc_timeout: float = 1.5,
                  auth_timeout: float = 1.0,
                  assoc_trailer_ies: bytes = b"",
+                 privacy: Optional[bool] = None,
                  should_stop: Optional[Callable[[], bool]] = None):
         self.iface = iface
         self.bssid = bssid.lower()
@@ -108,6 +109,7 @@ class Association:
         self.assoc_timeout = assoc_timeout
         self.auth_timeout = auth_timeout
         self.assoc_trailer_ies = assoc_trailer_ies
+        self.privacy = privacy
         self.should_stop = should_stop or (lambda: False)
         self.associated = False
         self.fail_reason: Optional[str] = None
@@ -131,7 +133,9 @@ class Association:
     async def associate(self, attempts: int = 5) -> bool:
         """Open-auth + assoc. Returns True once the AP accepts us (status 0)."""
         if self.iface.current_channel != self.channel:
-            await self.iface.set_channel(self.channel)
+            if not await self.iface.set_channel(self.channel):
+                self.fail_reason = f"could not tune to channel {self.channel}"
+                return False
         for _ in range(attempts):
             if self.should_stop():
                 return False
@@ -144,14 +148,18 @@ class Association:
             logger.info("-> Assoc Req to %s", self.bssid)
             await self._send_until(assoc_req(self.bssid_bytes, self.our_mac, self.ssid,
                                              self.assoc_trailer_ies,
-                                             channel=self.channel),
+                                             channel=self.channel,
+                                             privacy=self.privacy),
                                    lambda: self._assoc_ok, self.assoc_timeout)
             if self._assoc_ok:
                 self.associated = True
                 return True
         self.associated = False
         if not self.fail_reason:
-            self.fail_reason = "no Assoc resp"
+            self.fail_reason = (
+                "no Assoc resp after Auth resp"
+                if self._auth_ok else "no Auth/Assoc resp"
+            )
         return False
 
     async def _send_until(self, frame: bytes, done, timeout: float,

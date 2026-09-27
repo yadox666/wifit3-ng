@@ -10,7 +10,7 @@ from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Header, Static
 
@@ -54,7 +54,130 @@ def _exposure_detail(finding: ExposureFinding | None) -> str:
     return detail
 
 
+def _local_adapter_art(backend: str) -> Text:
+    source = (
+        "████████████████████████████████████████████████████████",
+        "██▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██",
+        "██▒▒██████████████████▓▓▓▓██████████████████████████▒▒██",
+        "██▒▒██▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██▒▒██",
+        "██▒▒██▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██▒▒██",
+        "██▒▒██▒▒                                        ▒▒██▒▒██",
+        "██▒▒██▒▒       Wifit3-ng                   BLE  ▒▒██▒▒██",
+        "██▒▒██▒▒                                        ▒▒██▒▒██",
+        "██▒▒██▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██▒▒██",
+        "██▒▒████████████████████████████████████████████████▒▒██",
+        "██▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██",
+        "████████████████████████████████████████████████████▓▓▓▓",
+        "████▒▒░░░░░░░░░░░░░░░░▒▒░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░██▒▒",
+        "████░░░░██░░██░░██░░██░░▓▓░░██░░██░░██░░██░░██░░██░░██░░▓▓░░████",
+        "████▒▒░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░████",
+        "████▒▒░░░░██░░██░░██░░██░░██░░██░░██░░██░░██░░██░░██░░██░░██░░██░░░░████",
+        "████▒▒░░░░░░░░░░░░░░░░▒▒░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░▒▒░░░░░░░░▒▒████",
+        "████░░░░░░██▓▓▓▓░░██░░██▒▒░░▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓████▓▓██░░▓▓▓▓░░██░░██▓▓▓▓░░░░████",
+        "██▒▒░░░░░░▒▒▒▒▒▒░░░░░░░░▒▒░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░▒▒░░░░▒▒▒▒░░▒▒░░▒▒▒▒▒▒░░░░▒▒██",
+        "██▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓██████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓██",
+    )
+
+    def compact(line: str) -> str:
+        result = []
+        index = 0
+        while index < len(line):
+            char = line[index]
+            if char in "█▒░▓ " and index + 1 < len(line) and line[index + 1] == char:
+                result.append(char)
+                index += 2
+            else:
+                result.append(char)
+                index += 1
+        return "".join(result)
+
+    lines = [compact(line) for line in source]
+    width = max(len(line) for line in lines)
+    text_row = ("█▒█▒" + "  Wifit3-ng  BLE    " + "▒█▒█").center(width)
+    lines[next(index for index, line in enumerate(lines) if "Wifit3-ng" in line)] = text_row
+    art = Text(no_wrap=True)
+    for line in lines:
+        rendered = Text(f"{line:^{width}}", style="grey70")
+        for label, style in (("Wifit3-ng", "bold cyan"), ("BLE", "bold rgb(0,120,255)")):
+            start = rendered.plain.find(label)
+            if start >= 0:
+                rendered.stylize(style, start, start + len(label))
+        art.append(rendered)
+        art.append("\n")
+    label = "THIS LAPTOP"
+    left = (width - len(label)) // 2
+    art.append(" " * left)
+    art.append(label, style="bold black on cyan")
+    art.append(" " * (width - left - len(label)))
+    art.append("\n")
+    backend_label = f"{backend} • BLE CENTRAL"
+    if len(backend_label) > width:
+        backend_label = backend_label[: width - 1] + "…"
+    art.append(f"{backend_label:^{width}}", style="cyan")
+    return art
+
+
+def _bluetooth_device_art(
+    inspection: BluetoothInspection | None,
+    *,
+    fallback_name: str = "BLUETOOTH DEVICE",
+    fallback_identifier: str = "Waiting for connection",
+) -> Text:
+    width = 30
+
+    def centered(value: str) -> str:
+        clipped = value if len(value) <= width else value[: width - 1] + "…"
+        return f"{clipped:^{width}}"
+
+    device = inspection.device if inspection is not None else None
+    name = device.name if device is not None else fallback_name
+    identifier = device.identifier if device is not None else fallback_identifier
+    manufacturer = (
+        manufacturer_label(device.manufacturer_ids, device.identifier) or "Unknown"
+        if device is not None else "REMOTE BLE ENDPOINT"
+    )
+    art = Text(no_wrap=True)
+    logo_rows = (
+        "     ████████████████████",
+        "  ████████████  ████████████",
+        " █████████████    ███████████",
+        "██████████████  ██  ██████████",
+        "██████████████  ███   ████████",
+        "███████   ████  ████   ███████",
+        "█████████   ██  ██   █████████",
+        "███████████        ███████████",
+        "█████████████    █████████████",
+        "█████████████     ████████████",
+        "███████████        ███████████",
+        "█████████   ██  ███  █████████",
+        "███████   ████  ████   ███████",
+        "██████████████  ███   ████████",
+        "██████████████  ██  ██████████",
+        " █████████████     ██████████",
+        "  ████████████  ████████████",
+        "     ████████████████████",
+    )
+    for line in logo_rows:
+        art.append(f"{line:<{width}}", style="bold rgb(0,120,255)")
+        art.append("\n")
+    name = f" {name} "
+    name = name if len(name) <= width else name[: width - 1] + "…"
+    left = (width - len(name)) // 2
+    art.append(" " * left)
+    art.append(name, style="bold white on rgb(0,90,220)")
+    art.append(" " * (width - left - len(name)))
+    art.append("\n")
+    art.append(centered(manufacturer), style="cyan")
+    art.append("\n")
+    if device is not None:
+        art.append(centered(f"{device.rssi} dBm"), style=dbm_style(device.rssi))
+        art.append("\n")
+    art.append(centered(identifier), style="dim")
+    return art
+
+
 class _BluetoothTrafficDashboard(Static):
+    _BLOCKS = " ▁▂▃▄▅▆▇█"
     _ROWS = [
         ("advertisements", "advs", "yellow"),
         ("gatt_reads", "reads", "cyan"),
@@ -72,6 +195,9 @@ class _BluetoothTrafficDashboard(Static):
 
     def on_mount(self) -> None:
         self.set_interval(0.4, self._sample)
+
+    def on_resize(self) -> None:
+        self._paint()
 
     def bind(self, inspection: BluetoothInspection | None) -> None:
         if inspection is self._inspection:
@@ -99,20 +225,41 @@ class _BluetoothTrafficDashboard(Static):
 
     def _paint(self) -> None:
         width = max(8, (self.content_size.width or 40) - 14)
-        lines = []
+        two_rows = (self.content_size.height or 12) // len(self._ROWS) >= 2
+        lines: list[Text] = []
         for key, label, color in self._ROWS:
             values = list(self._history[key])[-width:]
             peak = max(max(values, default=0), 1)
-            bars = "".join("▁▂▃▄▅▆▇█"[min(7, round(value * 7 / peak))] for value in values)
             if key == "advertisements" and self._inspection is not None:
                 total = self._inspection.device.advertisement_count
             else:
                 total = getattr(self._inspection.traffic, key, 0) if self._inspection else 0
-            line = Text(f"{label:>6} ", style=color)
-            line.append(bars, style=color if any(values) else f"dim {color}")
-            line.append(f" {total:>6}", style=color)
-            lines.append(line)
-        self.update(Text("\n").join(lines))
+            row_style = color if any(values) else f"dim {color}"
+            levels = [
+                0 if value <= 0 else max(1, min(16, round(value * 16 / peak)))
+                for value in values
+            ]
+            if two_rows:
+                upper = "".join(self._BLOCKS[max(0, level - 8)] for level in levels)
+                lines.append(self._traffic_row("", upper, "", row_style))
+                lower = "".join(self._BLOCKS[max(1, min(8, level))] for level in levels)
+            else:
+                lower = "".join(
+                    self._BLOCKS[max(1, min(8, round(level / 2)))] for level in levels
+                )
+            lines.append(self._traffic_row(label, lower, str(total), row_style))
+        height = self.content_size.height or len(lines)
+        top_padding = max(0, (height - len(lines)) // 2)
+        self.update(Text("\n").join([Text("")] * top_padding + lines))
+
+    @staticmethod
+    def _traffic_row(label: str, bars: str, total: str, style: str) -> Text:
+        line = Text()
+        line.append(f"{label:>6} ", style=style if label else "")
+        line.append(bars, style=style)
+        line.append(" ")
+        line.append(f"{total:<6}", style=style if total else "")
+        return line
 
 
 class BluetoothFocusView(Screen):
@@ -131,10 +278,21 @@ class BluetoothFocusView(Screen):
     #bt-top Button { height: 3; width: auto; min-width: 0; margin-right: 1; }
     #bt-status { width: 1fr; height: 3; content-align: center middle; text-align: center; }
     #ble-recording { width: 24; height: 3; content-align: center middle; text-align: center; }
-    #bt-mid { height: 11; }
-    #bt-device { width: 34; height: 100%; border: round $primary; padding: 0 1; }
-    #bt-traffic { width: 1fr; height: 100%; border: round $primary; padding: 1; }
-    #bt-connection { width: 30; height: 100%; border: round $primary; padding: 0 1; }
+    #bt-mid { height: 22; }
+    #bt-local {
+        width: 40; height: 100%; padding: 0;
+        content-align: center middle; background: transparent;
+    }
+    #bt-center { width: 1fr; height: 100%; }
+    #bt-connection {
+        width: 100%; height: 4; padding: 0 1;
+        content-align: center middle; background: transparent;
+    }
+    #bt-traffic { width: 100%; height: 1fr; padding: 0 2; background: transparent; }
+    #bt-device {
+        width: 40; height: 100%; padding: 0;
+        content-align: center middle; background: transparent;
+    }
     #bt-bottom { height: 1fr; }
     #gatt-table { width: 2fr; height: 100%; }
     #gatt-detail { width: 1fr; height: 100%; border: round $primary; padding: 1; }
@@ -152,15 +310,15 @@ class BluetoothFocusView(Screen):
             yield Static("", id="bt-status")
             yield Static("", id="ble-recording")
         with Horizontal(id="bt-mid"):
+            local = Static("", id="bt-local")
+            yield local
+            with Vertical(id="bt-center"):
+                connection = Static("", id="bt-connection")
+                yield connection
+                traffic = _BluetoothTrafficDashboard(id="bt-traffic")
+                yield traffic
             device = Static("", id="bt-device")
-            device.border_title = "DEVICE"
             yield device
-            traffic = _BluetoothTrafficDashboard(id="bt-traffic")
-            traffic.border_title = "GATT TRAFFIC"
-            yield traffic
-            connection = Static("", id="bt-connection")
-            connection.border_title = "CONNECTION"
-            yield connection
         with Horizontal(id="bt-bottom"):
             table = DataTable(cursor_type="row", id="gatt-table")
             table.add_columns("SERVICE", "CHARACTERISTIC", "PROPERTIES", "VALUE", "EXPOSURE")
@@ -174,7 +332,17 @@ class BluetoothFocusView(Screen):
     def on_mount(self) -> None:
         self.set_interval(0.25, self._refresh)
         self.query_one("#gatt-table", DataTable).focus()
+        self._distribute()
         self._refresh()
+
+    def on_resize(self) -> None:
+        self._distribute()
+
+    def _distribute(self) -> None:
+        if not self.is_mounted:
+            return
+        pad = max(0, round((self.size.width - 120) * 0.1))
+        self.query_one("#bt-mid").styles.padding = (0, pad, 0, pad)
 
     def on_screen_resume(self) -> None:
         self._table_signature = None
@@ -187,6 +355,9 @@ class BluetoothFocusView(Screen):
     def _refresh(self) -> None:
         if self.app.screen is not self:
             return
+        self.query_one("#bt-local", Static).update(
+            _local_adapter_art(self.app.bluetooth_manager.backend_name)
+        )
         self.query_one("#ble-recording", Static).update(recording_indicator(
             "BLE EVENT RECORDING",
             getattr(self.app, "bluetooth_target_capture", None) is not None,
@@ -195,6 +366,26 @@ class BluetoothFocusView(Screen):
         self.query_one("#bt-traffic", _BluetoothTrafficDashboard).bind(inspection)
         if inspection is None:
             self.query_one("#bt-status", Static).update("[red]No Bluetooth connection[/red]")
+            locked = getattr(self.app, "locked_target", None)
+            fallback_name = (
+                locked.alias
+                if locked is not None and locked.medium == "bluetooth"
+                else "BLUETOOTH DEVICE"
+            )
+            fallback_identifier = (
+                locked.identifier
+                if locked is not None and locked.medium == "bluetooth"
+                else "Waiting for connection"
+            )
+            self.query_one("#bt-device", Static).update(_bluetooth_device_art(
+                None,
+                fallback_name=fallback_name,
+                fallback_identifier=fallback_identifier,
+            ))
+            self.query_one("#bt-connection", Static).update(
+                "[cyan]╼━━━━━━━━━━━━[/cyan][bold red]━━╳━━━━━━━━━━━━[/bold red]\n"
+                "[bold cyan]BLE / GATT[/bold cyan]  [bold red]DISCONNECTED[/bold red]"
+            )
             return
         locked = getattr(self.app, "locked_target", None)
         if (
@@ -211,7 +402,6 @@ class BluetoothFocusView(Screen):
 
     def _update_summary(self, inspection: BluetoothInspection) -> None:
         device = inspection.device
-        manufacturer = manufacturer_label(device.manufacturer_ids, device.identifier) or "Unknown"
         state = "CONNECTED" if inspection.connected else "CONNECTING" if inspection.connecting else "DISCONNECTED"
         state_color = "green" if inspection.connected else "yellow" if inspection.connecting else "red"
         locked = getattr(self.app, "locked_target", None)
@@ -223,22 +413,13 @@ class BluetoothFocusView(Screen):
             f"[bold {state_color}]● {state}[/bold {state_color}]  "
             f"{escape(device.name)}{target_status}"
         )
-        identity_confidence = (
-            "Approximate advertisement group"
-            if device.approximate_group else "Exact platform identifier"
-        )
-        self.query_one("#bt-device", Static).update(
-            f"[bold]{escape(device.name)}[/bold]\n\n"
-            f"[dim]Manufacturer[/dim]\n{escape(manufacturer)}\n\n"
-            f"[dim]Signal[/dim]  [{dbm_style(device.rssi)}]{device.rssi} dBm[/]\n"
-            f"[dim]Identifier[/dim]\n{escape(device.identifier)}"
-            f"\n[dim]Identity confidence[/dim]\n{identity_confidence}"
-        )
+        self.query_one("#bt-device", Static).update(_bluetooth_device_art(inspection))
         characteristic_count = sum(len(service.characteristics) for service in inspection.services)
         connected_for = (
             max(0, int(time.time() - inspection.connected_at))
             if inspection.connected_at is not None else 0
         )
+        state_duration = f" {connected_for}s" if inspection.connected else ""
         traffic = inspection.traffic
         capture = self.app.bluetooth_target_capture
         capture_status = (
@@ -251,14 +432,19 @@ class BluetoothFocusView(Screen):
             for severity, (label, style) in sorted(_SEVERITY_STYLES.items(), reverse=True)
         )
         self.query_one("#bt-connection", Static).update(
-            f"[dim]Connected[/dim]  {connected_for}s\n"
-            f"[dim]Services[/dim]   {len(inspection.services)}\n"
+            f"[cyan]╼━━━━━━━━━━━━[/cyan]"
+            f"[bold {state_color}]━━●━━━━━━━━━━━━▶[/bold {state_color}]\n"
+            f"[bold cyan]BLE / GATT[/bold cyan]  "
+            f"[bold {state_color}]{state}{state_duration}[/bold {state_color}]  "
+            f"[bold bright_blue]→ {escape(device.name)}[/bold bright_blue]\n"
+            f"[dim]Link[/dim] {device.rssi} dBm  •  "
+            f"[dim]Services[/dim] {len(inspection.services)}  •  "
             f"[dim]Characteristics[/dim] {characteristic_count}\n"
-            f"[dim]Exposure[/dim] {exposure}\n\n"
-            f"[dim]GATT reads[/dim] {traffic.gatt_reads}\n"
-            f"[dim]RX bytes[/dim]   {traffic.read_bytes + traffic.notification_bytes}\n"
-            f"[dim]Notifications[/dim] {traffic.notifications}\n"
-            f"[dim]Errors[/dim]     {traffic.errors}"
+            f"[dim]RX[/dim] {traffic.read_bytes + traffic.notification_bytes} B  •  "
+            f"[dim]Reads[/dim] {traffic.gatt_reads}  •  "
+            f"[dim]Notify[/dim] {traffic.notifications}  •  "
+            f"[dim]Errors[/dim] {traffic.errors}  •  "
+            f"[dim]Exposure[/dim] {exposure}"
             f"{capture_status}"
         )
 

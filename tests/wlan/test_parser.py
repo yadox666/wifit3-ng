@@ -577,17 +577,18 @@ def _ds_param_ie(channel: int) -> bytes:
     return bytes([3, 1, channel])
 
 
-def _ht_op_ie(primary_channel: int) -> bytes:
+def _ht_op_ie(primary_channel: int, *, secondary_offset: int = 0) -> bytes:
     """Tag 61 (HT Operation): 22-byte body, first byte = primary channel.
     Present on every 802.11n/ac AP regardless of band."""
-    body = bytes([primary_channel]) + b"\x00" * 21
+    raw_offset = {0: 0, 1: 1, -1: 3}[secondary_offset]
+    info = raw_offset | (0x04 if secondary_offset else 0)
+    body = bytes([primary_channel, info]) + b"\x00" * 20
     return bytes([61, len(body)]) + body
 
 
-def _vht_op_ie(center_seg0: int) -> bytes:
-    """Tag 192 (VHT Operation): 5-byte body. Byte 1 is Channel Center
-    Frequency Segment 0 = primary channel for 20 MHz BSSes."""
-    body = bytes([0x00, center_seg0, 0x00, 0x00, 0x00])
+def _vht_op_ie(center_seg0: int, *, width_code: int = 0, center_seg1: int = 0) -> bytes:
+    """Tag 192 (VHT Operation): width plus center-frequency segments."""
+    body = bytes([width_code, center_seg0, center_seg1, 0x00, 0x00])
     return bytes([192, len(body)]) + body
 
 
@@ -605,24 +606,54 @@ def test_channel_from_ht_op_ie_when_ds_param_missing():
     assert parsed.channel == 153
 
 
-def test_channel_ds_param_wins_over_ht_op():
-    """When both are present and disagree (shouldn't happen on a sane AP),
-    DS Param IE wins: it's the authoritative 802.11-2020 9.4.2.3 source."""
+def test_conflicting_primary_channel_ies_are_not_trusted():
+    """Contradictory DS/HT primary channels defer to the receiving radio."""
     # HT Op IE before DS Param IE in tag order.
     frame = _build_beacon() + _ht_op_ie(36) + _ds_param_ie(40)
     parsed = WlanFrameParser.parse_80211_frame(frame, -50)
-    assert parsed.channel == 40
+    assert parsed.channel is None
+    assert parsed.capabilities.channel_conflict is True
     # And the other way round: DS Param IE first.
     frame2 = _build_beacon() + _ds_param_ie(40) + _ht_op_ie(36)
     parsed2 = WlanFrameParser.parse_80211_frame(frame2, -50)
-    assert parsed2.channel == 40
+    assert parsed2.channel is None
+    assert parsed2.capabilities.channel_conflict is True
 
 
-def test_channel_vht_op_used_as_last_resort():
-    """When neither DS Param nor HT Op is present, VHT Op IE fills in."""
-    frame = _build_beacon() + _vht_op_ie(149)
+def test_vht_center_segment_is_never_used_as_primary_channel():
+    """Center CH 42 for an 80 MHz BSS is not a valid primary-channel claim."""
+    frame = _build_beacon() + _vht_op_ie(42, width_code=1)
     parsed = WlanFrameParser.parse_80211_frame(frame, -50)
-    assert parsed.channel == 149
+    assert parsed.channel is None
+    assert parsed.capabilities.operating_width_mhz == 80
+    assert parsed.capabilities.center_channel_0 == 42
+
+
+def test_ht_primary_and_vht_center_are_kept_separate():
+    frame = _build_beacon() + _ht_op_ie(36) + _vht_op_ie(42, width_code=1)
+    parsed = WlanFrameParser.parse_80211_frame(frame, -50)
+    assert parsed.channel == 36
+    assert parsed.capabilities.operating_width_mhz == 80
+    assert parsed.capabilities.center_channel_0 == 42
+
+
+def test_ht40_operation_records_secondary_direction_and_center():
+    above = WlanFrameParser.parse_80211_frame(
+        _build_beacon() + _ht_op_ie(6, secondary_offset=1), -50,
+    )
+    below = WlanFrameParser.parse_80211_frame(
+        _build_beacon() + _ht_op_ie(11, secondary_offset=-1), -50,
+    )
+    assert (
+        above.capabilities.operating_width_mhz,
+        above.capabilities.secondary_channel_offset,
+        above.capabilities.center_channel_0,
+    ) == (40, 1, 8)
+    assert (
+        below.capabilities.operating_width_mhz,
+        below.capabilities.secondary_channel_offset,
+        below.capabilities.center_channel_0,
+    ) == (40, -1, 9)
 
 
 def test_channel_absent_when_no_ie_provides_it():

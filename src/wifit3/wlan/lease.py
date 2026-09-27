@@ -43,8 +43,11 @@ class Lease:
 
     async def __aenter__(self):
         self._orig_channel = self.iface.current_channel
-        if self._channel is not None:
-            await self.iface.set_channel(self._channel)
+        if self._channel is not None and self.iface.current_channel != self._channel:
+            tuned = await self.iface.set_channel(self._channel)
+            if not tuned or self.iface.current_channel != self._channel:
+                name = getattr(self.iface, "name", "wireless interface")
+                raise RuntimeError(f"{name} could not tune to channel {self._channel}")
         if self._fake_mac is not None:
             await self._arm(self._fake_mac)
         if self._ack_tally:

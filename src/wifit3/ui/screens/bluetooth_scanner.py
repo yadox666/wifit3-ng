@@ -5,11 +5,13 @@ from typing import TYPE_CHECKING
 from rich.markup import escape
 from rich.text import Text
 from textual import work
-from textual.app import ComposeResult
+from textual.app import ComposeResult, RenderResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.reactive import Reactive
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, RichLog, Select
+from textual.widgets._header import HeaderClock, HeaderIcon, HeaderTitle
 
 from wifit3.bluetooth.assigned_numbers import manufacturer_label, service_label, service_name
 from wifit3.bluetooth.classification import device_category
@@ -79,6 +81,23 @@ def _group_anonymous_apple_devices(devices: list[BluetoothDevice]) -> list[Bluet
     return result
 
 
+class _BluetoothSortReadout(HeaderClock):
+    """Header right slot showing the active BLE table sort."""
+
+    DEFAULT_CSS = "_BluetoothSortReadout { width: auto; }"
+    summary: Reactive[str] = Reactive("", layout=True)
+
+    def render(self) -> RenderResult:
+        return Text(self.summary)
+
+
+class _BluetoothScannerHeader(Header):
+    def compose(self) -> ComposeResult:
+        yield HeaderIcon().data_bind(Header.icon)
+        yield HeaderTitle()
+        yield _BluetoothSortReadout()
+
+
 class BluetoothScannerView(Screen):
     """Nearby Bluetooth Low Energy devices observed through the system adapter."""
 
@@ -86,9 +105,8 @@ class BluetoothScannerView(Screen):
 
     BINDINGS = [
         Binding("escape", "back_to_wifi", "Wi-Fi"),
-        Binding("enter", "toggle_selected_group", "Expand/Collapse", show=False, priority=True),
-        Binding("a", "toggle_apple_group", "Apple IDs"),
-        Binding("c", "connect", "Connect"),
+        Binding("enter", "connect", "Connect", show=False, priority=True),
+        Binding("a", "toggle_apple_group", "random dev-Ids"),
         Binding("s", "cycle_sort", "Sort Col"),
         Binding("o", "toggle_sort_dir", "Sort Asc/Desc"),
         Binding("n", "new_target", "New Target"),
@@ -144,7 +162,7 @@ class BluetoothScannerView(Screen):
         self._target_navigation_pending = False
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
+        yield _BluetoothScannerHeader()
         with Vertical():
             with Horizontal(id="bluetooth-filters"):
                 yield Select(
@@ -176,6 +194,7 @@ class BluetoothScannerView(Screen):
 
     def on_mount(self) -> None:
         self._update_column_headers()
+        self._update_sort_readout()
         self.query_one("#bluetooth-table", DataTable).focus()
         self.query_one("#bluetooth-log", RichLog).write(
             "[bold green]Bluetooth LE scanner initialized[/bold green]\n"
@@ -210,12 +229,13 @@ class BluetoothScannerView(Screen):
             previous = self._rows.get(identifier)
             if previous is None:
                 table.add_row(*values, key=identifier)
+                self._rows[identifier] = values
                 if table.row_count == 1:
                     self._show_device_details(device)
             elif previous != values:
                 for (key, _label), value in zip(self._COLUMNS, values):
                     table.update_cell(identifier, key, value)
-            self._rows[identifier] = values
+                self._rows[identifier] = values
         self._apply_sort()
 
     def _update_column_headers(self) -> None:
@@ -230,6 +250,20 @@ class BluetoothScannerView(Screen):
                 text = f"{label} {arrow}" if key == sort_key else f"{label}  "
                 table.columns[key].label = Text(text)
 
+    def _sort_summary(self) -> str:
+        _key, label = self._COLUMNS[self._sort_idx]
+        direction = ">" if self._sort_reverse else "<"
+        return f"Sorted: {label} ({direction})"
+
+    def _update_sort_readout(self) -> None:
+        self.query_one(_BluetoothSortReadout).summary = self._sort_summary()
+
+    def _announce_sort(self) -> None:
+        _key, label = self._COLUMNS[self._sort_idx]
+        direction = "descending" if self._sort_reverse else "ascending"
+        self.notify(f"Sorted by {label} {direction}", title="Sort changed")
+        self._update_sort_readout()
+
     def _apply_sort(self) -> None:
         table = self.query_one("#bluetooth-table", DataTable)
         if table.row_count == 0:
@@ -240,22 +274,46 @@ class BluetoothScannerView(Screen):
             selected_key = None
         sort_key, _ = self._COLUMNS[self._sort_idx]
         reverse = self._sort_reverse
+        # The "Ns ago" label is truncated to whole seconds, so sorting on it
+        # reshuffles devices that were first seen close together. Use the
+        # stored timestamps; first_seen never changes for a device.
+        devices_by_cell = {}
+        for identifier, device in self._devices.items():
+            try:
+                devices_by_cell[id(table.get_cell(identifier, sort_key))] = device
+            except Exception:
+                continue
 
         def sort_value(cells: tuple[Text, Text]) -> tuple:
             value_cell, identifier_cell = cells
+            device = devices_by_cell.get(id(value_cell))
             value = value_cell.plain.strip()
             is_empty = value in {"", "·", "‹unnamed›"}
-            if is_empty:
-                normalized: int | str = 0
+            if sort_key == "first_seen" and device is not None:
+                normalized: int | float | str = -device.first_seen
+                is_empty = False
+            elif sort_key == "last_seen" and device is not None:
+                normalized = -device.last_seen
+                is_empty = False
+            elif is_empty:
+                normalized = 0
             elif sort_key == "rssi":
                 normalized = int(value.split()[0])
             elif sort_key in {"advertisements", "interval"}:
                 normalized = int(value.split()[0])
             elif sort_key in {"first_seen", "last_seen"}:
-                normalized = 0 if value == "now" else int(value.split("s", 1)[0])
+                # A visible age is presentation only (seconds/minutes/hours).
+                # Timestamp-backed rows are handled above; never infer their
+                # order from formatted text.
+                normalized = 0
             else:
                 normalized = value.casefold()
-            return (int(is_empty != reverse), normalized, identifier_cell.plain.casefold())
+            tiebreak = (
+                device.identifier.casefold()
+                if device is not None
+                else identifier_cell.plain.casefold()
+            )
+            return (int(is_empty != reverse), normalized, tiebreak)
 
         table.sort(sort_key, "identifier", key=sort_value, reverse=reverse)
         if selected_key is not None:
@@ -268,11 +326,13 @@ class BluetoothScannerView(Screen):
         self._sort_idx = (self._sort_idx + 1) % len(self._COLUMNS)
         self._update_column_headers()
         self._apply_sort()
+        self._announce_sort()
 
     def action_toggle_sort_dir(self) -> None:
         self._sort_reverse = not self._sort_reverse
         self._update_column_headers()
         self._apply_sort()
+        self._announce_sort()
 
     def _row_values(self, device: BluetoothDevice, now: float) -> tuple:
         age = max(0.0, now - device.last_seen)

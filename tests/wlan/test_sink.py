@@ -217,6 +217,25 @@ def test_hidden_ap_uses_previous_ssid_for_same_bssid(tmp_path):
     assert ap.decloak_method == "history"
 
 
+def test_visible_ap_name_is_remembered_for_a_later_hidden_session(tmp_path):
+    store = HiddenSsidStore(tmp_path / "hidden_ssids.json")
+    first_session = WlanSink(store)
+    first_session.update(
+        pkt({"type": "beacon", "bssid": BSSID, "rssi": -60, "ssid": "Seen Before"}),
+        W0,
+    )
+
+    second_session = WlanSink(HiddenSsidStore(store.path))
+    second_session.update(
+        pkt({"type": "beacon", "bssid": BSSID, "rssi": -60, "ssid": "<hidden>"}),
+        W0,
+    )
+
+    ap = second_session.access_points[BSSID]
+    assert ap.ssid == "Seen Before"
+    assert ap.decloak_method == "history"
+
+
 def test_new_hidden_ssid_reveal_is_persisted(tmp_path):
     store = HiddenSsidStore(tmp_path / "hidden_ssids.json")
     sink = WlanSink(store)
@@ -294,6 +313,21 @@ def test_from_ds_client_is_receiver_not_addr3_origin():
                   "bssid": BSSID, "dest": client, "source": upstream, "rssi": -50}), W0)
     assert client in s.clients and upstream not in s.clients
     assert s.clients[client].bssid == BSSID
+
+
+def test_fake_client_is_explicitly_visible_but_still_marked_as_ours():
+    sink = WlanSink()
+    mac = "02:11:22:33:44:55"
+
+    client = sink.register_fake_client(mac, BSSID)
+
+    assert client.is_fake is True
+    assert client.bssid == BSSID
+    assert mac in sink.clients
+    assert mac in sink.own_macs
+
+    sink.unregister_fake_client(mac)
+    assert mac not in sink.clients
 
 
 # ----- siblings --------------------------------------------------------------

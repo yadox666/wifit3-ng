@@ -4,6 +4,151 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
+## Unreleased
+
+### Added
+
+#### Passive open-network metadata
+
+- Added capture-time passive analysis for confirmed unencrypted `OPEN` APs.
+- Added bounded decoders for clear-text LLC/SNAP, ARP, IPv4, IPv6, UDP, TCP,
+  DHCP, and IPv6 Router Advertisements.
+- Added AP-level and per-client observations for IPv4/IPv6 addresses and
+  ranges, gateways, DHCP servers, DNS servers, domains, leases, and expiry.
+- Added DHCP broadcast-reply correlation through the DHCP client hardware
+  address.
+- Added captive-portal evidence from DHCP option 114, IPv6 option 37, plain
+  HTTP redirects, and bounded portal-like DNS/TLS SNI hints.
+- Added `Observed`, `Declared`, and `Suspected` portal states with conservative
+  evidence-based likelihood scores; no evidence is shown as unknown rather
+  than as a false zero probability.
+- Added source, confidence, first/last-seen time, expiry, conflict retention,
+  and historical marking for network facts.
+- Added expandable live/history NETWORK panels to AP Focus and Client Focus.
+- Extended the AP Focus client detail popup with client-specific IPv4/IPv6
+  addresses, ranges, gateways, DHCP/DNS servers, domains, connectivity, and
+  captive-portal evidence. Missing client IPs are explicit, and relevant
+  fallback infrastructure values are clearly labeled as AP-wide.
+- Added private, versioned, per-BSSID `<ssid>_<bssid>_network.json` files
+  beside capture/key artifacts.
+- Added atomic and debounced network-metadata persistence that merges following
+  live-capture observations across sessions.
+
+#### Fake-Connect
+
+- Added an open-AP **Fake-Connect** action and `o` Focus shortcut.
+- Added randomized temporary client MAC generation, Open-System
+  authentication, and association for confirmed open APs with known SSIDs.
+- Added a persistent associated state so an otherwise-idle AP can emit traffic
+  while focused capture is active.
+- Added up to three bounded DHCP Discover probes after association.
+- Added DHCP Offer summaries for proposed address, gateway, DNS, and DHCP
+  server.
+- Added bounded DHCP Request/ACK and best-effort Release support for one
+  temporary connectivity-test lease.
+- Added gateway ARP, advertised-DNS, TCP, and HTTP 204 connectivity checks
+  against the explicitly disclosed `connectivitycheck.gstatic.com` endpoint.
+- Added Internet-confirmed, limited/inconclusive, portal-observed, and
+  portal-suspected outcomes to the AP/client NETWORK panels and metadata JSON.
+- Reused one randomized Fake-Connect MAC per AP during a session to avoid
+  accumulating pending DHCP Offers and triggering common router rate limits.
+- Added immediate merging of received Offers into the AP and temporary-client
+  NETWORK sections, including subnet/range, domain, lease, and captive-portal
+  options, whether or not focused PCAP recording is active.
+- Added immediate atomic persistence of Fake-Connect Offer metadata to the
+  per-BSSID network JSON.
+- Added a **Disconnect** state that sends a client-leaving frame and removes
+  the temporary forged-client registration.
+- Added active-action confirmation and clear impact text before Fake-Connect.
+- Kept Fake-Connect unavailable for encrypted/OWE APs and hidden APs with no
+  exact historical name or named same-radio sibling.
+- Added an explicitly uncertain `SSID [guess]` association attempt for hidden APs
+  whose strongest named sibling supplies the only available SSID candidate.
+- Extended **Fake-Connect** to WEP APs. It performs Open-System authentication
+  and association with the Privacy capability set, then deliberately stops
+  before DHCP or connectivity traffic because WEP data frames require the key.
+- Kept the WEP temporary association active until **Disconnect**, Focus exit,
+  AP disconnect, or campaign stop, using the same client-leaving cleanup as the
+  open-network path.
+- Added explicit fake-client registration in the shared client model while a
+  Fake-Connect association is active. The synthetic client is removed on every
+  campaign exit path and remains excluded from scanner counts, handshakes, and
+  normal captured-client processing.
+- Added a yellow `◈` fake-client badge and `Fake-Connect` label in the
+  right-side CLIENTS panel. Its unknown signal is rendered as a dash, and its
+  per-client deauthentication control remains disabled; the campaign's
+  **Disconnect** action owns its lifecycle.
+- Added a steady cyan L-shaped connector while one or more clients are shown.
+  It starts beside the visible router body, one row below
+  the former alignment, and joins the center of the CLIENTS panel's top border
+  without an arrow. It adapts to either left-to-right or right-to-left layouts
+  and disappears when the AP has no connected clients.
+
+#### Channel operation and tuning safety
+
+- Added parsing of the active HT 20/40 MHz width, secondary-channel direction,
+  and derived center channel from the HT Operation element.
+- Added parsing of active VHT 80/160/80+80 MHz width and both advertised center
+  frequency segments without treating either segment as a primary channel.
+- Added a plain-language Focus readout such as `channel 36 · 80 MHz`.
+- Added technical AP details that separately show the primary channel, active
+  width, secondary channel above/below, center segment(s), and supported radio
+  capabilities.
+- Added explicit detection of contradictory DS Parameter and HT Operation
+  primary-channel advertisements. The scanner then uses the channel on which
+  the frame was actually received and exposes the conflict in technical
+  details.
+- Added a hard campaign guard that prevents authentication, association, or
+  injection from continuing when the selected adapter cannot confirm the
+  requested channel.
+
+### Changed
+
+- Stopped using the VHT center-frequency segment as a last-resort tune target.
+  For example, an 80 MHz AP on primary channel 36 may advertise center segment
+  42; Focus now stays on primary channel 36 instead of attempting channel 42.
+- Separated active operating width from the accumulated set of widths an AP or
+  client advertises as supported.
+- Replaced the ambiguous `PORTAL UNLIKELY` summary with
+  `NO CAPTIVE PORTAL DETECTED` after a successful HTTP 204 connectivity check.
+- Changed the scanner so the highlight follows the same selected AP BSSID or
+  client MAC when live sorting moves it to another row.
+- Kept hidden `[guess]` rows directly below the named sibling that supplied
+  their displayed SSID, regardless of the active sort column or direction.
+- Changed `OPEN` encryption labels to red and added the scanner `!WEAK` marker.
+- Added live rotated-file count and total saved megabytes to AP and Client
+  `PCAP RECORDING` indicators.
+- Extended hidden-SSID history to remember every confirmed BSSID-to-SSID
+  sighting, including APs first observed with a visible SSID.
+- Added same-radio sibling SSID guesses to Focus, matching the scanner's yellow
+  `SSID [guess]` presentation.
+- Added yellow uncertainty styling for exact-BSSID historical names in Focus.
+
+### Privacy and security
+
+- Network metadata files use best-effort private permissions and atomic
+  replacement.
+- Passive metadata storage is bounded by client, fact, option, field, and URL
+  limits.
+- DHCP hostnames/client identifiers, complete DNS histories, HTTP bodies,
+  cookies, credentials, URL paths, and URL query strings are not retained.
+- Fake-Connect uses randomized temporary client addresses, claims at most one
+  temporary lease, makes one bounded disclosed connectivity request, and sends
+  DHCP Release afterward. It does not submit portal forms or transmit
+  credentials.
+
+### Known limitations
+
+- Passive network metadata depends on traffic actually received during the
+  live focused capture; beacon-only captures contain no DHCP/IP information.
+- Existing PCAP files are not retrospectively analyzed to rebuild or enrich
+  network metadata.
+- Plain HTTP redirects can be observed, but encrypted HTTPS portal behavior
+  generally cannot be passively verified.
+- A sibling `SSID [guess]` is an infrastructure guess, not a confirmed SSID.
+  Fake-Connect may try it after active-action confirmation, but the AP can
+  reject it when the hidden VAP uses a different SSID.
+
 ## 0.3.4 - 2026-09-26
 
 ### Added
@@ -105,7 +250,7 @@ build compared with the original
 - Added persistence of SSIDs revealed after an AP was observed hidden.
 - Added exact-BSSID historical SSID autocomplete.
 - Added reveal method and first/last reveal timestamps.
-- Added yellow `?` marking until a historical SSID is observed again.
+- Added yellow `[history]` marking until a historical SSID is observed again.
 - Excluded unconfirmed historical names from SSID infrastructure grouping.
 
 #### Navigation, preferences, and diagnostics

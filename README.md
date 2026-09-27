@@ -1,32 +1,20 @@
 # wifit3-ng
-> A standalone USB Wi-Fi and Bluetooth auditor for Linux, Windows, and macOS.
+> Version 0.3.4. A standalone USB Wi-Fi and Bluetooth/BLE auditor for Linux, Windows, and macOS.
 
-This repository is an enhanced fork of the original
-[derv82/wifit3](https://github.com/derv82/wifit3), upgraded and maintained by
-[Yadox (@yadox666)](https://github.com/yadox666) as **wifit3-ng**.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.4 - yadox666`.
 
-The excellent original development by
-[derv82](https://github.com/derv82) made this fork possible. Its direct
-user-space USB mini-drivers, cross-platform wireless stack, scanner, capture
-engines, and auditing workflows remain the technical foundation of the
-project. This fork preserves that work while expanding reconnaissance,
-analysis, capture, target tracking, Bluetooth/BLE support, and the terminal
-interface.
-
-See [Enhanced Fork Features](#enhanced-fork-features) below and
-[CHANGELOG.md](CHANGELOG.md) for the detailed changes from the original
-project.
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds the 0.3.4 reconnaissance, analysis, capture, target-tracking, and Bluetooth/BLE changes described below. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
 </p>
 
-> *At least* one of the [supported USB adapters](#supported-hardware) is **required**.
+> *At least* one of the [supported USB adapters](#supported-hardware) is **required** for Wi-Fi. Bluetooth/BLE uses the operating system's Bluetooth adapter through Bleak, not those USB Wi-Fi mini-drivers.
 
 ## Why?
-* **Cross-Platform:** Runs identically on Linux, macOS, and Windows.
-* **Wireless Driver Heaven:** Built-in wireless stack avoids kernel driver versioning hell and Windows' NDIS.
-* **Zero Runtime Dependencies:** No `aircrack-ng` or `reaver`, just pure Python with PyUSB & Textual libraries.
+* **Cross-platform:** The same terminal interface runs on Linux, macOS, and Windows.
+* **User-space wireless stack:** Built-in mini-drivers avoid kernel-driver version skew and Windows NDIS for supported USB cards.
+* **No external attack suite:** No `aircrack-ng` or `reaver`. Wi-Fi auditing is Python with PyUSB and Textual. Bluetooth observation uses Bleak.
 
 <p align="center">
   <img src="assets/wifit3-demo.gif" alt="wifit3 in action: WPS PushButton PSK capture" width="700">
@@ -34,128 +22,211 @@ project.
 
 ---
 
-## Features
+## Features kept from wifit3
 
-### Reconnaissance & Analysis
-- **Multi-Card Aggregation:** Capture packets across multiple adapters simultaneously; pick a dedicated card to inject.
-- **Real-time Scanner:** 2.4GHz & 5GHz channel-hopping (split for multi-cards); tracks signal strength, encryption suites, WPA3/SAE transition modes.
-- **AP & Client Identification:** Fingerprints device vendors and categories; extracts router make and model from WPS beacons.
-- **VAP Decloaking:** Identifies hidden networks by correlating their BSSIDs with known visible siblings.
-- **Packet Dashboard:** Visualizes real-time beacon, data, injection, and deauthentication packet rates.
+These capabilities come from the original [derv82/wifit3](https://github.com/derv82/wifit3) auditor and remain in this fork.
 
-### Attacks & Captures
-- **WPA/WPA2 Handshakes:** Passive sniffing and targeted deauthentication; validates crackable pairs; exports `.pcap` and `.hc22000` files.
-- **PMKID Harvesting:** Active association harvest and passive sniffing for WPA/WPA2 PMKID key material (`.hc22000`).
-- **EvilTwin WPA3 Downgrade:** Clones the AP and evicts clients (via CSA, BTM, and de-auths) to capture handshakes. Works on single and multiple cards.
-- **WPS Recovery Suite:**
-  - **PixieDust (2 Modes):** Instant offline PIN recovery exploiting *Null Secret* and *Static Secret* PRNG weaknesses.
-  - **PushButton (PBC):** Detects physical WPS button presses and immediately extracts the plaintext WPA PSK.
-  - **PIN Brute-Force:** Resumable WPS PIN cracking with known-PIN database and AP lock monitoring.
-- **WEP Suite:** Pure Python ARP replay, ChopChop, Fake Authentication, and PTW key recovery.
+### Reconnaissance and analysis
+- **Multi-card aggregation:** Capture across several adapters at once, and pick a dedicated card to inject.
+- **Real-time scanner:** 2.4 GHz and 5 GHz channel hopping, split across cards. Tracks signal strength, encryption suites, and WPA3/SAE transition modes.
+- **AP and client identification:** Fingerprints device vendors and categories, and extracts router make and model from WPS beacons.
+- **VAP decloaking:** Identifies hidden networks by correlating their BSSIDs with known visible siblings.
+- **Packet dashboard:** Shows beacon, data, injection, and deauthentication rates.
 
-## Enhanced Fork Features
+### Attacks and captures
+- **WPA/WPA2 handshakes:** Passive sniffing and targeted deauthentication. Validates crackable pairs and exports `.pcap` and `.hc22000` files.
+- **PMKID harvesting:** Active association harvest and passive sniffing for WPA/WPA2 PMKID material (`.hc22000`).
+- **Evil twin WPA3 downgrade:** Clones the AP and evicts clients with CSA, BTM, and deauthentication to capture handshakes. Works with one card or several.
+- **WPS recovery:**
+  - **PixieDust (two modes):** Offline PIN recovery for null-secret and static-secret PRNG weaknesses.
+  - **Push-button (PBC):** Detects a physical WPS button press and extracts the plaintext WPA PSK. Automatic PBC capture is a preference in this fork.
+  - **PIN brute force:** Resumable WPS PIN attempts with a known-PIN database and AP lock monitoring.
+- **WEP:** ARP replay, ChopChop, fake authentication, and PTW key recovery in Python.
 
-### Wi-Fi Discovery and Presentation
+## Changes by yadox666 in 0.3.4
 
-- Switchable AP and client scanner views with stable columns, pause, filters,
-  sorting, reverse sorting, channel lock, and CSV/JSON export.
-- Consistent signal colours across AP, client, and Bluetooth views.
-- AP manufacturer and client-manufacturer identification using a local IEEE
-  OUI database, with manual updates and an automatic monthly refresh policy.
-- Detailed client rows with associated AP, manufacturer, signal, packet
-  activity, last-seen age, and probe requests.
-- Configurable inactive-AP display lifetime, including a `Never` option.
-- Saved targets are marked with a red `!` even when automatic locking is
-  disabled.
+The sections below are the additions in this fork. They sit on top of the original auditor.
 
-### Infrastructure and Identity Analysis
+### Navigation
 
-- APs advertising the same confirmed SSID can be collapsed into an
-  infrastructure and expanded to inspect each BSSID individually.
-- Infrastructure rows summarize AP count, channels, strongest signal,
-  beacons, clients, manufacturers, security, and WPS availability.
-- Hidden SSIDs revealed during scanning are remembered by exact BSSID and
-  restored on later observations. Historical names remain visibly marked
-  until reconfirmed.
-- AP Focus displays uptime, advertised country, radio modes, channel widths,
-  spatial streams, rates, BSS load, timing, power constraints, RSN ciphers,
-  AKMs, PMF, roaming support, vendor IEs, WPS information, and device
-  identity.
-- Client details include manufacturer, randomized/local MAC status,
-  association, selected AKM, PMF, radio capabilities, limits, probes, and
-  observed Enterprise authentication.
+The startup screen shows centered **START WI-FI** and **SCAN BLE** buttons on one line. `W` starts Wi-Fi. `B` starts Bluetooth/BLE. `U` refreshes the IEEE OUI manufacturer database from the startup screen.
 
-### Passive WPA-Enterprise Assessment
+| Key | Where | Action |
+|---|---|---|
+| `W` | Startup | Start Wi-Fi on the selected adapters |
+| `B` | Startup | Start the Bluetooth/BLE scanner |
+| `U` | Startup | Update the local OUI database |
+| `Ctrl+P` | Everywhere | Preferences. `A` opens About, `T` opens the target editor |
+| `Ctrl+D` | Everywhere | Active-adapter diagnostics |
+| `Ctrl+Q` | Everywhere | Quit |
+| `Escape` | Scanners and focus | Wi-Fi and Bluetooth scanners return to device selection. Focus screens return to the scanner |
+| `T` | Wi-Fi scanner | Switch between the AP table and the client table |
+| `I` | Wi-Fi scanner | Expand or collapse a same-SSID infrastructure |
+| `Enter` | Grouped AP | Expand a collapsed infrastructure |
+| `N` | Wi-Fi or Bluetooth scanner | Create a target for the selected row |
+| `X` | Wi-Fi scanner | Export the scan as CSV and JSON |
+| `X` | AP Focus | Start or stop a focused libpcap capture |
+| `O` | AP Focus on an open network | Start Fake-Connect or disconnect its temporary client |
+| `X` | Bluetooth scanner | Export the scan as CSV |
+| `V` | Wi-Fi screens | Open Vault. Vault stays closed on Bluetooth screens |
 
-- Recognizes visible EAP Identity, EAP-MD5, EAP-TLS, LEAP, EAP-TTLS, PEAP,
-  EAP-MSCHAPv2, EAP-FAST, EAP-AKA', and TEAP exchanges.
-- Reassembles bounded outer EAP-TLS fragments and inspects visible TLS
-  versions, cipher suites, certificate fingerprints, validity periods,
-  signature algorithms, key algorithms, and key sizes.
-- Reports evidence and confidence for WEP, legacy WPA, TKIP, weak PMF,
-  EAP-MD5, LEAP, direct EAP-MSCHAPv2, obsolete TLS, weak ciphers, invalid
-  certificate dates, weak signatures, and short RSA keys.
-- High-risk observations display a `!WEAK` scanner marker and an explanation
-  in Focus.
-- EAP Identity values and credential-response bodies are not retained in the
-  Enterprise profile. Encrypted inner EAP methods and client certificate
-  validation cannot be determined passively.
+Vault is available only in Wi-Fi mode.
 
-### Targets, Focused Capture, and Vault
+### Wi-Fi scanner
 
-- Wi-Fi APs, Wi-Fi clients, and exact Bluetooth devices can be saved together
-  as named targets.
-- The New Target dialog supports Save & Continue, Save & Lock, and Cancel;
-  the Preferences target editor supports rename, enable/disable, priority
-  ordering, and deletion.
-- Optional auto-lock selects the first eligible saved target. A manual lock
-  replaces it, and observed data fills previously empty target fields.
-- Associated client targets open a dedicated Client Focus view. Unassociated
-  clients wait for an observed association instead of guessing a channel.
-- Locked Wi-Fi targets tune to the related channel and start standard IEEE
-  802.11 libpcap capture automatically.
-- AP capture retains both AP-to-client and client-to-AP traffic for the
-  focused BSSID; client capture filters for the exact station.
-- Captures rotate at configurable size and part limits, appear in Vault, and
-  display a blinking red `PCAP RECORDING` indicator in AP or Client Focus.
+- AP and client tables share signal colours, fixed columns, sorting, reverse sorting, filtering, pause, channel lock, and export.
+- AP rows show manufacturer, a client-manufacturer summary, security, WPS, identity, channel, signal, beacon activity, client count, and last-seen or expiry information.
+- Client rows show the associated AP, manufacturer, signal, packets, age, and probe requests.
+- AP expiry is set in Preferences, including a Never option.
+- Manufacturer names come from the local OUI database. `U` updates it immediately. When an update is required, the cache is refreshed if it is older than 30 days. The file is the IEEE `oui.txt` list, stored in the operating system's wifit3 cache directory.
+- A saved target is marked with a red `!` even when automatic locking is off.
+- The highlight follows the same selected AP BSSID or client MAC when live sorting moves it to another row.
+- Hidden `[guess]` rows stay directly below the named sibling that supplied their displayed SSID.
+- Open networks are shown in red with a `!WEAK` marker.
+
+### SSID infrastructures
+
+- Two or more visible APs advertising the same confirmed SSID collapse into one infrastructure row by default.
+- The row aggregates AP count, channels, strongest signal, beacon count, clients, manufacturers, WPS availability, and security.
+- Expanded APs stay individually selectable for Focus, capture, and targets.
+- An SSID known only from historical data is not grouped until it is seen again.
+- A shared SSID shows a common ESS name. It does not prove that every AP has the same owner.
+
+### AP and client information
+
+- AP Focus shows the primary channel and active width in plain language, such as `channel 36 · 80 MHz`. Its magnifying-glass details separate the operating primary/secondary/center channels from supported radio widths, spatial streams, rates, BSS load, timing, power constraints, RSN ciphers, AKMs, PMF, roaming features, vendor IEs, WPS identity, and device identity.
+- Client information includes manufacturer, randomized or local MAC status, association, selected AKM, PMF, radio capabilities, limits, probe requests, and observed Enterprise authentication.
+- WPS Info stays on the AP Focus key menu and on the magnifying-glass control.
+- Entering AP Focus fixes the scanner to that AP's channel until Focus is left.
+- Wide 40/80/160 MHz networks remain tuned through their primary 20 MHz channel. Center-frequency segments are displayed for diagnosis but are never mistaken for the tune target; campaigns stop if the adapter cannot confirm the requested channel.
+- Signal colours match across AP, client, and Bluetooth views.
+- A hidden AP that has a named same-radio sibling uses a yellow `SSID [guess]` label in both Scanner and Focus. The marker is presentation-only and is never appended to the transmitted SSID.
+
+### Passive WPA-Enterprise analysis
+
+The fork parses visible non-key EAPOL/EAP exchanges. EAP Identity values and credential-response payloads are not kept in the profile.
+
+- Recognises Identity, EAP-MD5, EAP-TLS, LEAP, EAP-TTLS, PEAP, EAP-MSCHAPv2, EAP-FAST, EAP-AKA', and TEAP.
+- Reassembles fragmented outer EAP-TLS data within a fixed bound.
+- Records visible TLS versions, selected cipher suites, certificate fingerprints, validity dates, signature algorithms, key algorithms, and key sizes.
+- Explains findings for WEP, legacy WPA, TKIP, missing or optional PMF, EAP-MD5, LEAP, direct EAP-MSCHAPv2, obsolete TLS, weak TLS ciphers, expired certificates, MD5 or SHA-1 signatures, and short RSA keys.
+- Findings include evidence and confidence. High-risk observations add a `!WEAK` marker on the AP table and a security warning in Focus.
+- PEAP and TTLS inner methods, and whether the client validates the RADIUS certificate, are encrypted. Passive scanning cannot determine them.
+- This fork does not include an automated rogue-RADIUS or credential-validation attack.
+
+### Packet capture and Vault
+
+- `X` in AP Focus starts or stops a focused libpcap capture.
+- A locked AP target starts capture after the channel-tuning attempt.
+- A locked associated client opens Client Focus and captures frames involving that client on its AP channel.
+- AP captures keep both AP-to-client FromDS and client-to-AP ToDS frames whose parsed BSSID matches the focused AP.
+- PCAP files use standard IEEE 802.11 libpcap format and are indexed in Vault under the PCAP category.
+- Captures rotate at the configured size and stop at the configured part limit.
+- AP Focus and Client Focus show a blinking red `PCAP RECORDING` indicator with the live total across all rotated files, for example `10 files: 814 MB`.
+- Capture filenames follow the Vault naming and sorting convention.
+
+### Passive open-network metadata
+
+Starting a focused PCAP capture on a confirmed unencrypted `OPEN` AP also starts bounded, passive infrastructure analysis. OWE/Enhanced Open is encrypted and is not treated as an open network.
+
+- Decodes clear-text LLC/SNAP, ARP, IPv4, IPv6, UDP, TCP, DHCP, and IPv6 Router Advertisements.
+- Extracts observed or advertised IPv4 addresses and ranges, IPv6 addresses and prefixes, gateways, DHCP servers, DNS servers, domains, lease expiry, and captive-portal evidence.
+- Correlates DHCP replies to clients through the DHCP client hardware address even when the wireless destination is broadcast.
+- Classifies captive-portal evidence as **Observed** from a plain HTTP redirect, **Declared** from DHCP option 114 or IPv6 option 37, or **Suspected** from bounded portal-like DNS/TLS SNI hints. An expected active HTTP 204 is shown as **NO CAPTIVE PORTAL DETECTED**; an intercepted connectivity check is suspected (90%). Without evidence the panel shows **unknown**, not a misleading zero.
+- Keeps conflicting DHCP servers, gateways, DNS sets, and network ranges with source, confidence, first/last observation times, and expiry instead of silently overwriting them.
+- Shows a compact live/history summary in AP Focus and Client Focus. Select the NETWORK row to expand its evidence.
+- Clicking a client in AP Focus opens its detail box with the captured client IP, ranges, gateway, DHCP/DNS, connectivity, and portal evidence. Missing client-specific values are clearly marked, while relevant AP-wide values are labeled `(AP)`.
+- Saves one versioned `<ssid>_<bssid>_network.json` per BSSID beside PCAP and key artifacts. Writes are private, atomic, debounced, and merged across following sessions.
+- Bounds clients, facts, packet fields, options, and URLs. It does not retain DHCP hostnames/client identifiers, DNS history, HTTP bodies, cookies, credentials, or URL paths/query strings.
+
+The analyzer only consumes packets seen during a live capture; it does not retrospectively analyze old PCAP files.
+
+### Fake-Connect for open and WEP APs
+
+AP Focus shows **Fake-Connect** for confirmed open and WEP APs with a confirmed or sibling-derived SSID. After the normal active-action confirmation, it:
+
+- Generates a randomized temporary client MAC.
+- Performs Open-System authentication and association. A yellow sibling-derived `SSID [guess]` can be attempted when the hidden AP has no exact name; only the SSID itself is transmitted, and the AP may reject it.
+- On WEP, stops at authentication/association and sends no DHCP or connectivity traffic because network data requires the WEP key.
+- Sends bounded DHCP Discover probes, requests one offered lease, and releases it after the connectivity check. The same randomized client MAC is reused for that AP during the session to avoid accumulating unclaimed offers.
+- ARP-checks the default gateway, resolves `connectivitycheck.gstatic.com` through the advertised DNS server, and makes one bounded HTTP request to `http://connectivitycheck.gstatic.com/generate_204`. The active-action confirmation discloses this destination before anything is transmitted.
+- Classifies the expected HTTP 204 as confirmed Internet access, a redirect as an observed captive portal, an unexpected response as suspected interception, and timeouts as limited or inconclusive rather than automatically calling them portals.
+- Immediately merges DHCP and connectivity evidence into the AP and temporary-client NETWORK sections and atomically saves the per-BSSID JSON, even when PCAP recording is not active.
+- Keeps the temporary association active so the AP may emit otherwise-idle broadcast or client-directed traffic for the running capture.
+- Shows the temporary station in the right-side CLIENTS panel with a yellow `◈` and `Fake-Connect` label; it cannot be deauthenticated separately. While any client is connected, a steady cyan L-shaped line links the AP drawing to the center of the CLIENTS panel.
+- Changes the button to **Disconnect** while associated.
+- Sends a client-leaving frame and removes the forged client registration when stopped, when Focus is left, or when the AP disconnects it.
+
+Fake-Connect is unavailable for WPA/OWE APs and for hidden APs with neither an exact historical name nor a named same-radio sibling.
+
+The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and roughly 30 seconds. It does not submit portal forms or retain HTTP bodies, cookies, DNS history, credentials, or URL paths/query strings.
+
+### Targets
+
+- `N` on a selected Wi-Fi AP, Wi-Fi client, or exact Bluetooth device opens New Target.
+- The dialog shows known details and offers Save & Continue, Save & Lock, and Cancel.
+- A target has an alias and can hold Wi-Fi APs, Wi-Fi clients, and Bluetooth devices together in one private `targets.json`.
+- Seeing a target again fills details that were previously empty.
+- Auto-lock is optional and off by default. The first eligible observed target can lock automatically. A manual lock replaces the active lock.
+- An associated Wi-Fi client opens Client Focus. An unassociated client waits until an association is observed. The fork does not guess a channel.
+- A lock times out when the device cannot be reacquired.
+- Preferences, then Targets, supports rename, enable, disable, priority order, and deletion.
 
 ### Bluetooth and BLE
 
-- Dedicated Bluetooth/BLE scanner with fixed identity and activity columns,
-  signal colours, filters, sorting, reverse sorting, and CSV export.
-- Displays manufacturer, likely device category, services, advertisement
-  activity, intervals, identifiers, first-seen time, and last-seen age.
-- Anonymous Apple privacy identifiers may be shown as an explicitly
-  approximate, expandable group without claiming they are the same physical
-  device.
-- Read-only, no-pairing Bluetooth Focus inspects services,
-  characteristics, values, notifications, traffic, and exposure findings.
-- Active-adapter diagnostics report scanner and system-adapter health.
-- Exact saved Bluetooth targets can auto-connect in read-only mode and
-  reconnect during the configured reacquisition period.
-- Because Bleak does not expose raw BLE link-layer packets, Bluetooth target
-  capture records rotating JSONL advertisement and GATT evidence instead of
-  creating misleading PCAP files. Focus displays a blinking red
-  `BLE EVENT RECORDING` indicator.
+- The Bluetooth scanner has filters, stable columns, activity counters, signal colours, sorting, reverse sorting, and CSV export.
+- Columns include manufacturer, likely category, advertised services, advertisement counts, intervals, identifiers, first seen, and last seen.
+- Anonymous Apple privacy identifiers can appear as a clearly marked approximate group. Expanding that group does not treat rotating identifiers as one physical device.
+- An exact Bluetooth device can be connected read-only, without pairing.
+- Bluetooth Focus shows identity, manufacturer, likely category, services, characteristics, values, notifications, traffic, and exposure findings.
+- Diagnostics report the active system adapter and scanner health.
+- A locked Bluetooth target reconnects within the configured reacquisition timeout.
+- Bleak does not provide raw BLE link-layer packets. Locked Bluetooth targets record advertisements and read-only GATT observations as rotating JSONL files. They are not written as PCAP.
+- Bluetooth Focus shows a blinking red `BLE EVENT RECORDING` indicator.
 
-### Navigation, Preferences, and Local Data
+### Hidden SSID history
 
-- The startup screen provides centered Wi-Fi and Bluetooth/BLE choices with
-  highlighted `w` and `b` shortcuts and a manual OUI update action.
-- `Ctrl+P` opens Preferences, `Ctrl+D` opens adapter diagnostics, `Ctrl+Q`
-  exits globally, and `Escape` returns to device selection where appropriate.
-- Preferences include theme, scanner delay, AP expiry, active-action
-  confirmation and intensity, update checks, WPS PBC automation, target
-  auto-lock and reacquisition, capture location and rotation, and handshake
-  PCAP saving.
-- Vault remains Wi-Fi-specific. Bluetooth observations use their own JSONL
-  event records.
-- Target data, hidden-SSID history, captures, Bluetooth events, and scan
-  exports are excluded from Git. Protect these files because captures may
-  contain sensitive network and device metadata.
-- Automatic update checking only queries this fork's
-  `yadox666/wifit3-ng` GitHub latest-release API. It reports updates but never
-  downloads or installs them.
+- Every confirmed BSSID-to-SSID observation is stored in private `hidden_ssids.json`, including APs first seen with a visible name.
+- When a network first appears hidden and its SSID is later revealed, the reveal method is retained.
+- A later hidden observation of that exact BSSID is labelled with the historical SSID.
+- Historical, unconfirmed names use a yellow `SSID [history]` label until they are observed again.
+- Each record stores the reveal method and the first and last reveal times.
+
+### Preferences and diagnostics
+
+Preferences (`Ctrl+P`) include:
+
+- Theme.
+- Scanner sort delay.
+- Inactive-AP display lifetime, including Never.
+- Active-action intensity.
+- Capture directory.
+- Automatic update checks.
+- Confirmation for active wireless actions.
+- Automatic WPS PBC capture.
+- Automatic saved-target locking.
+- Target reacquisition timeout.
+- Capture rotation size and part limit.
+- Handshake PCAP saving.
+
+About and the target editor open from Preferences.
+
+Automatic update checking is off until it is enabled. When it is on, startup sends one HTTPS request to the [yadox666/wifit3-ng latest-release API](https://api.github.com/repos/yadox666/wifit3-ng/releases/latest). The check reports an available release. It does not download or install it, and it does not send scan or device data. About can run the same check on demand.
+
+### Private local files
+
+| File | Location | Contents |
+|---|---|---|
+| `config.toml` | OS user-config directory for `wifit3` | Preferences |
+| `targets.json` | Same config directory | Aliases and observed target metadata |
+| `hidden_ssids.json` | Same config directory | Historical BSSID-to-SSID mappings |
+| `oui.txt` | OS user-cache directory for `wifit3` | IEEE manufacturer database |
+| `captures/` | Path set in Preferences, default `captures` | Handshakes, focused PCAP files, and other Vault artifacts |
+| `captures/<ssid>_<bssid>_network.json` | Beside the AP's capture artifacts | Versioned passive AP/client network metadata |
+| `captures/scan_exports/` | Under the capture directory | Wi-Fi CSV/JSON and Bluetooth CSV snapshots |
+| `captures/bluetooth_targets/target_events_*.jsonl` | Under the capture directory | Bluetooth advertisement and GATT observations |
+
+Configuration JSON is written with private file permissions where the operating system supports them. These artifacts are excluded by `.gitignore`. Do not publish the capture directory.
 
 ## Screenshots
 
@@ -165,7 +236,7 @@ project.
 
 ## Supported Hardware
 
-> **Important:** *At least one supported USB wireless adapter is required.*
+> **Important:** *At least one supported USB wireless adapter is required for Wi-Fi.*
 
 | Chipset | Bands | Cards (Make + Model) |
 |---|---|---|
@@ -189,80 +260,98 @@ project.
 | Ralink RT5372 | 2.4 GHz | Panda PAU05/PAU06 |
 | Ralink RT5572 | 2.4 / 5 GHz | Panda PAU09 N600 |
 
-Breakdown of each device's capabilities and limitations: [Supported Hardware Doc](docs/SUPPORTED-HARDWARE.md).
+Per-device capabilities and limitations: [Supported Hardware](docs/SUPPORTED-HARDWARE.md).
 
-## Installation & Running
+## Installation and running
 
-### Option 1: Download Prebuilt Fork Binaries
-Download the latest standalone executable from the
-[enhanced fork releases](https://github.com/yadox666/wifit3-ng/releases/latest).
+Python 3.11 or newer is required to run from source. Release **0.3.4** binaries are published from this fork.
 
-* **Windows:** Download and run `wifit3-windows-x64.exe`.
-* **Linux (non-sudo):** `chmod +x wifit3-linux-x64 && ./wifit3-linux-x64`
-* **macOS:** (bypass quarantine)
+### Option 1: Download a prebuilt binary
+
+Download the latest executable from the [wifit3-ng releases](https://github.com/yadox666/wifit3-ng/releases/latest).
+
+* **Windows:** `wifit3-windows-x64.exe`
+* **Linux x64:** `chmod +x wifit3-linux-x64 && ./wifit3-linux-x64`
+* **Linux arm64:** `chmod +x wifit3-linux-arm64 && ./wifit3-linux-arm64`
+* **macOS** (universal2; clear quarantine first):
   ```bash
   xattr -d com.apple.quarantine wifit3-macos-universal2
   chmod +x wifit3-macos-universal2
   ./wifit3-macos-universal2
   ```
 
-### Option 2: Run from Source
-wifit3 uses Astral's [`uv`](https://docs.astral.sh/uv/). `sync` sets up dependencies:
+### Option 2: Run from source
+
+This repository uses Astral's [`uv`](https://docs.astral.sh/uv/).
+
 ```bash
 uv sync
 uv run wifit3
 ```
 
-### Option 3: Build your own binary
+`./start.sh` creates a local virtualenv, installs the package, and launches the same entry point.
+
+### Option 3: Build a binary
+
 ```bash
 uv run pyinstaller wifit3.spec --noconfirm --clean
 ```
-Binary executable is written to `dist/` subdirectory.
 
-## One-Time Driver Setup
+The executable is written to `dist/`. PyInstaller does not cross-compile, so build on the operating system you want to ship.
 
-wifit3 automatically handles hardware configuration within the app, after clicking the `START` button:
+## One-time driver setup
 
-- **Linux:** Prompts once via `pkexec`/`sudo` to write udev permissions and blocklists in `/etc/modprobe.d/`.
-- **macOS:** No installation required; plug in the device and select *Allow* in the authorization dialog.
-- **Windows:** Prompts once via UAC to install WinUSB for the device.
+After you press **START WI-FI**, wifit3 configures the selected USB adapter:
+
+- **Linux:** Prompts once through `pkexec` or `sudo` to write udev permissions and blocklists in `/etc/modprobe.d/`.
+- **macOS:** No installation step. Plug in the device and select *Allow* in the authorization dialog.
+- **Windows:** Prompts once through UAC to install WinUSB for the device.
 
 ## Uninstalling
-Return the previously-installed device to your operating system's Wi-Fi stack:
 
-1. Select the card on the wifit3 splash screen.
-2. Click the `Uninstall` button and confirm.
-3. Accept the elevation prompt (UAC on Windows or `pkexec` on Linux).
+Return a previously configured adapter to the operating system's Wi-Fi stack:
+
+1. Select the card on the startup screen.
+2. Click **Uninstall** and confirm.
+3. Accept the elevation prompt (UAC on Windows, or `pkexec` on Linux).
 4. Unplug and re-plug the adapter.
 
-On Linux, this deletes wifit3's `udev` and `modprobe` rules.
-On Windows, this uninstalls the WinUSB binding, and triggers a PnP device rescan (old driver reattaches).
+On Linux this deletes wifit3's `udev` and `modprobe` rules. On Windows this removes the WinUSB binding and triggers a PnP rescan so the previous driver can reattach.
 
-## *Thank you, Linux!*
+## How it works
 
-wifit3 only exists because of the great people who reverse-engineered and maintained these Linux wireless
-drivers. It's usually a thankless job.
+wifit3 bypasses the operating system's native Wi-Fi stack. It ships lightweight Python ports of Linux kernel drivers ([`src/wifit3/chips/`](src/wifit3/chips)) that control supported wireless devices over USB bulk and control transfers.
 
-Special thanks to:
-- **Christian "kimo" B. ([@kimocoder](https://github.com/kimocoder))** who maintains **wifite2** and `aircrack-ng`'s RTL8188EUS DKMS driver.
-- [**Neur0sp1cy**](https://github.com/neur0sp1cy): Close friend and the master to my Linux & wireless-hacking apprenticeship.
-- **Nick Morrow** ([@morrownr](https://github.com/morrownr)), legend, maintains the out-of-tree Realtek USB
-  DKMS drivers.
+Register-level frame injection and monitor mode run in user space, so Windows NDIS restrictions and Linux kernel driver locking do not apply to those cards.
 
-The full list is in **[CREDITS.md](docs/CREDITS.md)**.
+Bluetooth/BLE does not use those mini-drivers. The scanner and read-only GATT inspection go through Bleak and the system Bluetooth adapter.
 
-## How it Works: Mini-Drivers
+Architecture, driver porting, and USB trace replay are documented in [docs/porting/METHODOLOGY.md](docs/porting/METHODOLOGY.md).
 
-wifit3 bypasses the operating system's native Wi-Fi stack entirely. It ships with lightweight Python ports of Linux kernel drivers ([src/wifit3/chips/\*](https://github.com/derv82/wifit3/tree/master/src/wifit3/chips)) that directly control wireless devices over USB bulk and control transfers.
+## Validation
 
-Because register-level frame injection and monitor mode are performed entirely in user space, Windows NDIS restrictions and Linux kernel driver locking do not apply.
+Version 0.3.4 is covered by the upstream test suite plus tests for Bluetooth, targets, PCAP rotation, hidden SSID history, infrastructure grouping, and passive Enterprise analysis.
 
-For architecture details, driver porting methodology, and USB trace replay tooling, see the [Porting Documentation](https://github.com/derv82/wifit3/blob/master/docs/porting/METHODOLOGY.md).
+```bash
+uv run pytest
+```
 
-## License & Disclaimer
+## Credits
 
-**Code:** Licensed under [**GNU General Public License v2.0**](LICENSE) (matching upstream Linux drivers).
+wifit3 exists because people reverse-engineered and maintained the Linux wireless drivers this project ports.
 
-**Firmware:** Vendor firmware blobs loaded onto adapters are redistributed verbatim under their respective manufacturers' licenses (details in [FIRMWARE.md](docs/FIRMWARE.md)).
+- **Christian "kimo" B. ([@kimocoder](https://github.com/kimocoder))** maintains **wifite2** and `aircrack-ng`'s RTL8188EUS DKMS driver.
+- [**Neur0sp1cy**](https://github.com/neur0sp1cy) taught the original author Linux and wireless work.
+- **Nick Morrow** ([@morrownr](https://github.com/morrownr)) maintains the out-of-tree Realtek USB DKMS drivers.
 
-**⚠️ Notice & Disclaimer:** For use only on networks and equipment you own or are explicitly authorized to audit. wifit3 operates directly on USB hardware registers without kernel guardrails; use at your own risk.
+The original development by [derv82](https://github.com/derv82) is what made this fork possible. The full list is in [docs/CREDITS.md](docs/CREDITS.md).
+
+## License and disclaimer
+
+**Code:** [GNU General Public License v2.0](LICENSE), matching the upstream Linux drivers.
+
+**Firmware:** Vendor firmware blobs loaded onto adapters are redistributed verbatim under their manufacturers' licenses. See [docs/FIRMWARE.md](docs/FIRMWARE.md).
+
+**Use only on networks and equipment you own or are explicitly authorised to audit.** wifit3 talks to USB hardware registers without kernel guardrails. PCAP and JSONL files can contain traffic, identifiers, EAP material, service values, and network metadata. Protect the capture directory and do not publish it.
+
+Approximate Bluetooth groups and same-SSID Wi-Fi groups are presentation aids. They are not proof of physical identity or ownership. Passive Enterprise findings describe observed evidence only. They cannot prove the security of encrypted inner authentication or of client certificate validation.
