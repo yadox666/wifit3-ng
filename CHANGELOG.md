@@ -4,7 +4,7 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
-## Unreleased
+## 0.3.6 - 2026-09-27
 
 ### Added
 
