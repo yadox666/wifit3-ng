@@ -18,6 +18,13 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 
 # Collects firmware blobs (*.bin, *.fw), ANSI art (*.ans), and Windows installer (wdi-simple.exe)
 datas = collect_data_files("wifit3")
+for _name in (
+    "rtl8761bu_fw.bin",
+    "rtl8761bu_config.bin",
+    "LICENCE.rtlwifi_firmware.txt",
+    "firmware.json",
+):
+    datas.append((os.path.join("artifacts", "rtl8761", _name), "artifacts/rtl8761"))
 if sys.platform != "win32":
     # /setup/bin/* is 100% windows-specific
     datas = [(src, dest) for (src, dest) in datas

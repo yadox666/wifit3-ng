@@ -125,9 +125,9 @@ class BluetoothScannerView(Screen):
     _COLUMNS = [
         ("name", "DEVICE"),
         ("rssi", "POWER"),
-        ("category", "TYPE"),
-        ("advertisements", "ADV"),
-        ("interval", "INTERVAL"),
+        ("category", "RADIO / TYPE"),
+        ("advertisements", "OBS"),
+        ("interval", "LATEST GAP"),
         ("first_seen", "FIRST SEEN"),
         ("last_seen", "LAST SEEN"),
         ("manufacturer", "MANUFACTURER"),
@@ -137,7 +137,7 @@ class BluetoothScannerView(Screen):
     _COLUMN_WIDTHS = {
         "name": 22,
         "rssi": 8,
-        "category": 12,
+        "category": 16,
         "advertisements": 8,
         "interval": 10,
         "first_seen": 10,
@@ -197,8 +197,12 @@ class BluetoothScannerView(Screen):
         self._update_sort_readout()
         self.query_one("#bluetooth-table", DataTable).focus()
         self.query_one("#bluetooth-log", RichLog).write(
-            "[bold green]Bluetooth LE scanner initialized[/bold green]\n"
-            "[dim]Services are capabilities declared in advertisements; select a row for details.[/dim]"
+            (
+                "[bold green]Bluetooth Classic + LE USB scanner initialized[/bold green]\n"
+                if self.app.bluetooth_manager.is_usb_scanning else
+                "[bold green]Bluetooth LE scanner initialized[/bold green]\n"
+            )
+            + "[dim]The RADIO marker distinguishes Classic BT from BLE observations.[/dim]"
         )
         self.set_interval(0.2, self.refresh_table)
 
@@ -394,7 +398,7 @@ class BluetoothScannerView(Screen):
         cells = [
             name_cell,
             signal_cell,
-            Text(category, style="cyan", no_wrap=True),
+            Text(f"{device.radio_label} {category}", style="cyan", no_wrap=True),
             advertisements_cell,
             interval_cell,
             first_seen_cell,
@@ -430,6 +434,7 @@ class BluetoothScannerView(Screen):
             device.identifier,
             manufacturer_label(device.manufacturer_ids, device.identifier),
             category,
+            device.radio_label,
             *(service_label(uuid) for uuid in services),
         )).casefold()
         return all(token in searchable for token in self._filter_text.casefold().split())
@@ -459,6 +464,10 @@ class BluetoothScannerView(Screen):
             if device.approximate_group else device.identifier
         )
         log.write(f"[bold]{device.name}[/bold]  [dim]{identifier}[/dim]")
+        log.write(
+            f"Radio: [bold cyan]{device.radio_label}[/bold cyan]  "
+            f"Discovery: [bold]{'dedicated USB HCI' if device.discovery_source == 'usb-hci' else 'system BLE'}[/bold]"
+        )
         if device.approximate_group:
             log.write(
                 "[bold yellow]Approximate privacy group:[/bold yellow] identifiers cannot be "
@@ -475,14 +484,22 @@ class BluetoothScannerView(Screen):
             )
         log.write(
             f"Signal: [{dbm_style(device.rssi)}]{device.rssi} dBm[/]  TX: {tx_power}  "
-            f"Advertisements: {device.advertisement_count}  Latest interval: {interval}"
+            f"Observations: {device.advertisement_count}  Latest gap: {interval}"
         )
         log.write(
-            f"Observed for: {duration:.1f}s  Advertisement data: "
+            f"Observed for: {duration:.1f}s  Discovery payload: "
             f"manufacturer {device.manufacturer_data_bytes} B, service {device.service_data_bytes} B"
         )
+        if device.class_of_device is not None:
+            log.write(f"Classic class of device: [bold]0x{device.class_of_device:06x}[/bold]")
         log.write(f"Advertised services: {service_details}")
-        log.write("[dim]A complete GATT service list requires connecting to the device.[/dim]")
+        if device.is_connectable_with_bleak:
+            log.write("[dim]A complete GATT service list requires connecting to the device.[/dim]")
+        else:
+            log.write(
+                "[dim]Dedicated USB discovery uses active Classic inquiry and passive BLE scan; "
+                "GATT Focus remains available through SCAN BLE.[/dim]"
+            )
 
     def action_toggle_selected_group(self) -> None:
         table = self.query_one("#bluetooth-table", DataTable)
@@ -525,6 +542,13 @@ class BluetoothScannerView(Screen):
             return
         if device.approximate_group:
             self.notify("Expand the Apple group and select one identifier first.", severity="warning")
+            return
+        if not device.is_connectable_with_bleak:
+            self.notify(
+                "USB HCI observations are discovery-only; use SCAN BLE for GATT Focus.",
+                title="Bluetooth USB",
+                severity="warning",
+            )
             return
         self.connect_device(device)
 
@@ -577,7 +601,7 @@ class BluetoothScannerView(Screen):
             return
         matches = []
         for device in self.app.bluetooth_manager.devices():
-            if device.approximate_group:
+            if device.approximate_group or not device.is_connectable_with_bleak:
                 continue
             target = self.app.target_store.find(
                 "bluetooth", "device", device.identifier,
@@ -598,6 +622,13 @@ class BluetoothScannerView(Screen):
         self._target_navigation_pending = True
         try:
             self.app.target_store.update_missing(target, candidate.details)
+            if not device.is_connectable_with_bleak:
+                self.notify(
+                    "Target saved; USB HCI discovery does not open GATT Focus.",
+                    title="Bluetooth USB",
+                    severity="information",
+                )
+                return
             if not self.app.mark_target_locked(target):
                 return
             self.app.start_bluetooth_target_capture(target, device)

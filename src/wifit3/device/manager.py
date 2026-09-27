@@ -454,7 +454,10 @@ class DeviceManager:
     def _ensure_array(self) -> WlanArray:
         if self.app.array is None:
             array = WlanArray(
-                sink=WlanSink(getattr(self.app, "hidden_ssid_store", None)),
+                sink=WlanSink(
+                    getattr(self.app, "hidden_ssid_store", None),
+                    getattr(self.app, "wifi_profile_store", None),
+                ),
             )
             array.register_disconnect_callback(self.app.notify_device_lost)
             self.app.array = array

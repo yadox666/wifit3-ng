@@ -3,7 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from wifit3.bluetooth.hci_protocol import DiscoveryObservation
 from wifit3.bluetooth.manager import BluetoothManager, BluetoothScanError
+from wifit3.bluetooth.usb_hci import UsbBluetoothController
 
 
 class _Scanner:
@@ -168,4 +170,70 @@ async def test_cancelled_connection_disconnects_partial_client():
 
     assert client.disconnected
     assert manager.connection is None
+
+
+@pytest.mark.asyncio
+async def test_usb_scanner_is_separate_and_marks_classic_observations():
+    controller = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+    )
+    scanner = None
+
+    class UsbScanner:
+        def __init__(self, selected, callback):
+            nonlocal scanner
+            scanner = self
+            self.controller = selected
+            self.callback = callback
+            self.started = False
+            self.stopped = False
+
+        async def start(self):
+            self.started = True
+
+        async def stop(self):
+            self.stopped = True
+
+    manager = BluetoothManager(usb_scanner_factory=UsbScanner)
+    await manager.start_usb(controller)
+    scanner.callback(DiscoveryObservation(
+        identifier="AA:BB:CC:DD:EE:FF",
+        radio_type="BT",
+        rssi=-50,
+        class_of_device=0x240404,
+    ))
+
+    observed = manager.devices()[0]
+    assert manager.is_usb_scanning
+    assert manager.backend_name == "RTL8761BU"
+    assert observed.radio_label == "BT"
+    assert observed.discovery_source == "usb-hci"
+    assert observed.class_of_device == 0x240404
+    assert not observed.is_connectable_with_bleak
+
+    await manager.stop()
+    assert scanner.stopped
+
+
+def test_usb_and_ble_observations_merge_as_dual_mode():
+    manager = BluetoothManager()
+    platform_device = SimpleNamespace(address="AA:BB:CC:DD:EE:FF", name=None)
+    advertisement = SimpleNamespace(
+        local_name="Headset",
+        rssi=-45,
+        service_uuids=[],
+        service_data={},
+        manufacturer_data={},
+        tx_power=None,
+    )
+    manager._on_advertisement(platform_device, advertisement)
+    manager._on_usb_observation(DiscoveryObservation(
+        identifier="AA:BB:CC:DD:EE:FF",
+        radio_type="BT",
+        rssi=-48,
+    ))
+
+    observed = manager.devices()[0]
+    assert observed.radio_label == "BT+BLE"
+    assert observed.name == "Headset"
 

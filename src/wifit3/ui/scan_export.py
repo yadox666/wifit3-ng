@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 from wifit3.id import vendor_for_mac
+from wifit3.dot11.ie import beacon_rsn_ie
 from wifit3.models import AccessPoint, Client
 from wifit3.persist.config import Config
 
@@ -26,13 +27,22 @@ def _json_safe(value):
 
 
 def _ap_record(ap: AccessPoint) -> dict:
+    rsn_ie = beacon_rsn_ie(ap.last_beacon_frame)
     return {
         "ssid": ap.ssid,
         "bssid": ap.bssid,
+        "is_own_fake": ap.is_own_fake,
+        "own_fake_active": ap.own_fake_active,
         "manufacturer": vendor_for_mac(ap.bssid),
         "signal_dbm": ap.signal,
         "channel": ap.channel,
         "encryption": ap.encryption,
+        "rsn_ie_hex": rsn_ie.hex() if rsn_ie is not None else None,
+        "akms": list(ap.akms),
+        "akm_suites": list(ap.akm_suites),
+        "pairwise_cipher": ap.pairwise_cipher,
+        "pmf_capable": ap.pmf_capable,
+        "pmf_required": ap.pmf_required,
         "wps": ap.wps,
         "wps_locked": ap.wps_locked,
         "country": ap.country_code,
@@ -52,6 +62,16 @@ def _client_record(client: Client, access_points: dict[str, AccessPoint]) -> dic
         "connected_bssid": client.bssid,
         "connected_ssid": ap.ssid if ap else None,
         "probe_requests": sorted(client.probed_ssids),
+        "probe_observations": {
+            ssid: {
+                "channel": observation.channel,
+                "first_seen": _iso_time(observation.first_seen),
+                "last_seen": _iso_time(observation.last_seen),
+                "count": observation.count,
+                "historical": observation.historical,
+            }
+            for ssid, observation in sorted(client.probe_observations.items())
+        },
         "last_seen": _iso_time(client.last_seen),
         "capabilities": _json_safe(asdict(client.capabilities)),
     }

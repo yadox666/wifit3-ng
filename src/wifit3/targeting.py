@@ -82,6 +82,10 @@ def client_candidate(
         "associated_ssid": access_point.ssid if access_point is not None else None,
         "associated_channel": access_point.channel if access_point is not None else None,
         "probe_requests": sorted(client.probed_ssids),
+        "probe_observations": {
+            ssid: _json_safe(asdict(observation))
+            for ssid, observation in sorted(client.probe_observations.items())
+        },
         "first_seen": client.first_seen,
         "last_seen": client.last_seen,
         "capabilities": _json_safe(asdict(client.capabilities)),
@@ -101,6 +105,9 @@ def bluetooth_candidate(device: BluetoothDevice) -> TargetCandidate:
     details = {
         "identifier": device.identifier,
         "name": device.name,
+        "radio_types": list(device.radio_types),
+        "discovery_source": device.discovery_source,
+        "class_of_device": device.class_of_device,
         "manufacturer": manufacturer,
         "probable_type": device_category(device),
         "signal_dbm": device.rssi,

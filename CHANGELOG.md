@@ -4,9 +4,45 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
-## 0.3.5 - 2026-09-27
+## Unreleased
 
 ### Added
+
+- Added an automated probe honeypot for directed client probes. After selecting
+  an observed SSID, `OPEN` or `WPA2-PSK`, and a one-to-five-minute duration,
+  WiFiT3 chooses a spoof-capable interface, the observed channel, and a random
+  local BSSID.
+- Added separate probe, Open-System authentication, association, and DHCP
+  Discover/Request evidence stages. The test serves no DHCP, DNS, or Internet,
+  performs no deauthentication, and records every requesting client.
+- Added a completion summary listing every observed client MAC with its probe,
+  authentication, association, EAPOL M2, and DHCP counters. The originating
+  client is marked as `ORIGIN` while every other requesting client is answered
+  and tracked. Directed probes and wildcard scans are counted separately, and
+  locally administered addresses are marked as possibly randomized.
+- WPA2 honeypots send M1 after association and save captured M1/M2 material to
+  Vault in Hashcat 22000 form and, when enabled, PCAP.
+- WPA2 honeypots prefer a PSK-compatible RSN profile derived from a live
+  same-SSID AP, then from bounded prior JSON scan exports, before falling back
+  to generic WPA2-PSK/CCMP. Scan exports now retain the raw RSN IE for reuse.
+- Added private, bounded `wifi_profiles.json` persistence for automatically
+  observed secure beacon profiles. WPA2 honeypots reuse stored ciphers, PMF
+  capability, ERP/HT/VHT/extended capabilities, and WMM with channel-safe
+  normalization; unsupported SAE/RSNXE and 802.11r Mobility Domain claims are
+  intentionally omitted.
+- Clarified WPA2 Open-System authentication as a pre-association stage and made
+  runs without M2 finish with `NO M2 CAPTURED · nothing saved to Vault`.
+- Added per-SSID probe channel, recency, and count tracking for Wi-Fi clients.
+- Generated honeypot APs now remain visible as separate, red, explicitly
+  owned fake-AP rows in the scanner while active and after stopping.
+- Persisted directed client probes in the private `hidden_ssids.json` history
+  with client, SSID, channel, count, and timing fields. Probe records remain
+  separate from confirmed BSSID-to-SSID mappings.
+- Added an unlimited-parts option for Wi-Fi PCAP and Bluetooth target capture
+  rotation.
+- Kept infrastructure (`I`) restricted to the AP table while making Vault
+  (`V`) available from both AP and Clients tables.
+- Restricted the probe honeypot (`A`) footer action to the Clients table.
 
 #### Passive open-network metadata
 
@@ -15,6 +51,9 @@ build compared with the original
   DHCP, and IPv6 Router Advertisements.
 - Added AP-level and per-client observations for IPv4/IPv6 addresses and
   ranges, gateways, DHCP servers, DNS servers, domains, leases, and expiry.
+- Added complete deduplicated AP-level and per-client website lists from clear-text DNS
+  questions, TLS SNI, and HTTP requests. Full HTTP URLs replace SNI origins
+  and DNS-only placeholders for the same host; distinct paths remain separate.
 - Added DHCP broadcast-reply correlation through the DHCP client hardware
   address.
 - Added captive-portal evidence from DHCP option 114, IPv6 option 37, plain
@@ -128,10 +167,12 @@ build compared with the original
 
 - Network metadata files use best-effort private permissions and atomic
   replacement.
-- Passive metadata storage is bounded by client, fact, option, field, and URL
-  limits.
-- DHCP hostnames/client identifiers, complete DNS histories, HTTP bodies,
-  cookies, credentials, URL paths, and URL query strings are not retained.
+- Passive metadata storage is bounded by client, non-website fact, option,
+  field, and individual URL-length limits. Website lists retain every
+  deduplicated URL.
+- DHCP hostnames/client identifiers, HTTP bodies, cookies, credentials,
+  fragments, and sensitive query values are not retained. Sensitive query
+  values are persisted as `REDACTED`.
 - Fake-Connect uses randomized temporary client addresses, claims at most one
   temporary lease, makes one bounded disclosed connectivity request, and sends
   DHCP Release afterward. It does not submit portal forms or transmit

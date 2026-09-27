@@ -158,7 +158,8 @@ class TargetCaptureSetting(VerticalGroup):
         )
         yield Select(
             [("1 capture part", 1), ("3 capture parts", 3),
-             ("5 capture parts", 5), ("10 capture parts", 10)],
+             ("5 capture parts", 5), ("10 capture parts", 10),
+             ("Unlimited capture parts", 0)],
             value=Config.target_capture_max_parts,
             allow_blank=False,
             id="target_capture_max_parts",

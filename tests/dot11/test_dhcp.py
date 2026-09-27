@@ -8,6 +8,7 @@ from wifit3.dot11.dhcp import (
     build_release,
     build_request,
     parse_ack,
+    parse_client_message,
     parse_offer,
 )
 from wifit3.dot11.mac import mac_header
@@ -63,6 +64,18 @@ def test_build_discover_contains_randomized_client_and_requested_options():
     assert b"\x35\x01\x01" in body
     assert b"\x72" in body  # captive-portal option requested
     assert len(body) >= 300  # BOOTP minimum for embedded-server compatibility
+
+
+def test_parse_client_message_recognizes_only_matching_discover_and_request():
+    discover = build_discover(BSSID, CLIENT, XID)
+    request = build_request(
+        BSSID, CLIENT, XID, "192.168.40.25", "192.168.40.2",
+    )
+
+    assert parse_client_message(discover, CLIENT) == "discover"
+    assert parse_client_message(request, CLIENT) == "request"
+    assert parse_client_message(discover, bytes.fromhex("021122334466")) is None
+    assert parse_client_message(_offer_frame(), CLIENT) is None
 
 
 def test_parse_offer_extracts_network_data_and_discards_portal_path():

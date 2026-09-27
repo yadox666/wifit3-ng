@@ -29,6 +29,8 @@ def test_bluetooth_export_writes_device_details(tmp_path, monkeypatch):
         rows = list(csv.DictReader(stream))
     assert path.name.startswith("bluetooth_")
     assert rows[0]["name"] == "Test Beacon"
+    assert rows[0]["radio"] == "BLE"
+    assert rows[0]["discovery_source"] == "system"
     assert rows[0]["manufacturer"] == "Apple, Inc. (004C)"
     assert rows[0]["signal_dbm"] == "-42"
     assert rows[0]["advertised_services"] == "Battery Service (180f)"

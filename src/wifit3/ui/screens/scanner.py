@@ -13,7 +13,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.reactive import Reactive
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header, RichLog
+from textual.widgets import DataTable, Footer, Header, RichLog, Static
 from textual.widgets._header import HeaderClock, HeaderIcon, HeaderTitle
 from textual.widgets.data_table import CellKey, ColumnKey, RowKey
 from rich.markup import escape
@@ -22,10 +22,18 @@ from rich.text import Text
 from ..selectable_rich_log import SelectableRichLog
 
 from wifit3.campaigns import treelog
+from wifit3.campaigns.campaign import Campaign
+from wifit3.campaigns.open_probe_ap import OpenProbeApCampaign
 from wifit3.campaigns.pbc import PbcWatcher, WpsPbcCapture
 from wifit3.campaigns.wps.registrar import PinResult
+from wifit3.dot11.ie import (
+    beacon_rsn_ie,
+    compatible_wpa2_profile_ies,
+    force_psk_akm,
+)
 from wifit3.id import oui_db, vendor_for_mac
 from wifit3.persist.config import Config
+from wifit3.persist.rsn_profiles import load_scan_rsn_profiles
 from wifit3.persist.targets import SavedTarget, TargetStoreError
 from wifit3.models import AccessPoint, Client, IdKey, IdSource
 from wifit3.targeting import TargetCandidate, ap_candidate, client_candidate
@@ -46,6 +54,7 @@ from wifit3.wlan.channels import band_ranges
 from .channel_filter import ChannelFilterDialog
 from .filter import EncryptionFilter, FilterBar, ScanFilter
 from .new_target import NewTargetModal, NewTargetResult
+from .open_probe_modal import OpenProbeSsidModal
 
 if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
@@ -87,7 +96,7 @@ def _ssid_infrastructures(
 ) -> dict[str, list[AccessPoint]]:
     grouped: dict[str, list[AccessPoint]] = {}
     for ap in access_points:
-        if not ap.ssid or ap.decloak_method == "history":
+        if not ap.ssid or ap.decloak_method == "history" or ap.is_own_fake:
             continue
         grouped.setdefault(ap.ssid.casefold(), []).append(ap)
     return {ssid: members for ssid, members in grouped.items() if len(members) > 1}
@@ -301,6 +310,16 @@ class ScannerView(Screen):
 
     app: "WifiteApp"
 
+    CSS = """
+    #open-probe-active {
+        height: 1;
+        display: none;
+        content-align: center middle;
+        color: $error;
+        text-style: bold blink;
+    }
+    """
+
     BINDINGS = [
         Binding("escape", "go_back", "Devices", show=True),
         Binding("c", "change_channel", "Channel Lock", show=True),
@@ -314,6 +333,7 @@ class ScannerView(Screen):
         Binding("t", "toggle_view", "APs/Clients", show=True),
         Binding("i", "toggle_infrastructure", "Infrastructure", show=True),
         Binding("n", "new_target", "New Target", show=True),
+        Binding("a", "open_probe_ap", "Probe Honeypot", show=True),
         Binding("v", "open_vault", "Vault", show=True),
         Binding("x", "export_scan", "Export", show=True),
         Binding("home", "scroll_home", "Top", show=False, priority=True),
@@ -388,6 +408,9 @@ class ScannerView(Screen):
         self._client_cache: Dict[str, Client] = {}
         self._paused = False
         self._target_navigation_pending = False
+        self._open_probe_campaign: OpenProbeApCampaign | None = None
+        self._open_probe_event_index = 0
+        self._open_probe_saved_clients: set[str] = set()
         self._infrastructure_members: dict[str, tuple[AccessPoint, ...]] = {}
         self._expanded_infrastructures: set[str] = set()
         self._expanded_member_ssids: dict[str, str] = {}
@@ -397,6 +420,7 @@ class ScannerView(Screen):
 
     def compose(self) -> ComposeResult:
         yield _ScannerHeader()
+        yield Static("", id="open-probe-active")
         array = self.app.array
         supported = list(array.supported_channels) if array else []
         with Vertical():
@@ -457,6 +481,13 @@ class ScannerView(Screen):
     def _active_columns(self) -> list[tuple[str, str]]:
         return self._CLIENT_COLUMNS if self._view_mode == "clients" else self._COLUMNS
 
+    def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
+        if self._view_mode == "clients" and action == "toggle_infrastructure":
+            return False
+        if self._view_mode != "clients" and action == "open_probe_ap":
+            return False
+        return True
+
     def _sort_summary(self) -> str:
         key, label = self._active_columns()[self._sort_idx]
         label = {"beacons": "BEACONS", "clients": "CLIENTS"}.get(key, label)
@@ -495,6 +526,7 @@ class ScannerView(Screen):
     def refresh_table(self) -> None:
         if not self.app.array:
             return
+        self._poll_open_probe_campaign()
         array = self.app.array
         self._maybe_lock_target(array)
         if self._paused:
@@ -518,7 +550,7 @@ class ScannerView(Screen):
                 if self._scan_filter.text and ap.ssid is None
                 else None
             )
-            if not self._scan_filter.matches(ap, ssid=guessed_ssid):
+            if not ap.is_own_fake and not self._scan_filter.matches(ap, ssid=guessed_ssid):
                 if ap.bssid in self.ap_cache:
                     self._forget_row(ap.bssid, drop_from_array=False)
                 continue
@@ -878,6 +910,9 @@ class ScannerView(Screen):
             if index:
                 probes.append("  ·  ", style="dim")
             probes.append(_clip(ssid, 20), style=fg)
+            observation = client.probe_observations.get(ssid)
+            if observation is not None and observation.historical:
+                probes.append(" [history]", style="yellow")
         if not client.probed_ssids:
             probes.append("·", style="dim")
         manufacturer = Text(
@@ -1073,6 +1108,9 @@ class ScannerView(Screen):
         return f"{markup} [bold red]!WEAK[/bold red]" if highest >= 3 else markup
 
     def _identity_cell(self, ap: AccessPoint, is_stale: bool = False) -> Text:
+        if ap.is_own_fake:
+            state = "ACTIVE" if ap.own_fake_active else "STOPPED"
+            return Text(f"OUR HONEYPOT AP · {state}", style="bold red")
         fg = self._theme_fg
         dim = "dim " if is_stale else ""
         text = ap.identity.summary
@@ -1084,7 +1122,10 @@ class ScannerView(Screen):
     def _ssid_cell(self, ap: AccessPoint, target: bool = False) -> Text:
         """Badges plus confirmed, historical, or sibling-guessed SSID."""
         infrastructure = self._infrastructure_members.get(ap.bssid)
-        if infrastructure is not None:
+        if ap.is_own_fake:
+            state = "ACTIVE" if ap.own_fake_active else "STOPPED"
+            name = Text(f"◆ FAKE AP [{state}] · {ap.ssid}", style="bold red")
+        elif infrastructure is not None:
             name = Text(
                 f"▸ {ap.ssid} · {len(infrastructure)} APs",
                 style="bold red" if target else "bold cyan",
@@ -1599,6 +1640,9 @@ class ScannerView(Screen):
             return
         if self._pbc_capturing:
             return
+        if Campaign.active is not None:
+            self._write_log(treelog.leaf("[dim]radio busy: active campaign[/dim]"))
+            return
         asyncio.create_task(self._invade_pbc(ap))
 
     async def _invade_pbc(self, ap: AccessPoint) -> None:
@@ -1645,6 +1689,324 @@ class ScannerView(Screen):
 
     def action_open_vault(self) -> None:
         self.app.action_toggle_vault()
+
+    def action_open_probe_ap(self) -> None:
+        running = self._open_probe_campaign
+        if running is not None and not running.done:
+            running.stopped = True
+            self._write_log(treelog.leaf_warn("stopping automated OPEN probe test"))
+            return
+        if self._view_mode != "clients":
+            self.notify("Switch to Clients view and select a client first", severity="warning")
+            return
+        if Campaign.active is not None or self._pbc_capturing:
+            self.notify("The radio is busy with another active operation", severity="warning")
+            return
+        client = self._selected_client()
+        if client is None:
+            self.notify("Select a client first", severity="warning")
+            return
+        if not client.probe_observations:
+            self.notify(
+                "No channel-tagged directed probe observed; wait for a fresh probe",
+                severity="warning",
+            )
+            return
+        self.app.push_screen(
+            OpenProbeSsidModal(client),
+            lambda selection: (
+                self._confirm_open_probe_test(client, *selection)
+                if selection else None
+            ),
+        )
+
+    def _selected_client(self) -> Client | None:
+        table = self.query_one("#ap-table", DataTable)
+        if not table.row_count:
+            return None
+        try:
+            key = str(table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value)
+        except Exception:
+            return None
+        return self._client_cache.get(key)
+
+    def _confirm_open_probe_test(
+        self,
+        client: Client,
+        ssid: str,
+        timeout: int,
+        encryption: str,
+    ) -> None:
+        observation = client.probe_observations.get(ssid)
+        if observation is None:
+            self.notify("That probe observation is no longer available", severity="warning")
+            return
+        if Config.confirm_active_actions:
+            self.app.push_screen(
+                ConfirmActiveActionModal(
+                    "Automated probe honeypot test",
+                    f"{escape(client.mac)} probing for {escape(ssid)}",
+                    f"Broadcasts a {encryption} test AP and responds to clients "
+                    f"requesting this SSID for up to {timeout // 60} minute(s). "
+                    + (
+                        "WPA2 sends EAPOL M1 and saves captured M1/M2 "
+                        "authentication material to Vault. "
+                        if encryption == "WPA2" else ""
+                    )
+                    + "No DHCP or Internet is served.",
+                ),
+                lambda confirmed: (
+                    self._start_open_probe_test(
+                        client, ssid, timeout, encryption,
+                    )
+                    if confirmed else None
+                ),
+            )
+            return
+        self._start_open_probe_test(client, ssid, timeout, encryption)
+
+    def _honeypot_rsn_profile(
+        self,
+        ssid: str,
+        channel: int,
+    ) -> tuple[bytes | None, str, bytes]:
+        def same_band(candidate: int) -> bool:
+            return (candidate <= 14) == (channel <= 14)
+
+        array = self.app.array
+        if array is not None:
+            live = sorted(
+                (
+                    ap for ap in array.access_points.values()
+                    if ap.ssid == ssid
+                    and not ap.is_own_fake
+                    and 2 in ap.akm_suites
+                    and beacon_rsn_ie(ap.last_beacon_frame) is not None
+                ),
+                key=lambda ap: (same_band(ap.channel), ap.last_seen),
+                reverse=True,
+            )
+            for ap in live:
+                rsn_ie = beacon_rsn_ie(ap.last_beacon_frame)
+                compatible = force_psk_akm(
+                    rsn_ie or b"",
+                    pmf_capable=ap.pmf_capable,
+                )
+                if compatible is not None:
+                    source_ies = (
+                        ap.last_beacon_frame[36:]
+                        if ap.last_beacon_frame is not None
+                        else b""
+                    )
+                    return (
+                        compatible,
+                        f"live AP {ap.bssid} · compatible security/capability clone",
+                        compatible_wpa2_profile_ies(source_ies, channel),
+                    )
+
+        profile_store = getattr(self.app, "wifi_profile_store", None)
+        if profile_store is not None:
+            stored = sorted(
+                (
+                    profile for profile in profile_store.profiles_for_ssid(ssid)
+                    if 2 in profile.akm_suites
+                ),
+                key=lambda profile: (
+                    same_band(profile.channel),
+                    profile.last_seen,
+                ),
+                reverse=True,
+            )
+            for profile in stored:
+                compatible = force_psk_akm(
+                    profile.rsn_ie,
+                    pmf_capable=profile.pmf_capable,
+                )
+                if compatible is not None:
+                    return (
+                        compatible,
+                        f"saved AP profile {profile.bssid} · "
+                        "compatible security/capability clone",
+                        compatible_wpa2_profile_ies(profile.ies, channel),
+                    )
+
+        history = sorted(
+            (
+                profile for profile in load_scan_rsn_profiles(ssid)
+                if 2 in profile.akm_suites
+            ),
+            key=lambda profile: same_band(profile.channel),
+            reverse=True,
+        )
+        for profile in history:
+            compatible = force_psk_akm(
+                profile.rsn_ie,
+                pmf_capable=profile.pmf_capable,
+            )
+            if compatible is not None:
+                return (
+                    compatible,
+                    f"scan history {profile.source_file} · "
+                    f"{profile.bssid} · PSK-compatible RSN clone",
+                    b"",
+                )
+        return None, "generic WPA2-PSK/CCMP fallback", b""
+
+    def _start_open_probe_test(
+        self,
+        client: Client,
+        ssid: str,
+        timeout: int,
+        encryption: str,
+    ) -> None:
+        array = self.app.array
+        observation = client.probe_observations.get(ssid)
+        if array is None or observation is None:
+            self.notify("The client or wireless array is no longer available", severity="warning")
+            return
+        rsn_ie, rsn_source, profile_ies = (
+            self._honeypot_rsn_profile(ssid, observation.channel)
+            if encryption == "WPA2"
+            else (None, "OPEN", b"")
+        )
+        campaign = OpenProbeApCampaign(
+            array,
+            client,
+            ssid,
+            observation.channel,
+            timeout=timeout,
+            encryption=encryption,
+            rsn_ie=rsn_ie,
+            rsn_source=rsn_source,
+            profile_ies=profile_ies,
+        )
+        if campaign.iface is None:
+            self.notify(
+                f"No spoofable interface can host channel {observation.channel}",
+                severity="error",
+            )
+            return
+        if not campaign.run():
+            self.notify("The radio is busy with another campaign", severity="warning")
+            return
+        self._open_probe_campaign = campaign
+        self._open_probe_event_index = 0
+        self._open_probe_saved_clients.clear()
+        warning = self.query_one("#open-probe-active", Static)
+        warning.update(Text(
+            f"HONEYPOT ACTIVE · {encryption} · {ssid} · CH {observation.channel} · "
+            f"{campaign.iface.name} · {int(campaign.timeout)}s"
+        ))
+        warning.display = True
+        self._write_log(treelog.header("Automated probe honeypot test"))
+        self.notify(
+            f"{encryption} honeypot started for {ssid} on channel "
+            f"{observation.channel}",
+            title="Probe honeypot",
+        )
+
+    def _poll_open_probe_campaign(self) -> None:
+        campaign = self._open_probe_campaign
+        if campaign is None:
+            return
+        warning = self.query_one("#open-probe-active", Static)
+        if not campaign.done:
+            elapsed = (
+                time.monotonic() - campaign.started_at
+                if campaign.started_at is not None else 0.0
+            )
+            remaining = max(0, int(campaign.timeout - elapsed))
+            warning.update(Text(
+                f"HONEYPOT ACTIVE · {campaign.encryption} · {campaign.ssid} · "
+                f"CH {campaign.channel} · {campaign.iface.name} · {remaining}s"
+            ))
+            warning.display = True
+        events = campaign.stats.events
+        for message in events[self._open_probe_event_index:]:
+            self._write_log(treelog.branch(escape(message)))
+        self._open_probe_event_index = len(events)
+        if campaign.encryption == "WPA2" and self.app.array is not None:
+            ap = self.app.array.access_points.get(campaign.bssid_text)
+            if ap is not None:
+                for client_mac, attempt in campaign.stats.clients.items():
+                    if not attempt.m2 or client_mac in self._open_probe_saved_clients:
+                        continue
+                    saved = self.app.vault.save_handshake(ap, client_mac)
+                    if saved is not None:
+                        self._open_probe_saved_clients.add(client_mac)
+                        self._write_log(treelog.branch(
+                            f"WPA2 material saved to Vault · "
+                            f"{escape(client_mac)} · {escape(saved.path.name)}"
+                        ))
+        if not campaign.done:
+            return
+        warning.display = False
+        if campaign.stats.clients:
+            self._write_log(treelog.branch("Client MACs observed"))
+            attempts = sorted(
+                campaign.stats.clients.items(),
+                key=lambda item: (not item[1].is_target, item[0]),
+            )
+            for client_mac, attempt in attempts:
+                role = "ORIGIN" if attempt.is_target else "CLIENT"
+                try:
+                    local = bool(int(client_mac.split(":", 1)[0], 16) & 0x02)
+                except (ValueError, IndexError):
+                    local = False
+                if not attempt.is_target and local:
+                    role += " · locally administered/randomized possible"
+                self._write_log(treelog.branch(
+                    f"[bold]{escape(client_mac)}[/bold] · {role} · "
+                    f"{attempt.phase.name.lower()} · probes {attempt.probes} "
+                    f"(directed {attempt.directed_probes}, "
+                    f"wildcard {attempt.wildcard_probes}) · "
+                    f"auth {attempt.auth} · assoc {attempt.assoc} · "
+                    f"M2 {attempt.m2} · DHCP {attempt.dhcp}"
+                ))
+        result = {
+            "dhcp": "[bold green]CONFIRMED[/bold green] · client associated and requested DHCP",
+            "handshake": (
+                "[bold green]WPA2 M2 CAPTURED[/bold green] · saved to Vault"
+            ),
+            "associated": (
+                "[yellow]ASSOCIATION ATTEMPT[/yellow] · WPA2 4-way handshake not performed"
+                if campaign.encryption == "WPA2"
+                else "[yellow]ASSOCIATED[/yellow] · no DHCP observed before timeout"
+            ),
+            "authenticated": "[yellow]AUTHENTICATED[/yellow] · association not completed",
+            "probe": "[cyan]PROBED[/cyan] · authentication not attempted",
+            "timeout": "[dim]TIMEOUT[/dim] · no client response",
+            "stopped": "[dim]STOPPED[/dim]",
+            "no-interface": "[red]FAILED[/red] · no compatible interface",
+        }.get(campaign.result, escape(campaign.result))
+        if campaign.encryption == "WPA2" and campaign.stats.m2 == 0:
+            result += (
+                " · [bold yellow]NO M2 CAPTURED[/bold yellow] · "
+                "nothing saved to Vault"
+            )
+        self._write_log(treelog.leaf(result))
+        severity = (
+            "information"
+            if campaign.result in ("dhcp", "handshake")
+            else "warning"
+        )
+        self.notify(
+            (
+                "Client requested DHCP from the open test AP"
+                if campaign.result == "dhcp"
+                else "WPA2 M2 captured and saved to Vault"
+                if campaign.result == "handshake"
+                else f"Probe honeypot finished: {campaign.result}"
+            ),
+            title="Probe honeypot",
+            severity=severity,
+        )
+        self._open_probe_campaign = None
+
+    async def stop_open_probe_test(self) -> None:
+        campaign = self._open_probe_campaign
+        if campaign is not None and not campaign.done:
+            await campaign.stop()
 
     def action_toggle_infrastructure(self) -> None:
         if self._view_mode != "aps":
@@ -1742,6 +2104,9 @@ class ScannerView(Screen):
             )
             return None
         ap = self.ap_cache.get(key)
+        if ap is not None and ap.is_own_fake:
+            self.notify("Generated test APs cannot be saved as targets", severity="warning")
+            return None
         return (ap_candidate(ap), ap) if ap is not None else None
 
     def _maybe_lock_target(self, array) -> None:
@@ -1857,6 +2222,7 @@ class ScannerView(Screen):
 
     @work(exclusive=True)
     async def return_to_device_selection(self) -> None:
+        await self.stop_open_probe_test()
         array = self.app.array
         if array is not None:
             await array.stop_hopping()
@@ -1915,6 +2281,7 @@ class ScannerView(Screen):
         self.query_one(FilterBar).set_view(self._view_mode)
         self._update_column_headers()
         self.refresh_table()
+        self.refresh_bindings()
         table.focus()
 
     def action_cycle_sort(self) -> None:
@@ -2036,6 +2403,9 @@ class ScannerView(Screen):
     async def on_data_table_row_selected(
         self, event: DataTable.RowSelected
     ) -> None:
+        if self._open_probe_campaign is not None and not self._open_probe_campaign.done:
+            self.notify("Stop the active OPEN probe test before leaving", severity="warning")
+            return
         row_key = event.row_key.value
         if self._view_mode == "aps" and row_key in self._infrastructure_members:
             self.action_toggle_infrastructure()
@@ -2047,6 +2417,13 @@ class ScannerView(Screen):
         else:
             bssid = row_key
             target_ap = self.ap_cache.get(bssid)
+        if target_ap is not None and target_ap.is_own_fake:
+            state = "active" if target_ap.own_fake_active else "stopped"
+            self.notify(
+                f"Our generated honeypot AP is {state}",
+                title="Honeypot AP",
+            )
+            return
         if target_ap:
             if self.app.array:
                 await self.app.array.stop_hopping()

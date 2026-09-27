@@ -135,7 +135,7 @@ class FakeAP:
         self.stats.assoc += 1
         cs = mac_to_str(client)
         self._advance(cs, ClientPhase.ASSOCED)
-        self._tx(assoc_resp(self.bssid, client))
+        self._tx(assoc_resp(self.bssid, client, channel=self.channel))
         anonce = os.urandom(32)
         rec = self.stats.clients[cs]
         rec.anonce, rec.replay = anonce, 1

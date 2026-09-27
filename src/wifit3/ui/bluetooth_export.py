@@ -28,7 +28,8 @@ def export_bluetooth_snapshot(devices: Iterable[BluetoothDevice]) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"bluetooth_{exported_at.strftime('%Y%m%d_%H%M%S_%f')}.csv"
     fields = [
-        "name", "identifier", "manufacturer", "probable_type", "signal_dbm",
+        "name", "identifier", "radio", "discovery_source", "manufacturer",
+        "probable_type", "signal_dbm", "class_of_device",
         "tx_power_dbm", "advertisements", "latest_interval_ms", "first_seen",
         "last_seen", "manufacturer_data_bytes", "service_data_bytes",
         "advertised_services", "service_uuids", "service_data_uuids",
@@ -41,11 +42,17 @@ def export_bluetooth_snapshot(devices: Iterable[BluetoothDevice]) -> Path:
             row = {
                 "name": device.name,
                 "identifier": device.identifier,
+                "radio": device.radio_label,
+                "discovery_source": device.discovery_source,
                 "manufacturer": manufacturer_label(
                     device.manufacturer_ids, device.identifier
                 ) or "",
                 "probable_type": device_category(device),
                 "signal_dbm": device.rssi,
+                "class_of_device": (
+                    f"0x{device.class_of_device:06x}"
+                    if device.class_of_device is not None else ""
+                ),
                 "tx_power_dbm": device.tx_power if device.tx_power is not None else "",
                 "advertisements": device.advertisement_count,
                 "latest_interval_ms": (

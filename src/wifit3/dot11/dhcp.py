@@ -183,6 +183,33 @@ def parse_ack(
     return _lease_from_reply(body, options), False
 
 
+def parse_client_message(frame: bytes, client_mac: bytes) -> str | None:
+    """Return ``discover`` or ``request`` for a matching client DHCP message."""
+    if len(frame) < 24 or frame[1] & 0x03 != 0x01:  # station -> distribution system
+        return None
+    payload = _ipv4_payload(frame)
+    if payload is None or len(payload) < 28 or payload[9] != 17:
+        return None
+    header_len = (payload[0] & 0x0F) * 4
+    if header_len < 20 or len(payload) < header_len + 8:
+        return None
+    udp = payload[header_len:]
+    source_port, dest_port, udp_len = struct.unpack("!HHH", udp[:6])
+    if source_port != 68 or dest_port != 67 or udp_len < 8:
+        return None
+    body = udp[8:min(len(udp), udp_len)]
+    if (
+        len(body) < 240
+        or body[0] != 1
+        or body[2] != 6
+        or body[28:34] != client_mac
+        or body[236:240] != DHCP_COOKIE
+    ):
+        return None
+    message_type = _first(_options(body[240:]), 53)
+    return {b"\x01": "discover", b"\x03": "request"}.get(message_type)
+
+
 def _lease_from_reply(
     body: bytes,
     options: dict[int, list[bytes]],

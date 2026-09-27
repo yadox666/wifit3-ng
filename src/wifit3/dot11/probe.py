@@ -8,6 +8,7 @@ from wifit3.dot11.mac import mac_header
 # Probe-response capability: ESS + Privacy + Short Slot Time. Distinct from the
 # auth/assoc ESS+Privacy 0x0011 (see dot11.auth_assoc). Do not conflate.
 _CAPABILITY_INFO = 0x0411
+_OPEN_CAPABILITY_INFO = 0x0401
 
 
 def probe_req(bssid: bytes, our_mac: bytes, ssid: str) -> bytes:
@@ -17,7 +18,13 @@ def probe_req(bssid: bytes, our_mac: bytes, ssid: str) -> bytes:
     return hdr + ssid_ie(ssid) + rates_ie() + ext_rates_ie()
 
 
-def probe_resp(bssid: bytes, ssid: str, channel: int) -> bytes:
+def probe_resp(
+    bssid: bytes,
+    ssid: str,
+    channel: int,
+    rsn_ie: bytes = GENERIC_RSN_IE,
+    profile_ies: bytes = b"",
+) -> bytes:
     """Forged WPA2-only Probe Response with Addr1 zeroed. The caller splices the requesting
     client's MAC into bytes [4:10] before injecting, so build once and re-splice per probe.
     The TSF timestamp is stamped at build time."""
@@ -25,6 +32,57 @@ def probe_resp(bssid: bytes, ssid: str, channel: int) -> bytes:
     fixed = (struct.pack("<Q", int(time.time() * 1_000_000))
              + struct.pack("<H", 100)                      # beacon interval, 100 TU
              + struct.pack("<H", _CAPABILITY_INFO))
-    tags = (ssid_ie(ssid) + rates_ie() + ds_param_ie(channel)
-            + ext_rates_ie() + GENERIC_RSN_IE)
+    ds = ds_param_ie(channel) if channel <= 14 else b""
+    tags = (
+        ssid_ie(ssid) + rates_ie(channel) + ds
+        + ext_rates_ie(channel) + rsn_ie + profile_ies
+    )
+    return hdr + fixed + tags
+
+
+def open_probe_resp(bssid: bytes, ssid: str, channel: int) -> bytes:
+    """Probe response for an open ESS: no Privacy bit and no RSN element."""
+    hdr = mac_header(b"\x50\x00", b"\x00" * 6, bssid, bssid)
+    fixed = (
+        struct.pack("<Q", int(time.time() * 1_000_000))
+        + struct.pack("<H", 100)
+        + struct.pack("<H", _OPEN_CAPABILITY_INFO)
+    )
+    ds = ds_param_ie(channel) if channel <= 14 else b""
+    tags = ssid_ie(ssid) + rates_ie(channel) + ds + ext_rates_ie(channel)
+    return hdr + fixed + tags
+
+
+def open_beacon(bssid: bytes, ssid: str, channel: int) -> bytes:
+    """Beacon for an open ESS with a broadcast destination."""
+    hdr = mac_header(b"\x80\x00", b"\xff" * 6, bssid, bssid)
+    fixed = (
+        struct.pack("<Q", int(time.time() * 1_000_000))
+        + struct.pack("<H", 100)
+        + struct.pack("<H", _OPEN_CAPABILITY_INFO)
+    )
+    ds = ds_param_ie(channel) if channel <= 14 else b""
+    tags = ssid_ie(ssid) + rates_ie(channel) + ds + ext_rates_ie(channel)
+    return hdr + fixed + tags
+
+
+def wpa2_beacon(
+    bssid: bytes,
+    ssid: str,
+    channel: int,
+    rsn_ie: bytes = GENERIC_RSN_IE,
+    profile_ies: bytes = b"",
+) -> bytes:
+    """Beacon for a generic WPA2-PSK/CCMP ESS with a broadcast destination."""
+    hdr = mac_header(b"\x80\x00", b"\xff" * 6, bssid, bssid)
+    fixed = (
+        struct.pack("<Q", int(time.time() * 1_000_000))
+        + struct.pack("<H", 100)
+        + struct.pack("<H", _CAPABILITY_INFO)
+    )
+    ds = ds_param_ie(channel) if channel <= 14 else b""
+    tags = (
+        ssid_ie(ssid) + rates_ie(channel) + ds
+        + ext_rates_ie(channel) + rsn_ie + profile_ies
+    )
     return hdr + fixed + tags

@@ -82,3 +82,15 @@ def test_streaming_pcap_writer_rotates_and_limits_parts(tmp_path):
         "Net_aa-bb-cc-dd-ee-ff_1700000000_packet_capture.pcap",
         "Net_aa-bb-cc-dd-ee-ff_1700000001_packet_capture.pcap",
     ]
+
+
+def test_streaming_pcap_writer_rotates_without_part_limit(tmp_path):
+    writer = PcapWriter(tmp_path / "capture.pcap", max_bytes=50, max_parts=0)
+    assert writer.write(b"first")
+    assert writer.write(b"second")
+    assert writer.write(b"third")
+    writer.close()
+
+    assert writer.part_count == 3
+    assert writer.count == 3
+    assert writer.dropped == 0

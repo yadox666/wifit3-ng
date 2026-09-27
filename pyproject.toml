@@ -29,6 +29,9 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 path = "src/wifit3/__init__.py"
 
+[tool.hatch.build.targets.wheel.force-include]
+"artifacts/rtl8761" = "wifit3/bluetooth/firmware/rtl8761"
+
 [dependency-groups]
 dev = [
     "pillow>=12.3.0",

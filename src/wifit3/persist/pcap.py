@@ -56,7 +56,7 @@ class PcapWriter:
         ))
 
     def _rotate(self) -> bool:
-        if len(self.paths) >= self._max_parts:
+        if self._max_parts > 0 and len(self.paths) >= self._max_parts:
             return False
         self._completed_bytes += self._stream.tell()
         self._stream.flush()

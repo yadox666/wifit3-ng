@@ -284,6 +284,49 @@ def test_client_advertised_capabilities_merge_across_probe_and_assoc():
     assert caps.wmm and caps.pmf_capable
 
 
+def test_directed_probe_tracks_latest_channel_time_and_count():
+    sink = WlanSink()
+    client = "12:22:33:44:55:66"
+    probe = pkt({
+        "type": "probe_req",
+        "source": client,
+        "dest": "ff:ff:ff:ff:ff:ff",
+        "bssid": "ff:ff:ff:ff:ff:ff",
+        "rssi": -50,
+        "ssid": "DefaultSSID",
+    })
+
+    sink.update(probe, W0, channel_hint=1)
+    sink.update(probe, W0, channel_hint=6)
+
+    observation = sink.clients[client].probe_observations["DefaultSSID"]
+    assert sink.clients[client].probed_ssids == {"DefaultSSID"}
+    assert observation.channel == 6
+    assert observation.last_seen >= observation.first_seen
+    assert observation.count == 2
+
+
+def test_persisted_client_probe_is_restored_as_history(tmp_path):
+    store = HiddenSsidStore(tmp_path / "hidden_ssids.json")
+    store.remember_probe(
+        "12:22:33:44:55:66", "DefaultSSID", 11, now=100,
+    )
+    sink = WlanSink(HiddenSsidStore(store.path))
+    sink.update(pkt({
+        "type": "data",
+        "source": "12:22:33:44:55:66",
+        "dest": BSSID,
+        "bssid": BSSID,
+        "to_ds": True,
+        "rssi": -50,
+    }), W0, channel_hint=6)
+
+    observation = sink.clients["12:22:33:44:55:66"].probe_observations["DefaultSSID"]
+    assert observation.channel == 11
+    assert observation.count == 1
+    assert observation.historical
+
+
 def test_decloak_via_assoc_req():
     """A client's assoc-req SSID IE decloaks the hidden AP it's joining."""
     s = WlanSink()

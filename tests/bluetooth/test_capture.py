@@ -53,3 +53,19 @@ def test_bluetooth_capture_rotates_and_stops_at_part_limit(tmp_path, monkeypatch
     assert len(capture.paths) == 2
     assert capture.count == 2
     assert capture.dropped == 1
+
+
+def test_bluetooth_capture_rotates_without_part_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "captures_dir", str(tmp_path))
+    monkeypatch.setattr(Config, "target_capture_max_mb", 0)
+    monkeypatch.setattr(Config, "target_capture_max_parts", 0)
+    capture = BluetoothEventCapture("AA:BB:CC:DD:EE:FF", "Watch")
+
+    capture.record_advertisement(_device())
+    capture.record_advertisement(_device())
+    capture.record_advertisement(_device())
+    capture.close()
+
+    assert len(capture.paths) == 3
+    assert capture.count == 3
+    assert capture.dropped == 0

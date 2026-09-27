@@ -69,6 +69,34 @@ def _raw(seq=b"\x00\x00", a2=b"\xaa\xbb\xcc\xdd\xee\xff", retry=False):
     return fc + b"\x00\x00" + b"\xff\xff\xff\xff\xff\xff" + a2 + a2 + seq + b"\x00" * 12
 
 
+def test_generated_open_ap_remains_visible_and_marked_after_stop():
+    array = WlanArray()
+    ap = array.register_own_fake_ap(
+        "02:de:ad:be:ef:01", "DefaultSSID", 6,
+    )
+    array.record_own_fake_ap_beacon(ap.bssid)
+
+    assert ap in array.get_access_points(include_eviltwin=False)
+    assert ap.is_own_fake and ap.own_fake_active
+    assert ap.encryption == "OPEN"
+    assert ap.beacons == 1
+
+    array.finish_own_fake_ap(ap.bssid)
+    assert not ap.own_fake_active
+
+
+def test_generated_wpa2_ap_exposes_psk_security_metadata():
+    array = WlanArray()
+    ap = array.register_own_fake_ap(
+        "02:de:ad:be:ef:02", "DefaultSSID", 6, "WPA2",
+    )
+
+    assert ap.encryption == "WPA2"
+    assert ap.akms == ["PSK"]
+    assert ap.akm_suites == [2]
+    assert ap.pairwise_cipher == "CCMP"
+
+
 def _beacon(raw, bssid="aa:bb:cc:dd:ee:ff", rssi=-40, channel=6):
     return pkt({"type": "beacon", "bssid": bssid, "source": bssid, "dest": "ff:ff:ff:ff:ff:ff",
                "rssi": rssi, "ssid": "AP", "channel": channel, "raw": raw})

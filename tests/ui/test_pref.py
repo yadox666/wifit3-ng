@@ -87,6 +87,22 @@ async def test_wps_pbc_preference_applies_to_current_session(monkeypatch):
         assert app.pbc_enabled is True
 
 
+@pytest.mark.asyncio
+async def test_unlimited_capture_parts_preference_can_be_saved(monkeypatch):
+    monkeypatch.setattr(Config, "target_capture_max_parts", 10)
+    monkeypatch.setattr(Config, "save", staticmethod(lambda: None))
+    app = _Host()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesModal())
+        await pilot.pause(0)
+        parts = app.screen.query_one("#target_capture_max_parts", Select)
+        parts.value = 0
+        app.screen.query_one("#save", Button).press()
+        await pilot.pause(0)
+
+        assert Config.target_capture_max_parts == 0
+
+
 def test_wps_pbc_hotkey_is_not_shown_in_wifi_footers():
     assert not any(binding.key == "w" for binding in ScannerView.BINDINGS)
     assert not any(

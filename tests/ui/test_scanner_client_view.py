@@ -1,12 +1,15 @@
 import pytest
 from textual.app import App
-from textual.widgets import DataTable
+from textual.widgets import Button, DataTable, Select
 
-from wifit3.models import AccessPoint, Client
+from wifit3.dot11.ie import GENERIC_RSN_IE
+from wifit3.dot11.probe import wpa2_beacon
+from wifit3.models import AccessPoint, Client, ProbeObservation
 from wifit3.persist.targets import TargetStore
 from wifit3.persist.vault import Vault
 from wifit3.ui.screens.filter import ScanFilter
 from wifit3.ui.screens.scanner import ScannerView
+from wifit3.ui.screens.open_probe_modal import OpenProbeSsidModal
 
 
 class _Array:
@@ -41,8 +44,29 @@ class _Host(App):
         self.push_screen(ScannerView())
 
 
+class _ModalHost(App):
+    def __init__(self, client):
+        super().__init__()
+        self.client = client
+        self.result = None
+
+    def on_mount(self):
+        self.push_screen(OpenProbeSsidModal(self.client), self._finished)
+
+    def _finished(self, result):
+        self.result = result
+
+
 def _plain(value):
     return value.plain if hasattr(value, "plain") else str(value)
+
+
+def _footer_descriptions(scanner):
+    return {
+        binding.description
+        for _, binding, _, _ in scanner.active_bindings.values()
+        if binding.show
+    }
 
 
 @pytest.mark.asyncio
@@ -65,6 +89,8 @@ async def test_scanner_switches_between_ap_and_client_tables():
         scanner = app.screen
         table = scanner.query_one("#ap-table", DataTable)
         scanner.refresh_table()
+        assert scanner.check_action("open_probe_ap", ()) is False
+        assert "Probe Honeypot" not in _footer_descriptions(scanner)
         assert table.row_count == 1
         assert _plain(table.get_cell(ap.bssid, "last_seen")) == "now / 30s"
 
@@ -78,6 +104,12 @@ async def test_scanner_switches_between_ap_and_client_tables():
         scanner.action_toggle_view()
         await pilot.pause(0)
         assert scanner._view_mode == "clients"
+        assert scanner.check_action("open_probe_ap", ()) is True
+        assert scanner.check_action("open_vault", ()) is True
+        assert scanner.check_action("toggle_infrastructure", ()) is False
+        assert "Probe Honeypot" in _footer_descriptions(scanner)
+        assert "Vault" in _footer_descriptions(scanner)
+        assert "Infrastructure" not in _footer_descriptions(scanner)
         assert [key.value for key in table.columns] == [
             "ssid", "client", "signal", "packets", "last_seen", "manufacturer", "probes",
         ]
@@ -103,8 +135,122 @@ async def test_scanner_switches_between_ap_and_client_tables():
         scanner.action_toggle_view()
         await pilot.pause(0)
         assert scanner._view_mode == "aps"
+        assert scanner.check_action("open_probe_ap", ()) is False
+        assert scanner.check_action("open_vault", ()) is True
+        assert scanner.check_action("toggle_infrastructure", ()) is True
         assert table.row_count == 1
         assert ap.bssid in scanner.ap_cache
+
+
+@pytest.mark.asyncio
+async def test_open_probe_action_opens_configuration_modal(monkeypatch):
+    ap = AccessPoint(bssid="00:03:93:11:22:33", ssid="Office", channel=6)
+    client = Client(
+        mac="02:11:22:33:44:55",
+        probed_ssids={"DefaultSSID"},
+        probe_observations={
+            "DefaultSSID": ProbeObservation(channel=6, first_seen=1, last_seen=2, count=3),
+        },
+    )
+    app = _Host(_Array(ap, [client]))
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner.action_toggle_view()
+        await pilot.pause(0)
+        pushed = []
+        monkeypatch.setattr(
+            app,
+            "push_screen",
+            lambda screen, callback=None: pushed.append((screen, callback)),
+        )
+
+        scanner.action_open_probe_ap()
+
+        assert len(pushed) == 1
+        assert isinstance(pushed[0][0], OpenProbeSsidModal)
+
+
+@pytest.mark.asyncio
+async def test_honeypot_prefers_matching_live_ap_rsn_profile():
+    ap = AccessPoint(
+        bssid="00:03:93:11:22:33",
+        ssid="DefaultSSID",
+        channel=6,
+        encryption="WPA2",
+        akms=["PSK"],
+        akm_suites=[2],
+    )
+    ap.last_beacon_frame = wpa2_beacon(
+        bytes.fromhex("000393112233"), ap.ssid, ap.channel,
+    )
+    app = _Host(_Array(ap, []))
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0)
+        rsn_ie, source, profile_ies = app.screen._honeypot_rsn_profile(
+            "DefaultSSID", 6,
+        )
+
+        assert rsn_ie == GENERIC_RSN_IE
+        assert "live AP 00:03:93:11:22:33" in source
+        assert isinstance(profile_ies, bytes)
+
+
+@pytest.mark.asyncio
+async def test_open_probe_modal_asks_for_one_to_five_minutes():
+    client = Client(
+        mac="02:11:22:33:44:55",
+        probed_ssids={"DefaultSSID"},
+        probe_observations={
+            "DefaultSSID": ProbeObservation(
+                channel=6, first_seen=1, last_seen=2, count=3,
+            ),
+        },
+    )
+    app = _ModalHost(client)
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0)
+        duration = app.screen.query_one("#probe-duration", Select)
+        assert [value for _, value in duration._options] == [60, 120, 180, 240, 300]
+        duration.value = 300
+        app.screen.query_one("#probe-encryption", Select).value = "WPA2"
+        app.screen.query_one("#start", Button).press()
+        await pilot.pause(0)
+
+        assert app.result == ("DefaultSSID", 300, "WPA2")
+
+
+@pytest.mark.asyncio
+async def test_own_open_fake_ap_is_a_separate_marked_row():
+    real = AccessPoint(
+        bssid="00:03:93:11:22:33", ssid="DefaultSSID", channel=6,
+    )
+    fake = AccessPoint(
+        bssid="02:de:ad:be:ef:01",
+        ssid="DefaultSSID",
+        channel=6,
+        encryption="OPEN",
+        is_own_fake=True,
+        own_fake_active=True,
+    )
+    array = _Array(real, [])
+    array.access_points[fake.bssid] = fake
+    app = _Host(array)
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner.refresh_table()
+        table = scanner.query_one("#ap-table", DataTable)
+
+        assert table.row_count == 2
+        assert "FAKE AP [ACTIVE]" in _plain(table.get_cell(fake.bssid, "ssid"))
+        assert "OUR HONEYPOT AP · ACTIVE" == _plain(
+            table.get_cell(fake.bssid, "identity"),
+        )
 
 
 @pytest.mark.asyncio

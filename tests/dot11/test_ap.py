@@ -3,11 +3,19 @@ import struct
 
 import pytest
 
-from wifit3.dot11.ap import auth_resp, assoc_resp, eapol_m1, beacon_clone
+from wifit3.dot11.ap import auth_resp, assoc_resp, open_assoc_resp, eapol_m1, beacon_clone
 from wifit3.dot11.eapol import (
     data_header, eapol_key, set_mic, LLC_SNAP_EAPOL, MIC_OFFSET, MIC_LEN, NONCE_LEN,
 )
-from wifit3.dot11.ie import ssid_ie, rates_ie, ds_param_ie
+from wifit3.dot11.ie import (
+    GENERIC_RSN_IE,
+    compatible_wpa2_profile_ies,
+    ds_param_ie,
+    iter_information_elements,
+    rates_ie,
+    ssid_ie,
+)
+from wifit3.dot11.probe import open_beacon, open_probe_resp, wpa2_beacon
 
 _BSSID = bytes.fromhex("112233445566")
 _CLIENT = bytes.fromhex("aabbccddeeff")
@@ -30,8 +38,50 @@ def test_assoc_resp_success_with_privacy_and_rates():
     assert f[0:2] == b"\x10\x00"
     assert f[24:26] == b"\x11\x00"                    # ESS + Privacy
     assert f[26:28] == b"\x00\x00"                    # status success
-    assert f[28:30] == b"\x01\x00"                    # AID 1
+    assert f[28:30] == b"\x01\xc0"                    # AID 1 + reserved high bits
     assert rates_ie() in f
+
+
+def test_open_ap_frames_clear_privacy_and_omit_rsn():
+    assoc = open_assoc_resp(_BSSID, _CLIENT, aid=1)
+    beacon = open_beacon(_BSSID, "Cafe", 6)
+    probe = open_probe_resp(_BSSID, "Cafe", 6)
+
+    assert assoc[24:26] == b"\x01\x00"
+    assert int.from_bytes(beacon[34:36], "little") & 0x0010 == 0
+    assert int.from_bytes(probe[34:36], "little") & 0x0010 == 0
+    assert 48 not in {tag_id for tag_id, *_ in iter_information_elements(beacon, start=36)}
+    assert 48 not in {tag_id for tag_id, *_ in iter_information_elements(probe, start=36)}
+
+
+def test_wpa2_beacon_sets_privacy_and_includes_generic_rsn():
+    beacon = wpa2_beacon(_BSSID, "Cafe", 6)
+
+    assert int.from_bytes(beacon[34:36], "little") & 0x0010
+    assert GENERIC_RSN_IE in beacon
+
+
+def test_compatible_profile_keeps_safe_capabilities_and_drops_sae_ft():
+    ht_cap = b"\x2d\x02\x01\x02"
+    ht_op = b"\x3d\x02\x24\x07"
+    mobility_domain = b"\x36\x03abc"
+    rsnxe = b"\xf4\x01\x20"
+    wmm = b"\xdd\x06\x00\x50\xf2\x02\x00\x01"
+
+    profile = compatible_wpa2_profile_ies(
+        ht_cap + ht_op + mobility_domain + rsnxe + wmm,
+        6,
+    )
+    parsed = {
+        tag_id: body
+        for tag_id, body, _raw in iter_information_elements(profile)
+    }
+
+    assert parsed[45] == b"\x01\x02"
+    assert parsed[61] == b"\x06\x00"
+    assert parsed[221].startswith(b"\x00\x50\xf2\x02")
+    assert 54 not in parsed
+    assert 244 not in parsed
 
 
 def test_eapol_m1_layout_fromds_no_mic():

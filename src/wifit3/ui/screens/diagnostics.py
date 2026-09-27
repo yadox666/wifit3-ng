@@ -65,7 +65,7 @@ class AdapterDiagnosticsModal(ModalScreen[None]):
             yield Label("Adapter diagnostics", id="diagnostics-title")
             table = DataTable(cursor_type="row", id="diagnostics-table")
             table.add_columns(
-                "ADAPTER", "CHIPSET", "CHANNEL", "VISITED", "RX / ADV", "TX / GATT",
+                "ADAPTER", "CHIPSET", "CHANNEL", "VISITED", "RX / OBS", "TX / GATT",
                 "LAST RX", "TUNE ERRORS", "STATUS",
             )
             yield table
@@ -109,9 +109,9 @@ class AdapterDiagnosticsModal(ModalScreen[None]):
             if inspection is not None and inspection.connected_at is not None:
                 reference = max(reference or 0, inspection.connected_at)
             table.add_row(
-                "System Bluetooth",
+                "USB Bluetooth" if bluetooth.is_usb_scanning else "System Bluetooth",
                 bluetooth.backend_name,
-                "BLE",
+                "BT+BLE" if bluetooth.is_usb_scanning else "BLE",
                 Text(str(len(bluetooth.devices())), justify="right"),
                 Text(str(bluetooth.received_advertisements), justify="right"),
                 Text(str(gatt_reads), justify="right"),
@@ -124,8 +124,8 @@ class AdapterDiagnosticsModal(ModalScreen[None]):
         summary = (
             f"[bold]{active_count} active adapter{'s' if active_count != 1 else ''}[/bold]\n"
             "SILENT means no parsed frame for 15 seconds. It can also indicate an empty channel "
-            "or weak reception. BLE uses advertisements as RX activity; hardware is never reset "
-            "automatically."
+            "or weak reception. Bluetooth uses discovery observations as RX activity; hardware "
+            "is never reset automatically."
         )
         self.query_one("#diagnostics-summary", Static).update(summary)
 

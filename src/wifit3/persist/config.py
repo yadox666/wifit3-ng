@@ -70,7 +70,7 @@ class Config:
                 int(data.get("target_capture_max_mb", cls.target_capture_max_mb)),
             )
             cls.target_capture_max_parts = max(
-                1,
+                0,
                 int(data.get(
                     "target_capture_max_parts", cls.target_capture_max_parts,
                 )),

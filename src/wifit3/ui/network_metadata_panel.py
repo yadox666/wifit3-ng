@@ -6,7 +6,7 @@ from typing import Iterable
 
 from rich.markup import escape
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Button, Static
 
 from wifit3.wlan.network_metadata import NetworkFact, NetworkMetadata
@@ -21,6 +21,7 @@ _LABELS = {
     "dhcp_servers": "DHCP servers",
     "dns_servers": "DNS servers",
     "domains": "Domains",
+    "websites": "Websites",
     "gateway_reachability": "Gateway reached",
     "dns_reachability": "DNS reached",
     "connectivity": "Connectivity",
@@ -47,6 +48,7 @@ _CLIENT_POPUP_ORDER = (
     "dhcp_servers",
     "dns_servers",
     "domains",
+    "websites",
     "connectivity",
     "portal_status",
     "captive_portals",
@@ -69,6 +71,13 @@ def client_network_details(
         for kind in _CLIENT_POPUP_ORDER:
             values = client_facts.get(kind, [])
             if not values:
+                continue
+            if kind == "websites":
+                rows.append(f"[dim]Websites ({len(values)}):[/dim]")
+                rows.extend(
+                    f"  {escape(fact.value)}"
+                    for fact in _recent(values, limit=None)
+                )
                 continue
             rendered = ", ".join(
                 escape(_VALUE_LABELS.get(fact.value, fact.value))
@@ -125,8 +134,12 @@ class NetworkMetadataPanel(Vertical):
         background: $accent-darken-2; text-style: bold;
     }
     NetworkMetadataPanel .network-details {
-        width: 100%; height: auto; max-height: 11;
+        width: 100%; height: 11;
         padding: 0 2 1 2; color: $text;
+        overflow-y: auto; scrollbar-size-vertical: 1;
+    }
+    NetworkMetadataPanel .network-details-content {
+        width: 100%; height: auto;
     }
     """
 
@@ -140,7 +153,10 @@ class NetworkMetadataPanel(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Button("", classes="network-toggle")
-        details = Static("", classes="network-details")
+        details = VerticalScroll(
+            Static("", classes="network-details-content"),
+            classes="network-details",
+        )
         details.display = False
         yield details
 
@@ -172,15 +188,16 @@ class NetworkMetadataPanel(Vertical):
 
     def _paint(self) -> None:
         button = self.query_one(".network-toggle", Button)
-        details = self.query_one(".network-details", Static)
+        details = self.query_one(".network-details", VerticalScroll)
+        content = details.query_one(".network-details-content", Static)
         metadata = self.metadata
         if metadata is None:
             button.label = self._summary()
-            details.update(self._details())
+            content.update(self._details())
         else:
             with metadata.lock:
                 button.label = self._summary()
-                details.update(self._details())
+                content.update(self._details())
         details.display = self.expanded
         self._last_signature = self._content_signature()
 
@@ -255,6 +272,9 @@ class NetworkMetadataPanel(Vertical):
             chips.append(f"[dim]GW[/] {escape(gateway)}")
         if dns:
             chips.append(f"[dim]DNS[/] {escape(dns)}")
+        websites = facts.get("websites", [])
+        if websites:
+            chips.append(f"[dim]Websites[/] {len(websites)}")
         if connectivity:
             chips.append(_connectivity_chip(connectivity))
         chips.append(_portal_chip(portal, portal_probability))
@@ -298,8 +318,16 @@ class NetworkMetadataPanel(Vertical):
                 )
             else:
                 label = _LABELS[kind]
+            if kind == "websites":
+                lines.append(f"[dim]{escape(label)} ({len(values)})[/]")
+                lines.extend(
+                    f"  {_render_fact(fact, now, kind)}"
+                    for fact in _recent(values, limit=None)
+                )
+                continue
             rendered = ", ".join(
-                _render_fact(fact, now, kind) for fact in _recent(values)
+                _render_fact(fact, now, kind)
+                for fact in _recent(values, limit=4)
             )
             lines.append(f"[dim]{escape(label)}[/]  {rendered}")
         if self.client_mac:
@@ -323,8 +351,12 @@ class NetworkMetadataPanel(Vertical):
         return "\n".join(lines)
 
 
-def _recent(values: Iterable[NetworkFact], limit: int = 4) -> list[NetworkFact]:
-    return sorted(values, key=lambda fact: fact.last_seen, reverse=True)[:limit]
+def _recent(
+    values: Iterable[NetworkFact],
+    limit: int | None = 4,
+) -> list[NetworkFact]:
+    recent = sorted(values, key=lambda fact: fact.last_seen, reverse=True)
+    return recent if limit is None else recent[:limit]
 
 
 def _latest_value(facts: dict[str, list[NetworkFact]], kind: str) -> str | None:

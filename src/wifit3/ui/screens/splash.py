@@ -129,6 +129,7 @@ class SplashView(Screen):
     BINDINGS = [
         ("w", "start", "Wi-Fi"),
         ("b", "start_bluetooth", "BLE"),
+        ("d", "start_usb_bluetooth", "BT + BLE"),
         ("u", "update_oui", "Update OUI DB"),
         Binding("enter", "enter", "Start", priority=True),
     ]
@@ -138,6 +139,7 @@ class SplashView(Screen):
         self._is_initializing = False
         # DeviceIDs from the last render (the app's DeviceWatch feeds them), indexed to the rows.
         self._devices = []
+        self._usb_bluetooth_controllers = []
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -166,6 +168,11 @@ class SplashView(Screen):
                     yield Button(
                         Text.from_markup("SCAN [bold bright_yellow]B[/]LE"),
                         id="bluetooth-btn",
+                        variant="primary",
+                    )
+                    yield Button(
+                        Text.from_markup("SCAN [bold bright_yellow]D[/]UAL BT + BLE"),
+                        id="bluetooth-usb-btn",
                         variant="primary",
                     )
             with Center():
@@ -219,6 +226,9 @@ class SplashView(Screen):
         multi_list.display = False
         self.query_one("#start-btn", Button).disabled = True
         self.query_one("#bluetooth-btn", Button).disabled = False
+        usb_button = self.query_one("#bluetooth-usb-btn", Button)
+        usb_button.display = bool(self._usb_bluetooth_controllers)
+        usb_button.disabled = not self._usb_bluetooth_controllers
         self.query_one("#uninstall-btn", Button).disabled = True
         self.query_one("#status-label", Label).update("Scanning for compatible hardware…")
 
@@ -232,6 +242,23 @@ class SplashView(Screen):
             uninstall.tooltip = f"Uninstall {hint} for the highlighted card"
         self.app.theme_changed_signal.subscribe(self, lambda _theme: self.refresh_theme_art())
         self._enter_scanning_mode()
+        self.set_interval(1.0, self.refresh_usb_bluetooth_controllers)
+        await self.refresh_usb_bluetooth_controllers()
+
+    async def refresh_usb_bluetooth_controllers(self) -> None:
+        if self._is_initializing:
+            return
+        controllers = await asyncio.to_thread(
+            self.app.bluetooth_manager.available_usb_controllers
+        )
+        self._usb_bluetooth_controllers = controllers
+        button = self.query_one("#bluetooth-usb-btn", Button)
+        button.display = bool(controllers)
+        button.disabled = not controllers
+        button.tooltip = (
+            f"Use dedicated {controllers[0].label} for Bluetooth Classic + BLE discovery"
+            if controllers else None
+        )
 
     def reset_for_reentry(self) -> None:
         """Returning to splash (adapter lost): the installed screen only resumes (on_mount doesn't
@@ -363,6 +390,8 @@ class SplashView(Screen):
             self.action_start()
         elif event.button.id == "bluetooth-btn":
             self.action_start_bluetooth()
+        elif event.button.id == "bluetooth-usb-btn":
+            self.action_start_usb_bluetooth()
         elif event.button.id == "uninstall-btn":
             dev = self._highlighted_device()
             if dev is not None:
@@ -376,6 +405,7 @@ class SplashView(Screen):
         multi_list.disabled = True
         self.query_one("#start-btn", Button).disabled = True
         self.query_one("#bluetooth-btn", Button).disabled = True
+        self.query_one("#bluetooth-usb-btn", Button).disabled = True
         self.query_one("#uninstall-btn", Button).disabled = True
 
     def _exit_busy(self) -> None:
@@ -386,6 +416,9 @@ class SplashView(Screen):
         multi_list.disabled = False
         self.query_one("#start-btn", Button).disabled = not self._devices
         self.query_one("#bluetooth-btn", Button).disabled = False
+        self.query_one("#bluetooth-usb-btn", Button).disabled = (
+            not self._usb_bluetooth_controllers
+        )
         self.query_one("#uninstall-btn", Button).disabled = not self._devices
         if self._devices:
             (multi_list if self._using_multi() else single_list).focus()
@@ -426,6 +459,10 @@ class SplashView(Screen):
         if not self._is_initializing:
             self.perform_bluetooth_start()
 
+    def action_start_usb_bluetooth(self) -> None:
+        if not self._is_initializing and self._usb_bluetooth_controllers:
+            self.perform_usb_bluetooth_start(self._usb_bluetooth_controllers[0])
+
     @work(exclusive=True)
     async def perform_bluetooth_start(self) -> None:
         self._clear_error()
@@ -435,6 +472,21 @@ class SplashView(Screen):
         except BluetoothScanError as exc:
             self._exit_busy()
             self._show_error(f"Bluetooth scan failed: {exc}", title="Bluetooth unavailable")
+            return
+        self._exit_busy()
+        self.app.locked_target_id = None
+        self.app.auto_lock_armed = True
+        self.app.switch_screen("bluetooth")
+
+    @work(exclusive=True)
+    async def perform_usb_bluetooth_start(self, controller) -> None:
+        self._clear_error()
+        self._enter_busy()
+        try:
+            await self.app.bluetooth_manager.start_usb(controller)
+        except BluetoothScanError as exc:
+            self._exit_busy()
+            self._show_error(f"Bluetooth USB scan failed: {exc}", title="Bluetooth USB unavailable")
             return
         self._exit_busy()
         self.app.locked_target_id = None

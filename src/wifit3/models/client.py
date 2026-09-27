@@ -15,6 +15,17 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class ProbeObservation:
+    """Latest channel and timing evidence for one directed probe SSID."""
+
+    channel: int
+    first_seen: float = field(default_factory=time.time)
+    last_seen: float = field(default_factory=time.time)
+    count: int = 1
+    historical: bool = False
+
+
+@dataclass
 class Client:
     """A wireless client (e.g. a phone or laptop)."""
     mac: str
@@ -24,6 +35,7 @@ class Client:
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     probed_ssids: Set[str] = field(default_factory=set)  # SSIDs this client is actively searching for
+    probe_observations: Dict[str, ProbeObservation] = field(default_factory=dict)
     # AKM suite chosen by this client, read from the RSN IE in its (Re)Assoc Request. Latest-wins.
     akm_selected: Optional[int] = None
     capabilities: AdvertisedCapabilities = field(default_factory=AdvertisedCapabilities)

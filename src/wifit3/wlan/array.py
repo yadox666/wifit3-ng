@@ -281,6 +281,62 @@ class WlanArray:
         """Hide this BSSID's AP from get_access_points(include_eviltwin=False): it's our own twin."""
         self._evil_twin_bssids.add(bssid.lower())
 
+    def register_own_fake_ap(
+        self,
+        bssid: str,
+        ssid: str,
+        channel: int,
+        encryption: str = "OPEN",
+    ) -> AccessPoint:
+        """Insert a clearly marked synthetic AP row for an active local test."""
+        bssid = bssid.casefold()
+        existing = self._sink.access_points.get(bssid)
+        if existing is not None and not existing.is_own_fake:
+            raise RuntimeError(f"generated BSSID collides with observed AP {bssid}")
+        now = time.time()
+        ap = existing or AccessPoint(
+            bssid=bssid,
+            ssid=ssid,
+            channel=channel,
+            encryption=encryption,
+            first_seen=now,
+            last_seen=now,
+            is_own_fake=True,
+            own_fake_active=True,
+        )
+        ap.ssid = ssid
+        ap.channel = channel
+        ap.encryption = encryption
+        if encryption == "WPA2":
+            ap.akms = ["PSK"]
+            ap.akm_suites = [2]
+            ap.pairwise_cipher = "CCMP"
+            ap.pairwise_ciphers = ["CCMP"]
+            ap.group_cipher = "CCMP"
+        else:
+            ap.akms = []
+            ap.akm_suites = []
+            ap.pairwise_cipher = None
+            ap.pairwise_ciphers = []
+            ap.group_cipher = None
+        ap.is_own_fake = True
+        ap.own_fake_active = True
+        ap.last_seen = now
+        self._sink.access_points[bssid] = ap
+        return ap
+
+    def record_own_fake_ap_beacon(self, bssid: str) -> None:
+        ap = self._sink.access_points.get(bssid.casefold())
+        if ap is not None and ap.is_own_fake:
+            ap.beacons += 1
+            ap.last_seen = time.time()
+
+    def finish_own_fake_ap(self, bssid: str) -> None:
+        ap = self._sink.access_points.get(bssid.casefold())
+        if ap is not None and ap.is_own_fake:
+            ap.own_fake_active = False
+            ap.last_seen = time.time()
+
     # ----- channel policy ----------------------------------------------------
 
     @property

@@ -25,6 +25,15 @@ _NAME_CATEGORIES = (
     (("macbook", "laptop", "notebook", "desktop", "computer"), "Computer"),
 )
 
+_CLASSIC_MAJOR_CATEGORIES = {
+    0x01: "Computer",
+    0x02: "Phone",
+    0x04: "Audio",
+    0x05: "Input",
+    0x07: "Wearable",
+    0x09: "Health",
+}
+
 
 def _uuid16(uuid: str) -> str:
     lowered = uuid.lower()
@@ -47,4 +56,10 @@ def device_category(device: BluetoothDevice) -> str:
         category = _SERVICE_CATEGORIES.get(_uuid16(uuid))
         if category:
             return category
+    if device.class_of_device is not None:
+        classic_category = _CLASSIC_MAJOR_CATEGORIES.get(
+            (device.class_of_device >> 8) & 0x1F
+        )
+        if classic_category:
+            return classic_category
     return "Other" if device.name != "<Unknown>" else "Unknown"

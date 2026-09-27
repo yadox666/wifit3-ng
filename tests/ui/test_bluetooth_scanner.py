@@ -8,6 +8,7 @@ from textual.widgets import DataTable, Input, Select
 from textual.widgets.data_table import ColumnKey
 
 from wifit3.models import BluetoothDevice
+from wifit3.bluetooth.usb_hci import UsbBluetoothController
 from wifit3.persist.targets import TargetStore
 from wifit3.ui.app import WifiteApp
 from wifit3.ui.screens.bluetooth_scanner import (
@@ -95,6 +96,35 @@ async def test_splash_wifi_and_bluetooth_buttons_have_hotkeys():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
+async def test_splash_shows_separate_dual_mode_button_when_controller_is_detected(monkeypatch):
+    app = WifiteApp()
+    controller = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+    )
+    app.bluetooth_manager.available_usb_controllers = lambda: [controller]
+    app.bluetooth_manager.start_usb = AsyncMock()
+    switched = []
+    monkeypatch.setattr(app, "switch_screen", switched.append)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0)
+        splash = app.screen
+        button = splash.query_one("#bluetooth-usb-btn")
+        assert button.display
+        assert button.label.plain == "SCAN DUAL BT + BLE"
+
+        splash.action_start_usb_bluetooth()
+        for _ in range(40):
+            await pilot.pause(0)
+            if switched:
+                break
+
+        app.bluetooth_manager.start_usb.assert_awaited_once_with(controller)
+        assert switched == ["bluetooth"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
 async def test_bluetooth_scanner_renders_discovered_device():
     app = WifiteApp()
     now = time.time()
@@ -120,7 +150,7 @@ async def test_bluetooth_scanner_renders_discovered_device():
         await pilot.pause(0)
         scanner = app.screen
         assert isinstance(scanner, BluetoothScannerView)
-        assert app.check_action("toggle_vault", ()) is None
+        assert app.check_action("toggle_vault", ()) is False
         app.action_toggle_vault()
         assert app.screen is scanner
 
@@ -133,7 +163,7 @@ async def test_bluetooth_scanner_renders_discovered_device():
         row = table.get_row("AA:BB:CC:DD:EE:FF")
         assert row[0].plain == "Test Beacon"
         assert row[1].plain == "-42 dBm"
-        assert row[2].plain == "Beacon"
+        assert row[2].plain == "BLE Beacon"
         assert row[3].plain == "12"
         assert row[4].plain == "250 ms"
         assert row[5].plain == "now"
@@ -223,13 +253,13 @@ async def test_bluetooth_scanner_cycles_sort_column_and_direction():
         assert table.columns[ColumnKey("rssi")].label.plain == "▲ POWER"
         assert table.get_row_at(0)[0].plain == "Weak Sensor"
 
-        while table.columns[ColumnKey("advertisements")].label.plain == "  ADV":
+        while table.columns[ColumnKey("advertisements")].label.plain == "  OBS":
             scanner.action_cycle_sort()
-        assert table.columns[ColumnKey("advertisements")].label.plain == "▲ ADV"
+        assert table.columns[ColumnKey("advertisements")].label.plain == "▲ OBS"
         assert table.get_row_at(0)[0].plain == "Strong Sensor"
 
         scanner.action_toggle_sort_dir()
-        assert table.columns[ColumnKey("advertisements")].label.plain == "▼ ADV"
+        assert table.columns[ColumnKey("advertisements")].label.plain == "▼ OBS"
         assert table.get_row_at(0)[0].plain == "Weak Sensor"
 
 

@@ -1,4 +1,4 @@
-"""Bluetooth Low Energy discovery."""
+"""System BLE and dedicated USB Bluetooth Classic/LE discovery."""
 
 from .manager import BluetoothManager, BluetoothScanError
 

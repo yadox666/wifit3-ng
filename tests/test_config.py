@@ -190,3 +190,11 @@ def test_auto_lock_targets_save_load_roundtrip(config_path):
     assert Config.target_reacquire_timeout == 60
     assert Config.target_capture_max_mb == 50
     assert Config.target_capture_max_parts == 3
+
+
+def test_unlimited_capture_parts_save_load_roundtrip(config_path):
+    Config.target_capture_max_parts = 0
+    Config.save()
+    Config.target_capture_max_parts = 10
+    Config.load()
+    assert Config.target_capture_max_parts == 0

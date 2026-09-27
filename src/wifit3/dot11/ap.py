@@ -15,6 +15,7 @@ from wifit3.dot11.eapol import data_header, eapol_key, LLC_SNAP_EAPOL
 from wifit3.dot11.mac import mac_header
 
 _CAP_ESS_PRIVACY = 0x0011
+_CAP_ESS = 0x0001
 _BEACON_HEAD = 36               # 24B MAC header + 12B fixed (timestamp, interval, capability)
 _ELEMID_DS = 0x03
 _ELEMID_RSN = 0x30
@@ -34,10 +35,34 @@ def auth_resp(bssid: bytes, client: bytes) -> bytes:
     return _resp_header(b"\xb0\x00", bssid, client) + b"\x00\x00\x02\x00\x00\x00"
 
 
-def assoc_resp(bssid: bytes, client: bytes, aid: int = 1) -> bytes:
+def _aid_field(aid: int) -> bytes:
+    """Association-ID field: 14-bit AID with both reserved high bits set."""
+    return struct.pack("<H", 0xC000 | (aid & 0x3FFF))
+
+
+def assoc_resp(bssid: bytes, client: bytes, aid: int = 1, channel: int = 1) -> bytes:
     """Association Response: ESS+Privacy capability, status 0 (success), AID, rate menus."""
-    body = (struct.pack("<H", _CAP_ESS_PRIVACY) + b"\x00\x00" + struct.pack("<H", aid)
-            + rates_ie() + ext_rates_ie())
+    body = (
+        struct.pack("<H", _CAP_ESS_PRIVACY)
+        + b"\x00\x00"
+        + _aid_field(aid)
+        + rates_ie(channel)
+        + ext_rates_ie(channel)
+    )
+    return _resp_header(b"\x10\x00", bssid, client) + body
+
+
+def open_assoc_resp(
+    bssid: bytes, client: bytes, aid: int = 1, channel: int = 1,
+) -> bytes:
+    """Association response for an unencrypted ESS (Privacy capability clear)."""
+    body = (
+        struct.pack("<H", _CAP_ESS)
+        + b"\x00\x00"
+        + _aid_field(aid)
+        + rates_ie(channel)
+        + ext_rates_ie(channel)
+    )
     return _resp_header(b"\x10\x00", bssid, client) + body
 
 

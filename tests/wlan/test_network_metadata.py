@@ -70,6 +70,45 @@ def _dhcp_ack():
     return _frame(_ipv4(udp, 17, "192.168.50.2", "255.255.255.255"))
 
 
+def _tcp_packet(body, dest_port, *, from_ds=False):
+    tcp = (
+        struct.pack("!HHII", 49152, dest_port, 1, 1)
+        + b"\x50\x18\x10\x00\x00\x00\x00\x00"
+        + body
+    )
+    return _frame(
+        _ipv4(tcp, 6, "192.168.50.42", "93.184.216.34"),
+        from_ds=from_ds,
+    )
+
+
+def _dns_query(host):
+    labels = b"".join(
+        bytes([len(label)]) + label.encode("ascii") for label in host.split(".")
+    ) + b"\x00"
+    dns = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + labels + b"\x00\x01\x00\x01"
+    udp = struct.pack("!HHHH", 49152, 53, 8 + len(dns), 0) + dns
+    return _frame(
+        _ipv4(udp, 17, "192.168.50.42", "1.1.1.1"),
+        from_ds=False,
+    )
+
+
+def _tls_client_hello(host):
+    encoded = host.encode("ascii")
+    server_name = struct.pack("!H", len(encoded) + 3) + b"\x00" + struct.pack(
+        "!H", len(encoded),
+    ) + encoded
+    extension = b"\x00\x00" + struct.pack("!H", len(server_name)) + server_name
+    hello = (
+        b"\x03\x03" + b"\x00" * 32 + b"\x00"
+        + b"\x00\x02\x13\x01" + b"\x01\x00"
+        + struct.pack("!H", len(extension)) + extension
+    )
+    handshake = b"\x01" + len(hello).to_bytes(3, "big") + hello
+    return b"\x16\x03\x01" + struct.pack("!H", len(handshake)) + handshake
+
+
 def test_dhcp_ack_populates_ap_and_broadcast_client_without_storing_url_path():
     metadata = NetworkMetadata(BSSID, "Cafe")
     touched = PassiveNetworkAnalyzer(metadata).observe(_dhcp_ack(), now=1000)
@@ -167,6 +206,47 @@ def test_plain_http_redirect_is_observed_and_strips_sensitive_path():
     assert "token" not in serialized
     assert "Cookie" not in serialized
     assert "body" not in serialized
+
+
+def test_websites_deduplicate_by_host_and_prefer_full_http_url_per_client():
+    metadata = NetworkMetadata(BSSID, "Cafe")
+    analyzer = PassiveNetworkAnalyzer(metadata)
+
+    analyzer.observe(_dns_query("www.example.com"), now=100)
+    analyzer.observe(_tcp_packet(_tls_client_hello("www.example.com"), 443), now=101)
+    request = (
+        b"GET /products/item?color=blue&token=private HTTP/1.1\r\n"
+        b"Host: www.example.com\r\n"
+        b"Cookie: should-not-be-stored\r\n\r\n"
+    )
+    analyzer.observe(_tcp_packet(request, 80), now=102)
+
+    expected = "http://www.example.com/products/item?color=blue&token=REDACTED"
+    assert [fact.value for fact in metadata.facts["websites"]] == [expected]
+    client_facts = metadata.clients[CLIENT].facts["websites"]
+    assert [fact.value for fact in client_facts] == [expected]
+    assert client_facts[0].source == "http_request"
+    serialized = str(metadata.to_dict())
+    assert "private" not in serialized
+    assert "should-not-be-stored" not in serialized
+
+
+def test_all_unique_full_urls_survive_while_later_dns_stays_deduplicated():
+    metadata = NetworkMetadata(BSSID, "Cafe")
+    analyzer = PassiveNetworkAnalyzer(metadata)
+
+    first = b"GET /first HTTP/1.1\r\nHost: example.com\r\n\r\n"
+    second = b"GET /second HTTP/1.1\r\nHost: example.com\r\n\r\n"
+    analyzer.observe(_tcp_packet(first, 80), now=100)
+    analyzer.observe(_tcp_packet(second, 80), now=101)
+    analyzer.observe(_dns_query("example.com"), now=102)
+
+    websites = metadata.clients[CLIENT].facts["websites"]
+    assert len(websites) == 2
+    assert {fact.value for fact in websites} == {
+        "http://example.com/first",
+        "http://example.com/second",
+    }
 
 
 def test_protected_and_malformed_frames_are_ignored():

@@ -3,7 +3,7 @@ across the parser, attacks, persistence, and UI.
 """
 from .handshake import HandshakeMessage, Handshake
 from .access_point import WepStats, CaptureType, PersistedCapture, AccessPoint
-from .client import Client
+from .client import Client, ProbeObservation
 from .capabilities import AdvertisedCapabilities
 from .device_id import DeviceID
 from .bluetooth_device import BluetoothDevice
@@ -30,6 +30,7 @@ __all__ = [
     "PersistedCapture",
     "AccessPoint",
     "Client",
+    "ProbeObservation",
     "AdvertisedCapabilities",
     "DeviceID",
     "BluetoothDevice",

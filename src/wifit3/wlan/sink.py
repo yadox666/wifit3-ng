@@ -15,7 +15,9 @@ import time
 from typing import Dict, List, Optional, Set
 
 from wifit3.chips.log_trace import TRACE   # registers Logger.trace + the level name
-from wifit3.models import AccessPoint, Client, Handshake, HandshakeMessage, IdSource
+from wifit3.models import (
+    AccessPoint, Client, Handshake, HandshakeMessage, IdSource, ProbeObservation,
+)
 from wifit3.dot11.mac import mac_to_str
 from wifit3.dot11.parser import WlanFrameParser
 from wifit3.dot11.wsc import messages as WSC
@@ -26,6 +28,7 @@ from wifit3.dot11.packet import (
 )
 from wifit3.dot11.enterprise import eap_tls_fragment, parse_tls_records
 from wifit3.persist.hidden_ssids import HiddenSsidStore, HiddenSsidStoreError
+from wifit3.persist.wifi_profiles import WifiProfileStore, WifiProfileStoreError
 from wifit3.wlan.packet_stats import PacketStats
 from wifit3.wlan.wep_store import WepCaptureStore
 
@@ -80,10 +83,15 @@ class WlanSink:
     SIBLING_BIT_DIFF_MAX = 4
     SIGNAL_WINDOW_SIZE = 8
 
-    def __init__(self, hidden_ssids: HiddenSsidStore | None = None):
+    def __init__(
+        self,
+        hidden_ssids: HiddenSsidStore | None = None,
+        wifi_profiles: WifiProfileStore | None = None,
+    ):
         self.access_points: Dict[str, AccessPoint] = {}
         self.clients: Dict[str, Client] = {}
         self.hidden_ssids = hidden_ssids
+        self.wifi_profiles = wifi_profiles
         self.wep_store = WepCaptureStore()  # WEP IV tallying
         self.packet_stats = PacketStats()   # Packet dashboard source
         self.own_macs: Set[str] = set()     # MACs we transmit as; dropped at ingest, never a client
@@ -127,7 +135,7 @@ class WlanSink:
             logger.trace("%s", _fmt_frame("RXFRAME", frame_type, pkt.source, pkt.dest, bssid))
 
         if frame_type == "probe_req" and bssid == "ff:ff:ff:ff:ff:ff":
-            self._track_client(pkt, card_id)
+            self._track_client(pkt, card_id, channel_hint)
             return
         if not bssid or bssid == "Unknown" or bssid == "ff:ff:ff:ff:ff:ff":
             return
@@ -136,7 +144,7 @@ class WlanSink:
 
         self._on_beacon_frame(pkt, card_id, channel_hint)
         self._on_wepdata_frame(pkt)
-        self._track_client(pkt, card_id)
+        self._track_client(pkt, card_id, channel_hint)
         self._on_eapol_frame(pkt)
 
     def record_signal(self, card_id: str, bssid: str, rssi: int) -> None:
@@ -304,6 +312,27 @@ class WlanSink:
             raw_beacon = pkt.raw
             if raw_beacon:
                 ap.last_beacon_frame = raw_beacon
+                if (
+                    self.wifi_profiles is not None
+                    and self._is_real_ssid(ap.ssid)
+                    and ap.rsn_ie
+                ):
+                    try:
+                        self.wifi_profiles.remember(
+                            bssid=ap.bssid,
+                            ssid=ap.ssid or "",
+                            channel=ap.channel,
+                            beacon=raw_beacon,
+                            rsn_ie=ap.rsn_ie,
+                            akm_suites=ap.akm_suites,
+                            pmf_capable=ap.pmf_capable,
+                            pmf_required=ap.pmf_required,
+                        )
+                    except WifiProfileStoreError:
+                        logger.warning(
+                            "Could not persist Wi-Fi profile",
+                            exc_info=True,
+                        )
                 for hs in ap.handshakes.values():
                     if not hs.beacon_frame:
                         hs.beacon_frame = raw_beacon
@@ -323,7 +352,7 @@ class WlanSink:
                 ap.wep = stats
         return True
 
-    def _track_client(self, pkt: Packet, card_id: str) -> bool:
+    def _track_client(self, pkt: Packet, card_id: str, channel_hint: int) -> bool:
         """Register/refresh the client STA behind a frame (assoc, probed SSIDs, decloak)."""
         frame_type = pkt.type
         if frame_type not in (
@@ -339,10 +368,22 @@ class WlanSink:
 
         if client_mac not in self.clients:
             self.clients[client_mac] = Client(mac=client_mac)
+            if self.hidden_ssids is not None:
+                client = self.clients[client_mac]
+                for record in self.hidden_ssids.probes_for_client(client_mac):
+                    client.probed_ssids.add(record.ssid)
+                    client.probe_observations[record.ssid] = ProbeObservation(
+                        channel=record.last_channel,
+                        first_seen=record.first_seen,
+                        last_seen=record.last_seen,
+                        count=record.count,
+                        historical=True,
+                    )
         client = self.clients[client_mac]
         self._record_client_signal(client, card_id, rssi)
         client.packets += 1
-        client.last_seen = time.time()
+        now = time.time()
+        client.last_seen = now
         if isinstance(pkt, (AssocRequestPacket, ProbeReqPacket)):
             client.capabilities.merge(pkt.capabilities)
 
@@ -355,6 +396,25 @@ class WlanSink:
 
         if frame_type == "probe_req" and self._is_real_ssid(pkt.ssid):
             client.probed_ssids.add(pkt.ssid)
+            observation = client.probe_observations.get(pkt.ssid)
+            if observation is None:
+                client.probe_observations[pkt.ssid] = ProbeObservation(
+                    channel=channel_hint,
+                    first_seen=now,
+                    last_seen=now,
+                )
+            else:
+                observation.channel = channel_hint
+                observation.last_seen = now
+                observation.count += 1
+                observation.historical = False
+            if self.hidden_ssids is not None:
+                try:
+                    self.hidden_ssids.remember_probe(
+                        client.mac, pkt.ssid, channel_hint, now=now,
+                    )
+                except HiddenSsidStoreError:
+                    logger.warning("Could not persist client probe", exc_info=True)
 
         if frame_type in ("assoc_req", "reassoc_req"):
             ap = self.access_points.get(bssid)

@@ -1,17 +1,21 @@
-"""Bounded passive network metadata extraction for unencrypted 802.11 captures.
+"""Passive network metadata extraction for unencrypted 802.11 captures.
 
-Only infrastructure metadata is retained.  Packet payloads, DHCP client identifiers,
-hostnames, DNS histories, HTTP bodies, cookies, and URL paths/query strings are never stored.
+Only bounded values and deduplicated website URLs are retained.  Packet payloads,
+DHCP client identifiers,
+hostnames, HTTP bodies, cookies, credentials, and URL fragments are never stored.
+Website observations retain a bounded HTTP scheme/host/path/query when visible on the wire,
+with sensitive query values redacted.
 """
 from __future__ import annotations
 
 import ipaddress
+import re
 import struct
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 if TYPE_CHECKING:
     from wifit3.dot11.dhcp import DhcpOffer
@@ -22,6 +26,12 @@ MAX_CLIENTS = 256
 MAX_URI_BYTES = 2048
 
 _CONFIDENCE_RANK = {"inferred": 0, "advertised": 1, "observed": 2}
+_WEBSITE_SOURCE_RANK = {"dns_query": 0, "tls_sni": 1, "http_request": 2}
+_SENSITIVE_QUERY_KEY = re.compile(
+    r"(?:auth|bearer|code|cookie|credential|email|key|name|pass|phone|"
+    r"session|signature|token)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -128,6 +138,39 @@ class NetworkMetadata:
                     changed |= _merge_fact(
                         client.facts, kind, value, source, confidence, now, expires_at,
                     )
+            if changed:
+                self.last_seen = max(self.last_seen, now)
+                self.revision += 1
+            return changed
+
+    def observe_website(
+        self,
+        value: str,
+        *,
+        hostname: str,
+        source: str,
+        now: float,
+        client_mac: str,
+    ) -> bool:
+        """Record one deduplicated website, preferring URL evidence over DNS."""
+        if source not in _WEBSITE_SOURCE_RANK:
+            return False
+        hostname = hostname.casefold()
+        client_mac = client_mac.casefold()
+        with self.lock:
+            changed = _merge_website(
+                self.facts, value, hostname, source, now,
+            )
+            client = self.clients.get(client_mac)
+            if client is None and len(self.clients) < MAX_CLIENTS:
+                client = ClientNetworkMetadata(client_mac, now, now)
+                self.clients[client_mac] = client
+                changed = True
+            if client is not None:
+                client.last_seen = max(client.last_seen, now)
+                changed |= _merge_website(
+                    client.facts, value, hostname, source, now,
+                )
             if changed:
                 self.last_seen = max(self.last_seen, now)
                 self.revision += 1
@@ -383,6 +426,43 @@ def _merge_fact(
     return True
 
 
+def _merge_website(
+    facts: dict[str, list[NetworkFact]],
+    value: str,
+    hostname: str,
+    source: str,
+    now: float,
+) -> bool:
+    value = value.strip()[:MAX_URI_BYTES]
+    if not value or not hostname:
+        return False
+    values = facts.setdefault("websites", [])
+    incoming_rank = _WEBSITE_SOURCE_RANK[source]
+    matching = [
+        fact for fact in values if _website_hostname(fact.value) == hostname
+    ]
+    for fact in matching:
+        if fact.value != value or fact.source != source:
+            continue
+        changed = now > fact.last_seen
+        fact.last_seen = max(fact.last_seen, now)
+        return changed
+    highest_rank = max(
+        (_WEBSITE_SOURCE_RANK.get(fact.source, -1) for fact in matching),
+        default=-1,
+    )
+    if incoming_rank < highest_rank:
+        return False
+    first_seen = now
+    if incoming_rank > highest_rank and matching:
+        first_seen = min(fact.first_seen for fact in matching)
+        values[:] = [fact for fact in values if fact not in matching]
+    elif incoming_rank == highest_rank and incoming_rank < _WEBSITE_SOURCE_RANK["http_request"]:
+        return False
+    values.append(NetworkFact(value, first_seen, now, source, "observed"))
+    return True
+
+
 def _load_facts(value: Any) -> dict[str, list[NetworkFact]]:
     result: dict[str, list[NetworkFact]] = {}
     if not isinstance(value, dict):
@@ -390,10 +470,12 @@ def _load_facts(value: Any) -> dict[str, list[NetworkFact]]:
     for kind, raw_values in value.items():
         if not isinstance(kind, str) or not isinstance(raw_values, list):
             continue
+        limit = None if kind == "websites" else MAX_FACTS_PER_KIND
+        source_values = raw_values if limit is None else raw_values[:limit]
         parsed = [
             fact for fact in (
                 NetworkFact.from_dict(raw)
-                for raw in raw_values[:MAX_FACTS_PER_KIND]
+                for raw in source_values
             ) if fact is not None
         ]
         if parsed:
@@ -502,12 +584,23 @@ class PassiveNetworkAnalyzer:
             return self._dhcp(body, source_ip, now)
         if client_mac and (source_port == 53 or dest_port == 53):
             host = _dns_question(body)
+            if host:
+                if self.metadata.observe_website(
+                    host, hostname=host, source="dns_query", now=now,
+                    client_mac=client_mac,
+                ):
+                    touched = {client_mac}
+                else:
+                    touched = set()
+            else:
+                touched = set()
             if host and _looks_like_portal_host(host):
-                changed = self.metadata.add(
+                if self.metadata.add(
                     "captive_portals", f"https://{host}", source="dns_portal_hint",
                     confidence="inferred", now=now, client_mac=client_mac,
-                )
-                return {client_mac} if changed else set()
+                ):
+                    touched.add(client_mac)
+            return touched
         return set()
 
     def _dhcp(self, payload: bytes, source_ip: str, now: float) -> set[str]:
@@ -610,27 +703,42 @@ class PassiveNetworkAnalyzer:
         if header_len < 20 or len(payload) <= header_len:
             return set()
         body = payload[header_len:header_len + 8192]
+        touched = set()
         if to_ds and dest_port == 443:
             host = _tls_sni(body)
+            if host and self.metadata.observe_website(
+                f"https://{host}", hostname=host, source="tls_sni", now=now,
+                client_mac=client_mac,
+            ):
+                touched.add(client_mac)
             if host and _looks_like_portal_host(host):
-                changed = self.metadata.add(
+                if self.metadata.add(
                     "captive_portals", f"https://{host}", source="tls_sni_portal_hint",
                     confidence="inferred", now=now, client_mac=client_mac,
-                )
-                return {client_mac} if changed else set()
+                ):
+                    touched.add(client_mac)
+        if to_ds and dest_port in (80, 8080):
+            website = _http_request_url(body)
+            if website is not None:
+                url, host = website
+                if self.metadata.observe_website(
+                    url, hostname=host, source="http_request", now=now,
+                    client_mac=client_mac,
+                ):
+                    touched.add(client_mac)
         if source_port not in (80, 8080):
-            return set()
+            return touched
         if not body.startswith(b"HTTP/1."):
-            return set()
+            return touched
         first_end = body.find(b"\r\n")
         if first_end < 0:
-            return set()
+            return touched
         try:
             status = int(body[:first_end].split(b" ", 2)[1])
         except (IndexError, ValueError):
-            return set()
+            return touched
         if not 300 <= status < 400:
-            return set()
+            return touched
         headers_end = body.find(b"\r\n\r\n")
         headers = body[first_end + 2:headers_end if headers_end >= 0 else len(body)]
         location = None
@@ -640,12 +748,13 @@ class PassiveNetworkAnalyzer:
                 break
         origin = _uri_origin(location)
         if not origin:
-            return set()
-        changed = self.metadata.add(
+            return touched
+        if self.metadata.add(
             "captive_portals", origin, source="http_redirect", confidence="observed",
             now=now, client_mac=client_mac,
-        )
-        return {client_mac} if changed else set()
+        ):
+            touched.add(client_mac)
+        return touched
 
     def _ipv6(
         self, payload: bytes, packet: Any, client_mac: str | None, now: float,
@@ -665,6 +774,15 @@ class PassiveNetworkAnalyzer:
                     now=now, client_mac=client_mac, include_ap=False,
                 ):
                     touched.add(client_mac)
+        body = payload[40:]
+        if next_header == 17:
+            touched |= self._udp(body, source, client_mac, now)
+            return touched
+        if next_header == 6:
+            touched |= self._tcp(
+                body, client_mac, now, to_ds=bool(getattr(packet, "to_ds", False)),
+            )
+            return touched
         if next_header != 58 or len(payload) < 56 or payload[40] != 134:
             return touched
         router_lifetime = struct.unpack("!H", payload[46:48])[0]
@@ -823,7 +941,7 @@ def _dns_question(data: bytes) -> str | None:
     if len(data) < 17 or struct.unpack("!H", data[4:6])[0] < 1:
         return None
     names = _dns_names(data[12:])
-    return names[0].casefold() if names else None
+    return _safe_hostname(names[0].encode("ascii")) if names else None
 
 
 def _tls_sni(data: bytes) -> str | None:
@@ -886,6 +1004,86 @@ def _safe_hostname(value: bytes) -> str | None:
     ):
         return None
     return encoded
+
+
+def _website_hostname(value: str) -> str | None:
+    candidate = value if "://" in value else f"//{value}"
+    parsed = urlsplit(candidate)
+    return parsed.hostname.casefold() if parsed.hostname else None
+
+
+def _http_request_url(data: bytes) -> tuple[str, str] | None:
+    """Return a bounded HTTP URL without retaining headers or unsafe values."""
+    first_end = data.find(b"\r\n", 0, 8192)
+    if first_end < 0:
+        return None
+    parts = data[:first_end].split(b" ")
+    if len(parts) != 3 or parts[0] not in {
+        b"GET", b"HEAD", b"POST", b"PUT", b"DELETE", b"OPTIONS", b"PATCH",
+    } or not parts[2].startswith(b"HTTP/1."):
+        return None
+    try:
+        target = parts[1][:MAX_URI_BYTES].decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    if not target or any(ord(char) <= 32 or ord(char) >= 127 for char in target):
+        return None
+    headers_end = data.find(b"\r\n\r\n", first_end + 2)
+    headers = data[first_end + 2:headers_end if headers_end >= 0 else len(data)]
+    host_header = None
+    for line in headers.split(b"\r\n")[:64]:
+        if line.lower().startswith(b"host:"):
+            host_header = _safe_text(line.split(b":", 1)[1].strip(), 259)
+            break
+    target_parsed = urlsplit(target)
+    if target.startswith(("http://", "https://")):
+        parsed = target_parsed
+        scheme = parsed.scheme
+        host_port = parsed.netloc
+        path = parsed.path or "/"
+    else:
+        if not target.startswith("/") or not host_header:
+            return None
+        parsed = urlsplit(f"//{host_header}")
+        scheme = "http"
+        host_port = host_header
+        path = target_parsed.path or "/"
+    if parsed.username or parsed.password:
+        return None
+    host = _safe_hostname((parsed.hostname or "").encode("ascii", "ignore"))
+    if not host:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is not None:
+        host_port = f"{host}:{port}"
+    else:
+        host_port = host
+    safe_path = "/" + "/".join(
+        segment for segment in path.split("/") if segment not in ("", ".", "..")
+    )
+    query = _sanitized_query(target_parsed.query)
+    suffix = f"?{query}" if query else ""
+    return f"{scheme}://{host_port}{safe_path}{suffix}"[:MAX_URI_BYTES], host
+
+
+def _sanitized_query(query: str) -> str:
+    if not query:
+        return ""
+    values = []
+    for key, value in parse_qsl(query, keep_blank_values=True, max_num_fields=64):
+        if _SENSITIVE_QUERY_KEY.search(key) or _looks_like_secret(value):
+            value = "REDACTED"
+        values.append((key[:128], value[:512]))
+    return urlencode(values)
+
+
+def _looks_like_secret(value: str) -> bool:
+    if value.count(".") == 2 and len(value) >= 32:
+        return True
+    return len(value) >= 32 and bool(re.fullmatch(r"[A-Za-z0-9_+/=-]+", value))
 
 
 def _looks_like_portal_host(host: str) -> bool:

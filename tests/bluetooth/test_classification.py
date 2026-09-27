@@ -36,3 +36,8 @@ def test_device_category_uses_standard_service():
 def test_device_category_keeps_unknown_inference_explicit():
     assert device_category(_device()) == "Unknown"
     assert device_category(_device(name="Acme Sensor")) == "Other"
+
+
+def test_device_category_uses_classic_class_of_device():
+    assert device_category(_device(class_of_device=0x04020C)) == "Phone"
+    assert device_category(_device(class_of_device=0x240404)) == "Audio"

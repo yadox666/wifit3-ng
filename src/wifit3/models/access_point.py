@@ -51,6 +51,8 @@ class AccessPoint:
     ssid: Optional[str] = None
     channel: int = 1
     encryption: Optional[str] = "Unknown"
+    is_own_fake: bool = False
+    own_fake_active: bool = False
     # Structured security fields from the RSN IE; `encryption` (above) is the airodump-style string.
     akms: List[str] = field(default_factory=list)
     # AKM suite numbers (00-0F-AC:N) from the RSN IE, parallel to `akms` (the names).

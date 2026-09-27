@@ -4,9 +4,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+BLE_RADIO = "BLE"
+CLASSIC_RADIO = "BT"
+
+
 @dataclass(slots=True)
 class BluetoothDevice:
-    """The latest BLE advertisement observed for one platform device identifier."""
+    """The latest discovery observation for one Bluetooth device identifier."""
 
     identifier: str
     name: str
@@ -24,4 +28,19 @@ class BluetoothDevice:
     approximate_group: bool = False
     group_size: int = 1
     similar_identifier_count: int = 1
+    radio_types: tuple[str, ...] = (BLE_RADIO,)
+    discovery_source: str = "system"
+    class_of_device: int | None = None
+
+    @property
+    def radio_label(self) -> str:
+        if set(self.radio_types) == {BLE_RADIO, CLASSIC_RADIO}:
+            return "BT+BLE"
+        if CLASSIC_RADIO in self.radio_types:
+            return CLASSIC_RADIO
+        return BLE_RADIO
+
+    @property
+    def is_connectable_with_bleak(self) -> bool:
+        return BLE_RADIO in self.radio_types and self.discovery_source == "system"
 

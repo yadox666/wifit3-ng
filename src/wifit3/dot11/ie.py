@@ -22,6 +22,51 @@ def iter_information_elements(data: bytes, start: int = 0) -> Iterator[tuple[int
         yield tag_id, data[i + 2 : end], data[i : end]
         i = end
 
+
+def beacon_rsn_ie(frame: bytes | None) -> bytes | None:
+    """Return the first complete RSN IE from a beacon/probe response."""
+    if frame is None or len(frame) < 36:
+        return None
+    return next(
+        (
+            raw
+            for tag_id, _body, raw in iter_information_elements(frame, start=36)
+            if tag_id == 48
+        ),
+        None,
+    )
+
+
+def compatible_wpa2_profile_ies(source_ies: bytes, channel: int) -> bytes:
+    """Return safe AP capability IEs for a PSK-only, 20 MHz compatibility BSS.
+
+    SAE/RSNXE and 802.11r Mobility Domain elements are intentionally omitted:
+    advertising either without implementing its authentication state machine
+    makes the profile internally inconsistent.
+    """
+    kept = bytearray()
+    seen: set[int] = set()
+    for tag_id, body, raw in iter_information_elements(source_ies):
+        if tag_id in seen:
+            continue
+        if tag_id in (42, 45, 127, 191):  # ERP, HT cap, ext cap, VHT cap
+            kept += raw
+            seen.add(tag_id)
+        elif tag_id == 61 and len(body) >= 2:  # HT operation
+            adjusted = bytearray(body)
+            adjusted[0] = channel & 0xFF
+            adjusted[1] &= ~0x07
+            kept += bytes((tag_id, len(adjusted))) + adjusted
+            seen.add(tag_id)
+        elif tag_id == 192 and len(body) >= 3:  # VHT operation
+            adjusted = bytearray(body)
+            adjusted[0:3] = b"\x00\x00\x00"
+            kept += bytes((tag_id, len(adjusted))) + adjusted
+            seen.add(tag_id)
+        elif tag_id == 221 and body.startswith(b"\x00\x50\xf2\x02"):
+            kept += raw  # WMM parameter/information element
+    return bytes(kept)
+
 # Supported / Extended supported rate menus (APs only spot-check that they parse).
 SUPPORTED_RATES = bytes([0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24])
 EXT_SUPPORTED_RATES = bytes([0x30, 0x48, 0x60, 0x6C])

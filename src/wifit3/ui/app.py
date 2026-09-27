@@ -14,7 +14,8 @@ from textual.reactive import reactive
 from typing import List
 from wifit3.models.jobs import JobState, ToolCapability, ToolStatus
 from wifit3.persist.config import Config, ConfigError
-from wifit3.persist.hidden_ssids import HiddenSsidStore
+from wifit3.persist.hidden_ssids import HiddenSsidStore, HiddenSsidStoreError
+from wifit3.persist.wifi_profiles import WifiProfileStore, WifiProfileStoreError
 from wifit3.persist.targets import SavedTarget, TargetStore, TargetStoreError
 from wifit3.persist.vault import Vault
 from wifit3.errors import WifiteDeviceLostError, WifiteFatalError
@@ -89,6 +90,10 @@ class WifiteApp(App):
         width: 13;
         height: 3;
     }
+    #bluetooth-usb-btn {
+        width: 22;
+        margin-left: 2;
+    }
     #primary-actions Button:focus, #uninstall-btn:focus {
         text-style: bold reverse;   /* clear cue when Tab lands on START / Uninstall */
     }
@@ -149,6 +154,7 @@ class WifiteApp(App):
         self.vault = Vault()
         self.target_store = TargetStore()
         self.hidden_ssid_store = HiddenSsidStore()
+        self.wifi_profile_store = WifiProfileStore()
         self.locked_target_id: str | None = None
         self.target_missing_since: float | None = None
         self.auto_lock_armed = True
@@ -221,6 +227,8 @@ class WifiteApp(App):
             self.notify(msg, severity="warning", title="Targets")
         for msg in self.hidden_ssid_store.errors:
             self.notify(msg, severity="warning", title="Hidden SSIDs")
+        for msg in self.wifi_profile_store.errors:
+            self.notify(msg, severity="warning", title="Wi-Fi profiles")
         self.install_screen(SplashView(), name="splash")
         self.install_screen(ScannerView(), name="scanner")
         self.install_screen(BluetoothScannerView(), name="bluetooth")
@@ -402,12 +410,22 @@ class WifiteApp(App):
 
     async def action_quit(self):
         self.persist_config()
+        try:
+            self.hidden_ssid_store.save()
+        except HiddenSsidStoreError:
+            logger.warning("Could not flush hidden SSID/probe history", exc_info=True)
+        try:
+            self.wifi_profile_store.save()
+        except WifiProfileStoreError:
+            logger.warning("Could not flush Wi-Fi profile history", exc_info=True)
         self.vault.manager.kill_all_running()
         self.stop_bluetooth_target_capture()
         focus = self.get_screen("focus", FocusViewV2)
         focus.stop_packet_capture(notify=False)
         client_focus = self.get_screen("client-focus", ClientFocusView)
         client_focus.stop_capture(notify=False)
+        scanner = self.get_screen("scanner", ScannerView)
+        await scanner.stop_open_probe_test()
         await self.bluetooth_manager.disconnect()
         await self.bluetooth_manager.stop()
         if self.array:
@@ -416,7 +434,12 @@ class WifiteApp(App):
 
     def action_toggle_vault(self) -> None:
         """Open the vault drawer."""
-        if isinstance(self.screen, (BluetoothScannerView, BluetoothFocusView)):
+        if isinstance(
+            self.screen, (BluetoothScannerView, BluetoothFocusView, ClientFocusView),
+        ) or (
+            isinstance(self.screen, ScannerView)
+            and self.screen._view_mode == "clients"
+        ):
             return
         if not isinstance(self.screen, VaultDrawer):
             self.vault_open = True
@@ -428,9 +451,9 @@ class WifiteApp(App):
 
     def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
         if action == "toggle_vault" and isinstance(
-            self.screen, (BluetoothScannerView, BluetoothFocusView)
+            self.screen, (BluetoothScannerView, BluetoothFocusView, ClientFocusView)
         ):
-            return None
+            return False
         return True
 
 _FILE_LOGGING_CONFIGURED = False  # Avoid duplicate loggers

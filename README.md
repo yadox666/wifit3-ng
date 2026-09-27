@@ -61,14 +61,15 @@ The startup screen shows centered **START WI-FI** and **SCAN BLE** buttons on on
 | `Ctrl+Q` | Everywhere | Quit |
 | `Escape` | Scanners and focus | Wi-Fi and Bluetooth scanners return to device selection. Focus screens return to the scanner |
 | `T` | Wi-Fi scanner | Switch between the AP table and the client table |
-| `I` | Wi-Fi scanner | Expand or collapse a same-SSID infrastructure |
+| `I` | Wi-Fi AP table | Expand or collapse a same-SSID infrastructure |
 | `Enter` | Grouped AP | Expand a collapsed infrastructure |
 | `N` | Wi-Fi or Bluetooth scanner | Create a target for the selected row |
+| `A` | Wi-Fi client table | Test a selected directed probe with an automated open AP |
 | `X` | Wi-Fi scanner | Export the scan as CSV and JSON |
 | `X` | AP Focus | Start or stop a focused libpcap capture |
 | `O` | AP Focus on an open network | Start Fake-Connect or disconnect its temporary client |
 | `X` | Bluetooth scanner | Export the scan as CSV |
-| `V` | Wi-Fi screens | Open Vault. Vault stays closed on Bluetooth screens |
+| `V` | Wi-Fi AP/client tables and AP Focus | Open Vault |
 
 Vault is available only in Wi-Fi mode.
 
@@ -102,6 +103,54 @@ Vault is available only in Wi-Fi mode.
 - Signal colours match across AP, client, and Bluetooth views.
 - A hidden AP that has a named same-radio sibling uses a yellow `SSID [guess]` label in both Scanner and Focus. The marker is presentation-only and is never appended to the transmitted SSID.
 
+### Automated probe honeypot
+
+In the Wi-Fi client table, `A` opens the observed directed-probe list. After one
+SSID, security mode, and duration are selected and the normal active-action
+confirmation is accepted, WiFiT3:
+
+- Lets you choose a duration from one to five minutes, then automatically
+  selects a spoof-capable adapter, the probe's most recently observed channel,
+  and a random locally administered BSSID.
+- Advertises either an `OPEN` ESS or a `WPA2-PSK` ESS and responds to probe,
+  Open-System authentication, and association frames from every client
+  requesting it. WPA2 first derives a PSK-compatible profile from a live
+  same-SSID AP, then from automatically persisted beacon profiles, then from
+  prior JSON scan exports, and uses generic PSK/CCMP only as a clearly logged
+  fallback.
+- Reports probe, authentication, association, and DHCP Discover/Request as
+  separate evidence stages. Only association followed by DHCP is marked
+  confirmed.
+- Lists every client MAC that probed, authenticated, associated, or sent DHCP,
+  marking the client that originated the test as `ORIGIN`. All other requesting
+  clients are served and tracked as `CLIENT`.
+- Separates directed probes from wildcard scans and marks locally administered
+  client addresses as possibly randomized; it does not automatically merge
+  those addresses.
+- Shows a blinking red top banner with the selected SSID, channel, adapter, and
+  remaining time while the test is active.
+- Inserts the generated BSSID as a separate red `◆ FAKE AP [ACTIVE]` row in
+  the AP table. It changes to `STOPPED` when the test ends and expires normally.
+- Continues collecting clients until the selected timeout or a second press of
+  `A`, even after DHCP evidence is observed.
+- In WPA2 mode, sends EAPOL M1 after association and saves each captured M2 pair
+  to Vault as Hashcat 22000 material (and PCAP when enabled). It never stores or
+  learns the plaintext PSK. A run without M2 ends explicitly with
+  `NO M2 CAPTURED · nothing saved to Vault`.
+- Does not deauthenticate clients or provide DHCP, DNS, or Internet.
+
+The selected channel is the channel on which that client's probe was observed;
+a probe received on a 5 GHz channel is direct evidence that the client supports
+that band. Beacons and responses are necessarily visible to nearby devices.
+JSON scan exports now retain the raw RSN IE needed for later profile reuse;
+older exports that lack that field cannot provide exact RSN evidence.
+Observed secure AP profiles are also saved automatically in private
+`wifi_profiles.json`, including their public beacon IEs. Compatible WPA2 reuse
+preserves ciphers, PMF capability, ERP/HT/VHT/extended capabilities, and WMM,
+normalized to the selected 20 MHz channel. RSNXE/SAE and 802.11r Mobility
+Domain are deliberately omitted until their authentication state machines are
+implemented, avoiding an internally inconsistent fake AP.
+
 ### Passive WPA-Enterprise analysis
 
 The fork parses visible non-key EAPOL/EAP exchanges. EAP Identity values and credential-response payloads are not kept in the profile.
@@ -121,7 +170,8 @@ The fork parses visible non-key EAPOL/EAP exchanges. EAP Identity values and cre
 - A locked associated client opens Client Focus and captures frames involving that client on its AP channel.
 - AP captures keep both AP-to-client FromDS and client-to-AP ToDS frames whose parsed BSSID matches the focused AP.
 - PCAP files use standard IEEE 802.11 libpcap format and are indexed in Vault under the PCAP category.
-- Captures rotate at the configured size and stop at the configured part limit.
+- Captures rotate at the configured size and use either a configured part limit
+  or unlimited parts.
 - AP Focus and Client Focus show a blinking red `PCAP RECORDING` indicator with the live total across all rotated files, for example `10 files: 814 MB`.
 - Capture filenames follow the Vault naming and sorting convention.
 
@@ -131,13 +181,14 @@ Starting a focused PCAP capture on a confirmed unencrypted `OPEN` AP also starts
 
 - Decodes clear-text LLC/SNAP, ARP, IPv4, IPv6, UDP, TCP, DHCP, and IPv6 Router Advertisements.
 - Extracts observed or advertised IPv4 addresses and ranges, IPv6 addresses and prefixes, gateways, DHCP servers, DNS servers, domains, lease expiry, and captive-portal evidence.
+- Builds a deduplicated website list from clear-text DNS questions, TLS SNI, and plain HTTP requests. All unique URLs are saved at AP and client level; HTTP URLs replace SNI and DNS-only placeholders for the same host, while distinct paths remain separate entries.
 - Correlates DHCP replies to clients through the DHCP client hardware address even when the wireless destination is broadcast.
 - Classifies captive-portal evidence as **Observed** from a plain HTTP redirect, **Declared** from DHCP option 114 or IPv6 option 37, or **Suspected** from bounded portal-like DNS/TLS SNI hints. An expected active HTTP 204 is shown as **NO CAPTIVE PORTAL DETECTED**; an intercepted connectivity check is suspected (90%). Without evidence the panel shows **unknown**, not a misleading zero.
 - Keeps conflicting DHCP servers, gateways, DNS sets, and network ranges with source, confidence, first/last observation times, and expiry instead of silently overwriting them.
 - Shows a compact live/history summary in AP Focus and Client Focus. Select the NETWORK row to expand its evidence.
 - Clicking a client in AP Focus opens its detail box with the captured client IP, ranges, gateway, DHCP/DNS, connectivity, and portal evidence. Missing client-specific values are clearly marked, while relevant AP-wide values are labeled `(AP)`.
 - Saves one versioned `<ssid>_<bssid>_network.json` per BSSID beside PCAP and key artifacts. Writes are private, atomic, debounced, and merged across following sessions.
-- Bounds clients, facts, packet fields, options, and URLs. It does not retain DHCP hostnames/client identifiers, DNS history, HTTP bodies, cookies, credentials, or URL paths/query strings.
+- Bounds clients, non-website facts, packet fields, options, and individual URL lengths. Website lists retain every deduplicated URL. It does not retain DHCP hostnames/client identifiers, HTTP bodies, cookies, credentials, fragments, or sensitive query values; detected sensitive values are saved as `REDACTED`.
 
 The analyzer only consumes packets seen during a live capture; it does not retrospectively analyze old PCAP files.
 
@@ -187,6 +238,11 @@ The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and 
 ### Hidden SSID history
 
 - Every confirmed BSSID-to-SSID observation is stored in private `hidden_ssids.json`, including APs first seen with a visible name.
+- Directed client probes are stored in a separate `client_probes` section of
+  the same file, keyed by client MAC and SSID with channels, count, and
+  first/last observation times. They are never treated as confirmed
+  BSSID-to-SSID mappings because a probe does not identify an AP.
+- Restored probes are marked `[history]` until that client emits them again.
 - When a network first appears hidden and its SSID is later revealed, the reveal method is retained.
 - A later hidden observation of that exact BSSID is labelled with the historical SSID.
 - Historical, unconfirmed names use a yellow `SSID [history]` label until they are observed again.
@@ -206,7 +262,7 @@ Preferences (`Ctrl+P`) include:
 - Automatic WPS PBC capture.
 - Automatic saved-target locking.
 - Target reacquisition timeout.
-- Capture rotation size and part limit.
+- Capture rotation size and part limit, including unlimited parts.
 - Handshake PCAP saving.
 
 About and the target editor open from Preferences.
@@ -219,7 +275,7 @@ Automatic update checking is off until it is enabled. When it is on, startup sen
 |---|---|---|
 | `config.toml` | OS user-config directory for `wifit3` | Preferences |
 | `targets.json` | Same config directory | Aliases and observed target metadata |
-| `hidden_ssids.json` | Same config directory | Historical BSSID-to-SSID mappings |
+| `hidden_ssids.json` | Same config directory | Historical BSSID-to-SSID mappings and client probe observations |
 | `oui.txt` | OS user-cache directory for `wifit3` | IEEE manufacturer database |
 | `captures/` | Path set in Preferences, default `captures` | Handshakes, focused PCAP files, and other Vault artifacts |
 | `captures/<ssid>_<bssid>_network.json` | Beside the AP's capture artifacts | Versioned passive AP/client network metadata |
@@ -230,13 +286,19 @@ Configuration JSON is written with private file permissions where the operating 
 
 ## Screenshots
 
-| Scanner | Focus (single target) |
+| Wi-Fi scanner | Wi-Fi focus |
 |---|---|
-| ![Scanner](assets/wifit3-2-scanner.png) | ![Focus](assets/wifit3-3-focus-handshake.png) |
+| ![Wi-Fi scanner](assets/wifit3-2-scanner.png) | ![Wi-Fi focus](assets/wifit3-4-wifi-focus.png) |
+
+| Bluetooth scanner | Bluetooth focus |
+|---|---|
+| ![Bluetooth scanner](assets/wifit3-5-ble-scanner.png) | ![Bluetooth focus](assets/wifit3-6-ble-focus.png) |
 
 ## Supported Hardware
 
 > **Important:** *At least one supported USB wireless adapter is required for Wi-Fi.*
+
+### Wi-Fi adapters
 
 | Chipset | Bands | Cards (Make + Model) |
 |---|---|---|
@@ -261,6 +323,16 @@ Configuration JSON is written with private file permissions where the operating 
 | Ralink RT5572 | 2.4 / 5 GHz | Panda PAU09 N600 |
 
 Per-device capabilities and limitations: [Supported Hardware](docs/SUPPORTED-HARDWARE.md).
+
+### Dedicated Bluetooth Classic + BLE adapter
+
+The normal **SCAN BLE** action continues to use the operating system's Bluetooth adapter through Bleak and does not require dedicated hardware. When a supported controller is detected, **SCAN DUAL BT + BLE** appears and uses that adapter directly for Bluetooth Classic inquiry and passive BLE discovery.
+
+| Chipset | Modes | Supported USB IDs | Notes |
+|---|---|---|---|
+| Realtek RTL8761BU | Bluetooth Classic (BR/EDR) + BLE | `0bda:8771`, `0bda:a728`, `2357:0604`, `2357:0607`, `2c4e:0115`, `2550:8761`, `6655:8771`, `7392:c611`, `2b89:8761`, `2b89:6275` | Uses the bundled, hash-verified `rtl8761bu` firmware and config from `linux-firmware`. Direct USB mode is discovery-only; BLE GATT Focus remains available through **SCAN BLE**. |
+
+Retail vendors may change chipsets without changing a product name, so support is determined by USB ID rather than branding. Use a dedicated adapter: direct mode temporarily claims it from the operating system, and Windows requires the adapter to be bound to WinUSB.
 
 ## Installation and running
 

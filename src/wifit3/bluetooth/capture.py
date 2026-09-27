@@ -62,7 +62,7 @@ class BluetoothEventCapture:
             self.count += 1
 
     def _rotate(self) -> bool:
-        if len(self.paths) >= self._max_parts:
+        if self._max_parts > 0 and len(self.paths) >= self._max_parts:
             return False
         self._stream.close()
         next_path = self.path.with_name(
