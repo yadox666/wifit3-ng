@@ -6,6 +6,8 @@ from pathlib import Path
 
 from platformdirs import user_config_dir
 
+from wifit3.persist.private_files import ensure_private_directory, write_private_text
+
 _PATH = Path(user_config_dir("wifit3", appauthor=False)) / "config.toml"
 
 
@@ -115,8 +117,8 @@ class Config:
             f"silenced_bssids = {_fmt(cls.silenced_bssids)}\n"
         )
         try:
-            _PATH.parent.mkdir(parents=True, exist_ok=True)
-            _PATH.write_text(text, encoding="utf-8")
+            ensure_private_directory(_PATH.parent)
+            write_private_text(_PATH, text)
         except OSError as e:
             raise ConfigError(f"Failed to save config at {_PATH}: {e}") from e
 

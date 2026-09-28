@@ -6,6 +6,7 @@ import pytest
 from wifit3.bluetooth.hci_protocol import DiscoveryObservation
 from wifit3.bluetooth.manager import BluetoothManager, BluetoothScanError
 from wifit3.bluetooth.usb_hci import UsbBluetoothController
+from wifit3.persist.bluetooth_history import BluetoothHistoryStore
 
 
 class _Scanner:
@@ -100,6 +101,105 @@ async def test_restarting_scan_keeps_previously_seen_devices():
     assert [d.identifier for d in manager.devices()] == ["AA:BB:CC:DD:EE:FF"]
 
 
+def test_manager_enriches_a_live_device_from_bluetooth_history(tmp_path):
+    path = tmp_path / "bluetooth.sqlite3"
+    history = BluetoothHistoryStore(path)
+    first = BluetoothManager(history=history)
+    platform_device = SimpleNamespace(address="AA:BB:CC:DD:EE:FF", name=None)
+    first._on_advertisement(platform_device, SimpleNamespace(
+        local_name="Remembered name",
+        rssi=-45,
+        service_uuids=["180f"],
+        service_data={},
+        manufacturer_data={0x004C: b"data"},
+        tx_power=-8,
+    ))
+    history.close()
+
+    reopened = BluetoothHistoryStore(path)
+    second = BluetoothManager(history=reopened)
+    second._on_advertisement(platform_device, SimpleNamespace(
+        local_name=None,
+        rssi=-55,
+        service_uuids=[],
+        service_data={},
+        manufacturer_data={},
+        tx_power=None,
+    ))
+
+    observed = second.devices()[0]
+    assert observed.name == "Remembered name"
+    assert observed.service_uuids == ("180f",)
+    assert observed.manufacturer_ids == (0x004C,)
+
+
+def test_manager_collects_bluez_class_appearance_and_address_type():
+    manager = BluetoothManager()
+    identifier = "40:22:33:44:55:66"
+    manager._on_advertisement(
+        SimpleNamespace(address=identifier, name=None),
+        SimpleNamespace(
+            local_name="Headphones",
+            rssi=-50,
+            service_uuids=[],
+            service_data={},
+            manufacturer_data={0x004C: b"\x07\x19\x01\x0e\x20"},
+            tx_power=None,
+            platform_data=(
+                "/org/bluez/hci0/dev_40_22_33_44_55_66",
+                {
+                    "Appearance": 0x0943,
+                    "Class": 0x240418,
+                    "AddressType": "random",
+                },
+            ),
+        ),
+    )
+
+    observed = manager.devices()[0]
+    assert observed.appearance == 0x0943
+    assert observed.class_of_device == 0x240418
+    assert observed.address_type == "resolvable-private"
+    assert observed.protocol_type == "Apple Proximity Pairing audio"
+
+
+def test_manager_collects_bluez_modalias_hardware_identity(monkeypatch):
+    monkeypatch.setattr(
+        "wifit3.bluetooth.analytics.resolve_bluez_modalias",
+        lambda modalias: {
+            "modalias": modalias,
+            "hardware_vendor": "Acme Audio",
+            "hardware_product": "Studio Headphones",
+            "hardware_source": "BlueZ Device ID / systemd hwdb",
+        },
+    )
+    manager = BluetoothManager()
+    manager._on_advertisement(
+        SimpleNamespace(address="00:11:22:33:44:55", name=None),
+        SimpleNamespace(
+            local_name="Studio",
+            rssi=-50,
+            service_uuids=[],
+            service_data={},
+            manufacturer_data={},
+            tx_power=None,
+            platform_data=(
+                "/org/bluez/hci0/dev_00_11_22_33_44_55",
+                {
+                    "AddressType": "public",
+                    "Modalias": "bluetooth:v1234p5678d0001",
+                },
+            ),
+        ),
+    )
+
+    observed = manager.devices()[0]
+    assert observed.modalias == "bluetooth:v1234p5678d0001"
+    assert observed.hardware_vendor == "Acme Audio"
+    assert observed.hardware_product == "Studio Headphones"
+    assert observed.hardware_source == "BlueZ Device ID / systemd hwdb"
+
+
 @pytest.mark.asyncio
 async def test_manager_counts_similar_private_identifiers_without_merging_them():
     scanner = None
@@ -119,13 +219,47 @@ async def test_manager_counts_similar_private_identifiers_without_merging_them()
         manufacturer_data={0x004C: b"data"},
         tx_power=None,
     )
-    scanner.callback(SimpleNamespace(address="AA:00:00:00:00:01", name=None), advertisement)
-    scanner.callback(SimpleNamespace(address="AE:00:00:00:00:02", name=None), advertisement)
+    first = "11111111-1111-1111-1111-111111111111"
+    second = "22222222-2222-2222-2222-222222222222"
+    scanner.callback(SimpleNamespace(address=first, name=None), advertisement)
+    scanner.callback(SimpleNamespace(address=second, name=None), advertisement)
 
     devices = {device.identifier: device for device in manager.devices()}
     assert len(devices) == 2
-    assert devices["AA:00:00:00:00:01"].similar_identifier_count == 2
-    assert devices["AE:00:00:00:00:02"].similar_identifier_count == 2
+    assert devices[first].similar_identifier_count == 2
+    assert devices[second].similar_identifier_count == 2
+
+
+@pytest.mark.asyncio
+async def test_manager_tracks_rolling_signal_summary_and_trend():
+    scanner = None
+
+    def factory(**kwargs):
+        nonlocal scanner
+        scanner = _Scanner(**kwargs)
+        return scanner
+
+    manager = BluetoothManager(scanner_factory=factory)
+    await manager.start()
+    device = SimpleNamespace(address="AA:BB:CC:DD:EE:FF", name=None)
+    advertisement = SimpleNamespace(
+        local_name="Tracker",
+        rssi=-80,
+        service_uuids=[],
+        service_data={},
+        manufacturer_data={},
+        tx_power=None,
+    )
+    for rssi in (-80, -78, -68, -66):
+        advertisement.rssi = rssi
+        scanner.callback(device, advertisement)
+
+    observed = manager.devices()[0]
+    assert observed.rssi_average == -73.0
+    assert observed.rssi_min == -80
+    assert observed.rssi_max == -66
+    assert observed.rssi_samples == 4
+    assert observed.rssi_trend == "approaching"
 
 
 @pytest.mark.asyncio

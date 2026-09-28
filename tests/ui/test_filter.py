@@ -77,6 +77,29 @@ def test_wpa_filter_merges_wpa1_and_wpa2():
     assert not EncryptionFilter.WPA.matches(_ap(encryption="OPEN"))
 
 
+@pytest.mark.parametrize("akm", [
+    "EAP", "FT-EAP", "EAP-SHA256", "EAP-SUITE-B", "EAP-SUITE-B-192",
+    "FT-EAP-SHA384",
+])
+def test_enterprise_filter_matches_eap_akms(akm):
+    assert EncryptionFilter.ENTERPRISE.matches(_ap(akms=[akm]))
+
+
+def test_enterprise_filter_excludes_personal_and_open_networks():
+    for kw in (
+        dict(akms=["PSK"]),
+        dict(akms=["SAE"]),
+        dict(akms=["OWE"]),
+        dict(encryption="OPEN"),
+        dict(encryption="WEP"),
+    ):
+        assert not EncryptionFilter.ENTERPRISE.matches(_ap(**kw))
+
+
+def test_enterprise_filter_includes_mixed_psk_eap_network():
+    assert EncryptionFilter.ENTERPRISE.matches(_ap(akms=["PSK", "EAP"]))
+
+
 def test_transition_ap_is_not_pure_wpa3():
     ap = _ap(wpa3=True, transition_mode=True)
     assert not EncryptionFilter.WPA3.matches(ap)
@@ -149,6 +172,17 @@ async def test_encryption_select_emits_scan_filter():
         await pilot.pause()
         scan = [e for e in app.events if e[0] == "scan"]
         assert scan and scan[-1][1].encryption is EncryptionFilter.WPA
+
+
+async def test_enterprise_encryption_select_emits_scan_filter():
+    app = _Host([1, 6, 11])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.events.clear()
+        app.query_one("#filter-encryption", Select).value = EncryptionFilter.ENTERPRISE
+        await pilot.pause()
+        scan = [e for e in app.events if e[0] == "scan"]
+        assert scan and scan[-1][1].encryption is EncryptionFilter.ENTERPRISE
 
 
 async def test_signal_and_wps_selects_emit_scan_filter():

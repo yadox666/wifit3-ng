@@ -73,12 +73,15 @@ async def test_connection_discovers_reads_and_counts_notifications():
     assert len(inspection.services) == 2
     assert inspection.services[0].name == "Device Information"
     assert inspection.services[0].characteristics[0].value == "Acme"
+    assert inspection.services[0].characteristics[0].value_hex == "41 63 6d 65"
     assert inspection.services[1].characteristics[0].value == "87%"
+    assert inspection.services[1].characteristics[0].value_hex == "57"
     assert inspection.traffic.gatt_reads == 2
     assert inspection.traffic.read_bytes == 5
 
     connection._client.notify[2](None, bytearray([82]))
     assert inspection.services[1].characteristics[0].value == "82%"
+    assert inspection.services[1].characteristics[0].value_hex == "52"
     assert inspection.traffic.notifications == 1
     assert inspection.traffic.notification_bytes == 1
 
@@ -109,6 +112,7 @@ async def test_explicit_read_updates_value_and_traffic():
     characteristic = await connection.read_characteristic(1)
 
     assert characteristic.value == "Acme"
+    assert characteristic.value_hex == "41 63 6d 65"
     assert inspection.traffic.gatt_reads == before_reads + 1
 
 

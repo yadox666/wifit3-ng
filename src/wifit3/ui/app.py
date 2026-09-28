@@ -16,6 +16,15 @@ from wifit3.models.jobs import JobState, ToolCapability, ToolStatus
 from wifit3.persist.config import Config, ConfigError
 from wifit3.persist.hidden_ssids import HiddenSsidStore, HiddenSsidStoreError
 from wifit3.persist.wifi_profiles import WifiProfileStore, WifiProfileStoreError
+from wifit3.persist.enterprise_sessions import (
+    EnterpriseSessionStore,
+    EnterpriseSessionStoreError,
+)
+from wifit3.persist.ap_history import ApHistoryStore
+from wifit3.persist.bluetooth_history import (
+    BluetoothHistoryStore,
+    BluetoothHistoryStoreError,
+)
 from wifit3.persist.targets import SavedTarget, TargetStore, TargetStoreError
 from wifit3.persist.vault import Vault
 from wifit3.errors import WifiteDeviceLostError, WifiteFatalError
@@ -101,9 +110,7 @@ class WifiteApp(App):
         color: white;
         text-style: bold;
     }
-    #uninstall-btn {
-        margin-top: 1;              /* stacked under START */
-    }
+    #uninstall-btn { margin-top: 1; }
     #status-label {
         content-align: center middle;
         margin-bottom: 1;
@@ -143,7 +150,8 @@ class WifiteApp(App):
             self._config_error = str(e)
         _configure_file_logging(cli_log_level)
         self.array: Optional[WlanArray] = None
-        self.bluetooth_manager = BluetoothManager()
+        self.bluetooth_history_store = BluetoothHistoryStore()
+        self.bluetooth_manager = BluetoothManager(history=self.bluetooth_history_store)
         self.bluetooth_target_capture: BluetoothEventCapture | None = None
         self.device_manager = DeviceManager(self)
         self.device_watch = DeviceWatch(device_manager=self.device_manager,
@@ -155,6 +163,9 @@ class WifiteApp(App):
         self.target_store = TargetStore()
         self.hidden_ssid_store = HiddenSsidStore()
         self.wifi_profile_store = WifiProfileStore()
+        self.enterprise_session_store = EnterpriseSessionStore()
+        self.ap_history_store = ApHistoryStore()
+        self.history_deletion_available = True
         self.locked_target_id: str | None = None
         self.target_missing_since: float | None = None
         self.auto_lock_armed = True
@@ -199,8 +210,12 @@ class WifiteApp(App):
     ) -> BluetoothEventCapture | None:
         self.stop_bluetooth_target_capture()
         try:
-            capture = BluetoothEventCapture(device.identifier, target.alias)
-        except OSError as exc:
+            capture = BluetoothEventCapture(
+                self.bluetooth_history_store,
+                device.identifier,
+                target.alias,
+            )
+        except BluetoothHistoryStoreError as exc:
             self.notify(str(exc), title="Bluetooth capture failed", severity="error")
             return None
         self.bluetooth_target_capture = capture
@@ -229,6 +244,12 @@ class WifiteApp(App):
             self.notify(msg, severity="warning", title="Hidden SSIDs")
         for msg in self.wifi_profile_store.errors:
             self.notify(msg, severity="warning", title="Wi-Fi profiles")
+        for msg in self.enterprise_session_store.errors:
+            self.notify(msg, severity="warning", title="Enterprise history")
+        for msg in self.ap_history_store.errors:
+            self.notify(msg, severity="warning", title="AP history")
+        for msg in self.bluetooth_history_store.errors:
+            self.notify(msg, severity="warning", title="Bluetooth history")
         self.install_screen(SplashView(), name="splash")
         self.install_screen(ScannerView(), name="scanner")
         self.install_screen(BluetoothScannerView(), name="bluetooth")
@@ -418,6 +439,10 @@ class WifiteApp(App):
             self.wifi_profile_store.save()
         except WifiProfileStoreError:
             logger.warning("Could not flush Wi-Fi profile history", exc_info=True)
+        try:
+            self.enterprise_session_store.save()
+        except EnterpriseSessionStoreError:
+            logger.warning("Could not flush Enterprise session history", exc_info=True)
         self.vault.manager.kill_all_running()
         self.stop_bluetooth_target_capture()
         focus = self.get_screen("focus", FocusViewV2)
@@ -430,6 +455,11 @@ class WifiteApp(App):
         await self.bluetooth_manager.stop()
         if self.array:
             await self.array.close()
+        self.ap_history_store.close()
+        self.bluetooth_history_store.close()
+        self.hidden_ssid_store.close()
+        self.enterprise_session_store.close()
+        self.target_store.close()
         self.exit()
 
     def action_toggle_vault(self) -> None:

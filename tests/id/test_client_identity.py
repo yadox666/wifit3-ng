@@ -1,12 +1,19 @@
 from rich.cells import cell_len
 
-from wifit3.id import VENDOR_BY_OUI, fingerprint
+from wifit3.id import VENDOR_BY_OUI, fingerprint, is_manufacturer_mac
 from wifit3.id.client import _GENERIC_EMOJI, _RULES
 
 
 def test_ring_oui_recognized():
     fp = fingerprint("18:7f:88:aa:bb:cc")
     assert fp is not None and fp.emoji == "🔔" and fp.label == "Ring device"
+
+
+def test_manufacturer_mac_rejects_local_randomized_and_unknown_addresses():
+    assert is_manufacturer_mac("18:7f:88:aa:bb:cc")
+    assert not is_manufacturer_mac("1a:7f:88:aa:bb:cc")
+    assert not is_manufacturer_mac("10:12:34:56:78:9a")
+    assert not is_manufacturer_mac("not-a-mac")
 
 
 def test_roku_oui_recognized():

@@ -4,6 +4,11 @@ import struct
 import uuid
 from dataclasses import dataclass
 
+from wifit3.bluetooth.analytics import (
+    hci_address_type,
+    protocol_type_hint,
+    raw_payload_fingerprint,
+)
 from wifit3.models.bluetooth_device import BLE_RADIO, CLASSIC_RADIO
 
 HCI_RESET = 0x0C03
@@ -41,6 +46,13 @@ class DiscoveryObservation:
     service_data_bytes: int = 0
     tx_power: int | None = None
     class_of_device: int | None = None
+    appearance: int | None = None
+    address_type: str = "unknown"
+    payload_fingerprint: str = ""
+    protocol_category: str = ""
+    protocol_type: str = ""
+    protocol_source: str = ""
+    protocol_confidence: str = ""
 
 
 def command_packet(opcode: int, parameters: bytes = b"") -> bytes:
@@ -101,9 +113,13 @@ def _advertising_data(data: bytes) -> dict:
     services: set[str] = set()
     service_data: set[str] = set()
     manufacturers: set[int] = set()
+    manufacturer_payloads: dict[int, bytes] = {}
+    service_payloads: dict[str, bytes] = {}
     manufacturer_bytes = 0
     service_bytes = 0
     tx_power = None
+    class_of_device = None
+    appearance = None
     offset = 0
     while offset < len(data):
         length = data[offset]
@@ -135,17 +151,29 @@ def _advertising_data(data: bytes) -> dict:
             )
         elif data_type == 0x0A and value:
             tx_power = _signed(value[0])
+        elif data_type == 0x0D and len(value) >= 3:
+            class_of_device = int.from_bytes(value[:3], "little")
+        elif data_type == 0x19 and len(value) >= 2:
+            appearance = int.from_bytes(value[:2], "little")
         elif data_type == 0xFF and len(value) >= 2:
-            manufacturers.add(int.from_bytes(value[:2], "little"))
+            manufacturer = int.from_bytes(value[:2], "little")
+            manufacturers.add(manufacturer)
+            manufacturer_payloads[manufacturer] = value[2:]
             manufacturer_bytes += len(value) - 2
         elif data_type == 0x16 and len(value) >= 2:
-            service_data.add(f"{int.from_bytes(value[:2], 'little'):04x}")
+            service_uuid = f"{int.from_bytes(value[:2], 'little'):04x}"
+            service_data.add(service_uuid)
+            service_payloads[service_uuid] = value[2:]
             service_bytes += len(value) - 2
         elif data_type == 0x20 and len(value) >= 4:
-            service_data.add(f"{int.from_bytes(value[:4], 'little'):08x}")
+            service_uuid = f"{int.from_bytes(value[:4], 'little'):08x}"
+            service_data.add(service_uuid)
+            service_payloads[service_uuid] = value[4:]
             service_bytes += len(value) - 4
         elif data_type == 0x21 and len(value) >= 16:
-            service_data.add(_uuid128(value[:16]))
+            service_uuid = _uuid128(value[:16])
+            service_data.add(service_uuid)
+            service_payloads[service_uuid] = value[16:]
             service_bytes += len(value) - 16
     return {
         "name": name,
@@ -155,6 +183,12 @@ def _advertising_data(data: bytes) -> dict:
         "manufacturer_data_bytes": manufacturer_bytes,
         "service_data_bytes": service_bytes,
         "tx_power": tx_power,
+        "class_of_device": class_of_device,
+        "appearance": appearance,
+        "payload_fingerprint": raw_payload_fingerprint(data),
+        **protocol_type_hint(
+            manufacturer_payloads, service_payloads, services, name=name,
+        ),
     }
 
 
@@ -210,11 +244,11 @@ def _parse_extended_inquiry_result(parameters: bytes) -> list[DiscoveryObservati
     if len(parameters) < 255 or parameters[0] != 1:
         return []
     details = _advertising_data(parameters[15:255])
+    details["class_of_device"] = int.from_bytes(parameters[9:12], "little")
     return [DiscoveryObservation(
         identifier=_address(parameters[1:7]),
         radio_type=CLASSIC_RADIO,
         rssi=_signed(parameters[14]),
-        class_of_device=int.from_bytes(parameters[9:12], "little"),
         **details,
     )]
 
@@ -234,9 +268,10 @@ def _parse_le_advertising_reports(parameters: bytes) -> list[DiscoveryObservatio
             break
         details = _advertising_data(parameters[offset + 9:end])
         reports.append(DiscoveryObservation(
-            identifier=_address(address),
+            identifier=(identifier := _address(address)),
             radio_type=BLE_RADIO,
             rssi=_signed(parameters[end]),
+            address_type=hci_address_type(identifier, parameters[offset + 1]),
             **details,
         ))
         offset = end + 1
@@ -262,9 +297,10 @@ def _parse_le_extended_reports(parameters: bytes) -> list[DiscoveryObservation]:
         if details["tx_power"] is None and tx_power != 127:
             details["tx_power"] = tx_power
         reports.append(DiscoveryObservation(
-            identifier=_address(address),
+            identifier=(identifier := _address(address)),
             radio_type=BLE_RADIO,
             rssi=rssi,
+            address_type=hci_address_type(identifier, parameters[offset + 2]),
             **details,
         ))
         offset = end

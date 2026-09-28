@@ -190,6 +190,11 @@ class _CapturePanel(VerticalGroup):
             kg.mount(Label("[italic]raw .pcap capture[/italic]", classes="key-display"))
         elif self._title == "PACKET CAPTURE":
             kg.mount(Label("[italic]focused AP packet capture[/italic]", classes="key-display"))
+        elif self._title == "ENTERPRISE REPORTS":
+            kg.mount(Label(
+                "[italic]sanitized JSON assessment; no identities or credentials[/italic]",
+                classes="key-display",
+            ))
 
     @on(Select.Changed)
     def _file_changed(self, event: Select.Changed) -> None:
@@ -335,6 +340,9 @@ class VaultItemView(Vertical):
         
         groups = {
             "PACKET CAPTURE": [c for c in captures if c.type == CaptureType.PCAP],
+            "ENTERPRISE REPORTS": [
+                c for c in captures if c.type == CaptureType.ENTERPRISE
+            ],
             "HANDSHAKE": [
                 c for c in captures
                 if c.path.endswith(".pcap") and c.type in (CaptureType.HS, CaptureType.PMKID)

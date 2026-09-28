@@ -98,8 +98,7 @@ class BluetoothConnection:
             self._notify_update()
             raise BluetoothConnectionError(info.read_error) from exc
         raw = bytes(value)
-        info.value = _decode_value(info.uuid, raw)
-        info.value_bytes = len(raw)
+        _remember_value(info, raw)
         info.read_error = None
         self.inspection.traffic.gatt_reads += 1
         self.inspection.traffic.read_bytes += len(raw)
@@ -139,8 +138,7 @@ class BluetoothConnection:
                 try:
                     value = await asyncio.wait_for(client.read_gatt_char(info.handle), timeout=3.0)
                     raw = bytes(value)
-                    info.value = _decode_value(info.uuid, raw)
-                    info.value_bytes = len(raw)
+                    _remember_value(info, raw)
                     self.inspection.traffic.gatt_reads += 1
                     self.inspection.traffic.read_bytes += len(raw)
                 except Exception as exc:
@@ -164,8 +162,7 @@ class BluetoothConnection:
     def _notification_callback(self, info: BluetoothCharacteristic):
         def receive(_sender, data: bytearray) -> None:
             raw = bytes(data)
-            info.value = _decode_value(info.uuid, raw)
-            info.value_bytes = len(raw)
+            _remember_value(info, raw)
             info.notifications += 1
             info.notification_bytes += len(raw)
             self.inspection.traffic.notifications += 1
@@ -200,6 +197,12 @@ def _uuid16(uuid: str) -> str:
     if len(lowered) == 36 and lowered.startswith("0000") and lowered.endswith(suffix):
         return lowered[4:8]
     return lowered if len(lowered) == 4 else ""
+
+
+def _remember_value(info: BluetoothCharacteristic, raw: bytes) -> None:
+    info.value = _decode_value(info.uuid, raw)
+    info.value_hex = raw.hex(" ")
+    info.value_bytes = len(raw)
 
 
 def _decode_value(uuid: str, value: bytes) -> str:

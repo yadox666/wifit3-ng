@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from wifit3.bluetooth.assigned_numbers import manufacturer_label
-from wifit3.bluetooth.classification import device_category
+from wifit3.bluetooth.classification import device_classification
 from wifit3.id import vendor_for_mac
 from wifit3.models import AccessPoint, BluetoothDevice, Client
 from wifit3.wlan.enterprise_risk import enterprise_findings
@@ -102,14 +102,21 @@ def client_candidate(
 
 def bluetooth_candidate(device: BluetoothDevice) -> TargetCandidate:
     manufacturer = manufacturer_label(device.manufacturer_ids, device.identifier)
+    classification = device_classification(device)
     details = {
         "identifier": device.identifier,
         "name": device.name,
         "radio_types": list(device.radio_types),
         "discovery_source": device.discovery_source,
         "class_of_device": device.class_of_device,
+        "appearance": device.appearance,
         "manufacturer": manufacturer,
-        "probable_type": device_category(device),
+        "probable_type": classification.category,
+        "exact_type": classification.detail,
+        "classification_source": classification.source,
+        "classification_confidence": classification.confidence,
+        "protocol_type": device.protocol_type,
+        "protocol_source": device.protocol_source,
         "signal_dbm": device.rssi,
         "service_uuids": list(device.service_uuids),
         "service_data_uuids": list(device.service_data_uuids),

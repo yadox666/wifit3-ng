@@ -32,6 +32,8 @@ class Client:
     bssid: Optional[str] = None  # The AP it is currently connected to or probing for
     packets: int = 0
     is_fake: bool = False  # Temporary station created by an active campaign
+    historical: bool = False  # UI-only row restored from persistent observations
+    history_reasons: Set[str] = field(default_factory=set)
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     probed_ssids: Set[str] = field(default_factory=set)  # SSIDs this client is actively searching for

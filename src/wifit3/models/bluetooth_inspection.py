@@ -12,6 +12,7 @@ class BluetoothCharacteristic:
     name: str
     properties: tuple[str, ...]
     value: str = ""
+    value_hex: str = ""
     value_bytes: int = 0
     read_error: str = ""
     notifications: int = 0

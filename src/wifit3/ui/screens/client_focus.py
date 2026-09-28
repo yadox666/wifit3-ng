@@ -87,12 +87,12 @@ class ClientFocusView(Screen):
         self.set_interval(0.5, self._refresh)
         client = self.app.target_client
         array = self.app.array
-        if client is None or array is None or not client.bssid:
+        if client is None or array is None:
             self.app.pop_screen()
             return
-        ap = array.access_points.get(client.bssid)
+        ap = array.access_points.get(client.bssid or "")
         if ap is None:
-            self.app.pop_screen()
+            self._refresh()
             return
         await array.stop_hopping()
         await array.set_channel(ap.channel, scan=False)
@@ -134,6 +134,14 @@ class ClientFocusView(Screen):
             if target is not None
             else f"[yellow]● TARGET LOST[/yellow]  {escape(alias)}"
         )
+        probe_lines = []
+        for ssid in sorted(client.probed_ssids):
+            observation = client.probe_observations.get(ssid)
+            if observation is not None and observation.historical:
+                probe_lines.append(f"[dim]  {escape(ssid)} · history[/dim]")
+            else:
+                probe_lines.append(f"  {escape(ssid)}")
+        probes = "\n".join(probe_lines) or "[dim]  None observed[/dim]"
         self.query_one("#client-focus-status", Static).update(
             lock_status
         )
@@ -152,7 +160,7 @@ class ClientFocusView(Screen):
             f"[dim]First seen[/dim]  {time.strftime('%H:%M:%S', time.localtime(client.first_seen))}\n"
             f"[dim]Last seen[/dim]  {max(0, int(time.time() - client.last_seen))}s ago\n\n"
             f"[dim]Probe requests[/dim]\n"
-            f"{escape(', '.join(sorted(client.probed_ssids)) or 'None observed')}"
+            f"{probes}"
             f"{enterprise}"
         )
         findings = enterprise_findings(ap) if ap is not None else []
@@ -168,12 +176,27 @@ class ClientFocusView(Screen):
             if writer is not None
             else "[yellow]Capture stopped[/yellow]"
         )
+        historical_aps = [
+            record
+            for record in self.app.ap_history_store.aps_for_client(client.mac)
+            if record.bssid.casefold() != (client.bssid or "").casefold()
+        ]
+        history_lines = ""
+        if historical_aps:
+            rows = []
+            for record in historical_aps:
+                label = escape(record.ssid or "<hidden>")
+                rows.append(
+                    f"[dim]  {label} · {escape(record.bssid)}"
+                    f" · {time.strftime('%Y-%m-%d', time.localtime(record.last_seen))}[/dim]"
+                )
+            history_lines = "\n\n[dim]Previous networks[/dim]\n" + "\n".join(rows)
         self.query_one("#client-network", Static).update(
             f"[dim]SSID[/dim]  {escape(ap.ssid or '<hidden>') if ap else 'Waiting'}\n"
             f"[dim]BSSID[/dim]  {escape(client.bssid or 'Unassociated')}\n"
             f"[dim]Channel[/dim]  {ap.channel if ap else '-'}\n"
             f"[dim]Security[/dim]  {escape(ap.encryption or 'Unknown') if ap else '-'}\n\n"
-            f"{capture}{risk}"
+            f"{capture}{risk}{history_lines}"
         )
         if self._network_store is not None:
             try:
@@ -214,7 +237,7 @@ class ClientFocusView(Screen):
         self._network_bssid = ap.bssid.casefold()
         if self._is_open_ap(ap):
             self._network_store = NetworkMetadataStore(
-                Path(Config.captures_dir), ap.bssid, ap.ssid,
+                self.app.ap_history_store, ap.bssid, ap.ssid,
             )
             self._network_analyzer = PassiveNetworkAnalyzer(
                 self._network_store.metadata,

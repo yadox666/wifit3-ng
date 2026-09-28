@@ -11,6 +11,7 @@ from wifit3.vault.tools.base import VaultTool
 from wifit3.vault.tools.hashcat import HashcatTool
 from wifit3.persist.common import parse_hc22000
 from wifit3.persist.config import Config
+from wifit3.persist.private_files import write_private_text
 
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ class JobManager:
             d['status'] = d['status'].value
             data[k] = d
         logger.info(f"Saving {len(data.keys())} jobs to {jobs_file}")
-        jobs_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        write_private_text(jobs_file, json.dumps(data, indent=2))
 
     def reconcile_on_startup(self) -> None:
         """Resolve jobs left in a ``RUNNING`` state by a previous session."""
@@ -204,9 +205,10 @@ class JobManager:
         out_name = f"{ssid_safe}_{bssid_safe}_{int(time.time())}_wpa_psk.txt"
         out_path = Path(Config.captures_dir) / out_name
         try:
-            out_path.write_text(
+            write_private_text(
+                out_path,
                 f"SSID: {ssid}\nBSSID: {cap.bssid}\nPSK: {res.result_data['key']}\n",
-                encoding="utf-8")
+            )
         except OSError:
             logger.exception(f"Failed to write recovered key to {out_path}")
             return

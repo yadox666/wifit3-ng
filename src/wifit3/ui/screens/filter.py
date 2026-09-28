@@ -35,6 +35,7 @@ class EncryptionFilter(Enum):
     ALL = "All"
     OPEN = "Open"
     WEP = "WEP"
+    ENTERPRISE = "Enterprise"
     WPA = "WPA/2"
     WPA3_TRANSITION = "WPA3→2"
     WPA3 = "WPA3"
@@ -42,6 +43,11 @@ class EncryptionFilter(Enum):
     def matches(self, ap: AccessPoint) -> bool:
         if self is EncryptionFilter.ALL:
             return True
+        if self is EncryptionFilter.ENTERPRISE:
+            return any(
+                akm.startswith("EAP") or akm.startswith("FT-EAP")
+                for akm in ap.akms
+            )
         return EncryptionType.from_ap(ap) in _FILTER_TYPES[self]
 
 

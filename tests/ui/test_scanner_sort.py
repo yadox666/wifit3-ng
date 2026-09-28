@@ -245,6 +245,43 @@ async def test_selected_client_mac_follows_its_row_during_resort():
 
 
 @pytest.mark.asyncio
+async def test_selected_client_survives_row_removal_before_resort():
+    ap = _make_ap("aa:bb:cc:00:00:01", ssid="AP", signal=-40)
+    first = Client(mac="10:00:00:00:00:01", bssid=ap.bssid)
+    selected_client = Client(mac="10:00:00:00:00:02", bssid=ap.bssid)
+    third = Client(mac="10:00:00:00:00:03", bssid=ap.bssid)
+    first.signal_by_card["card0"] = -20
+    selected_client.signal_by_card["card0"] = -40
+    third.signal_by_card["card0"] = -60
+    array = _FakeArray([ap], [1, 6, 11])
+    array.clients = {
+        first.mac: first,
+        selected_client.mac: selected_client,
+        third.mac: third,
+    }
+
+    app = _ScannerHost(array)
+    async with app.run_test() as pilot:
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner.action_toggle_view()
+        await pilot.pause(0)
+        table = scanner.query_one("#ap-table", DataTable)
+        table.move_cursor(row=1, animate=False)
+        assert table.coordinate_to_cell_key(
+            table.cursor_coordinate,
+        ).row_key.value == selected_client.mac
+
+        array.clients.pop(first.mac)
+        scanner.refresh_table()
+        await pilot.pause(0)
+
+        assert table.coordinate_to_cell_key(
+            table.cursor_coordinate,
+        ).row_key.value == selected_client.mac
+
+
+@pytest.mark.asyncio
 async def test_hidden_guess_always_sorts_directly_below_named_sibling():
     sibling = _make_ap("02:00:00:00:00:01", ssid="Named", signal=-80)
     hidden = _make_ap("02:00:00:00:00:02", ssid=None, signal=-20)

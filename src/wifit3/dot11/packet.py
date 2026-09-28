@@ -113,6 +113,7 @@ class EapPacket(EapolPacket):
     eap_identifier: int = 0
     eap_type: Optional[int] = None
     eap_data: bytes = b""
+    eap_nak_types: tuple[int, ...] = ()
 
 
 @dataclass(slots=True, kw_only=True)

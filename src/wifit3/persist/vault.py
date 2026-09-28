@@ -3,6 +3,7 @@ artifacts. Loaded once at startup and refreshed on each save, so reads never
 re-scan the directory. Wraps persist.save + persist.capture_history."""
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from wifit3.persist import save
 from wifit3.persist.capture_history import load_capture_index, summarize
 from wifit3.persist.common import LEGACY_CAPTURE_RE, bssid_to_dashed, parse_hc22000, safe_ssid
 from wifit3.persist.config import Config
+from wifit3.persist.private_files import ensure_private_directory, harden_private_file
 from wifit3.persist.save import SaveResult
 from wifit3.vault.manager import JobManager
 
@@ -48,6 +50,7 @@ class Vault:
         CaptureType.WPS_PIN: "WPS PIN",
         CaptureType.WPS_PBC: "WPS PBC",
         CaptureType.WPA_PSK: "WPA PSK",
+        CaptureType.ENTERPRISE: "Enterprise report",
     }
 
     _PSK_TYPES = (CaptureType.WPS_PIN, CaptureType.WPS_PBC, CaptureType.WPA_PSK)
@@ -204,6 +207,20 @@ class Vault:
                                     path=str(result.path), bssid=ap.bssid, value=psk, ssid=ap.ssid))
         return result
 
+    def save_enterprise_report(self, ap: "AccessPoint") -> Optional[SaveResult]:
+        result = save.save_enterprise_report(ap)
+        if result and result.was_new:
+            self._index.setdefault(ap.bssid, []).insert(
+                0, PersistedCapture(
+                    type=CaptureType.ENTERPRISE,
+                    timestamp=int(time.time()),
+                    path=str(result.path),
+                    bssid=ap.bssid,
+                    ssid=ap.ssid,
+                ),
+            )
+        return result
+
     def validate_capture(self, capture: PersistedCapture) -> tuple[bool, str]:
         """Validate a saved artifact's local structure without transmitting or exposing secrets."""
         path = Path(capture.path)
@@ -226,6 +243,13 @@ class Vault:
                     (True, "Valid PCAP header")
                     if header in magics else (False, "Invalid or truncated PCAP header")
                 )
+            if capture.type == CaptureType.ENTERPRISE:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+                    return False, "Unsupported Enterprise report schema"
+                if not isinstance(payload.get("enterprise"), dict):
+                    return False, "Enterprise report has no profile"
+                return True, "Valid sanitized Enterprise report"
             if capture.type == CaptureType.WEP:
                 value = capture.value or ""
                 return (
@@ -239,7 +263,7 @@ class Vault:
                     len(value) == 64 and all(char in "0123456789abcdefABCDEF" for char in value)
                 )
                 return (True, "Credential structure is valid") if valid else (False, "Invalid WPA credential length")
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             return False, str(exc)
         return False, "Unsupported capture format"
 
@@ -271,9 +295,12 @@ class Vault:
             return None
         if save_as is None:
             save_as = Path(Config.captures_dir).parent / f"wifit3_captures_{int(time.time())}.zip"
+        if not save_as.parent.exists():
+            ensure_private_directory(save_as.parent)
         with zipfile.ZipFile(save_as, "w", zipfile.ZIP_DEFLATED) as zf:
             for p in paths:
                 zf.write(p, arcname=p.name)
+        harden_private_file(save_as)
         return save_as
 
     def open_directory(self) -> None:

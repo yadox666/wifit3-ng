@@ -36,6 +36,15 @@ def _write(d, name, content):
 
 
 class TestLoadCaptureIndex:
+    def test_enterprise_report(self, tmp_path):
+        _write(
+            tmp_path,
+            f"Corp_{_BSSID_DASH}_1700000000_enterprise_report.json",
+            '{"schema_version": 1, "enterprise": {}}',
+        )
+        caps = load_capture_index()[_BSSID_COLON]
+        assert [capture.type for capture in caps] == [CaptureType.ENTERPRISE]
+
     def test_handshake_hc22000(self, tmp_path):
         _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000000_handshake.hc22000", _HS_LINE)
         idx = load_capture_index()

@@ -1,11 +1,11 @@
 """Logic-only tests for FocusViewV2 state derivations."""
 
-import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from wifit3.dot11.dhcp import DhcpOffer
 from wifit3.campaigns.fake_connect import ConnectivityResult
+from wifit3.persist.ap_history import ApHistoryStore
 from wifit3.persist.network_metadata import NetworkMetadataStore
 from wifit3.persist.vault import Vault
 from tests.wlan.mocks import build_ap, mock_array
@@ -58,10 +58,11 @@ def test_campaign_visibility_for_wpa2():
     assert WpsCampaign.visible(ap) is False
 
 
-def test_fake_connect_offer_updates_network_json_without_pcap(tmp_path):
+def test_fake_connect_offer_updates_network_database_without_pcap(tmp_path):
     screen = FocusViewV2()
+    history = ApHistoryStore(tmp_path / "history.sqlite3")
     store = NetworkMetadataStore(
-        tmp_path, "b4:0f:3b:14:fc:64", "Tenda_14FC60",
+        history, "b4:0f:3b:14:fc:64", "Tenda_14FC60",
     )
     screen._network_store = store
     campaign = SimpleNamespace(
@@ -96,7 +97,7 @@ def test_fake_connect_offer_updates_network_json_without_pcap(tmp_path):
     with patch.object(screen, "_refresh_network_metadata"):
         screen._record_fake_connect_offer(campaign)
 
-    payload = json.loads(store.path.read_text("utf-8"))
+    payload = history.network_metadata_payload("b4:0f:3b:14:fc:64")
     assert payload["facts"]["ipv4_networks"][0]["value"] == "192.168.0.0/24"
     assert payload["facts"]["gateways"][0]["value"] == "192.168.0.1"
     assert payload["facts"]["dns_servers"][0]["value"] == "192.168.0.1"

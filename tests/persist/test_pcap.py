@@ -2,6 +2,8 @@
 FCS-less MPDU bodies (every chip driver strips at RX ingress), so the writer
 no longer second-guesses the frame tail."""
 
+import stat
+
 from wifit3.persist.pcap import PcapWriter, write_pcap
 
 
@@ -41,6 +43,7 @@ def test_write_pcap_writes_frame_verbatim(tmp_path):
     path = tmp_path / "a.pcap"
     assert write_pcap(path, [(body, 0.0)]) == 1
     assert _first_packet(path) == body
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_write_pcap_preserves_per_frame_timestamps(tmp_path):
@@ -82,6 +85,7 @@ def test_streaming_pcap_writer_rotates_and_limits_parts(tmp_path):
         "Net_aa-bb-cc-dd-ee-ff_1700000000_packet_capture.pcap",
         "Net_aa-bb-cc-dd-ee-ff_1700000001_packet_capture.pcap",
     ]
+    assert all(stat.S_IMODE(item.stat().st_mode) == 0o600 for item in writer.paths)
 
 
 def test_streaming_pcap_writer_rotates_without_part_limit(tmp_path):

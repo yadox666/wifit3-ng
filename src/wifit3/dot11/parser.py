@@ -268,6 +268,10 @@ class WlanFrameParser:
                     bytes(frame[eap_start + 5: eap_start + min(eap_length, available)])
                     if eap_type in tls_types else b""
                 )
+                eap_nak_types = (
+                    tuple(frame[eap_start + 5: eap_start + min(eap_length, available)])
+                    if eap_code == 2 and eap_type == 3 else ()
+                )
                 return EapPacket(
                     **base,
                     type="eapol",
@@ -275,6 +279,7 @@ class WlanFrameParser:
                     eap_identifier=eap_identifier,
                     eap_type=eap_type,
                     eap_data=eap_data,
+                    eap_nak_types=eap_nak_types,
                 )
         if len(frame) >= eapol_start + 99 and frame[eapol_start + 1] == 3:  # EAPOL-Key
             key_info = struct.unpack(">H", frame[eapol_start + 5: eapol_start + 7])[0]

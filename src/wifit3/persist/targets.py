@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
+import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from platformdirs import user_config_dir
+from platformdirs import user_config_dir, user_data_dir
+
+from wifit3.persist.private_files import ensure_private_directory
 
 
-TARGETS_PATH = Path(user_config_dir("wifit3", appauthor=False)) / "targets.json"
+TARGETS_PATH = Path(user_data_dir("wifit3", appauthor=False)) / "targets.sqlite3"
+LEGACY_TARGETS_PATH = (
+    Path(user_config_dir("wifit3", appauthor=False)) / "targets.json"
+)
 TARGETS_VERSION = 1
 _VALID_MEDIA = {"wifi", "bluetooth"}
 _VALID_KINDS = {"ap", "client", "device"}
@@ -50,34 +57,109 @@ def _fill_empty(existing: dict[str, Any], incoming: dict[str, Any]) -> bool:
 
 
 class TargetStore:
-    def __init__(self, path: Path = TARGETS_PATH) -> None:
+    def __init__(
+        self,
+        path: Path = TARGETS_PATH,
+        *,
+        legacy_path: Path | None = None,
+    ) -> None:
         self.path = path
         self.targets: list[SavedTarget] = []
         self.errors: list[str] = []
+        self._lock = threading.RLock()
+        self._connection: sqlite3.Connection | None = None
+        self._open()
+        if self._connection is not None and legacy_path is not None:
+            self._migrate_legacy(legacy_path)
         self.load()
 
-    def load(self) -> None:
+    def _open(self) -> None:
         try:
-            payload = json.loads(self.path.read_text("utf-8"))
-        except FileNotFoundError:
+            ensure_private_directory(self.path.parent)
+            connection = sqlite3.connect(
+                self.path, timeout=5.0, check_same_thread=False,
+            )
+            connection.row_factory = sqlite3.Row
+            self._connection = connection
+            connection.execute("PRAGMA busy_timeout = 5000")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA secure_delete = ON")
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if version > 1:
+                raise TargetStoreError(
+                    f"Targets database schema {version} is newer than supported 1",
+                )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS targets (
+                    id TEXT PRIMARY KEY,
+                    alias TEXT NOT NULL,
+                    medium TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    identifier TEXT NOT NULL,
+                    details_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    last_locked_at REAL,
+                    priority INTEGER NOT NULL,
+                    enabled INTEGER NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS targets_identity_idx
+                ON targets(medium, kind, identifier COLLATE NOCASE)
+                """
+            )
+            if version == 0:
+                connection.execute("PRAGMA user_version = 1")
+            connection.commit()
+            try:
+                os.chmod(self.path, 0o600)
+            except OSError:
+                pass
+        except (OSError, sqlite3.Error, TargetStoreError) as exc:
+            self.errors.append(f"Could not open targets database: {exc}")
+            self.close()
+
+    def load(self) -> None:
+        connection = self._connection
+        if connection is None:
             self.targets = []
             return
-        except (OSError, json.JSONDecodeError) as exc:
+        try:
+            rows = connection.execute(
+                """
+                SELECT * FROM targets
+                ORDER BY priority, created_at
+                """
+            ).fetchall()
+        except sqlite3.Error as exc:
             self.targets = []
             self.errors.append(f"Could not load targets: {exc}")
             return
-        if not isinstance(payload, dict) or payload.get("version") != TARGETS_VERSION:
-            self.targets = []
-            self.errors.append("Unsupported targets.json version")
-            return
-        loaded = []
-        raw_targets = payload.get("targets", [])
-        if not isinstance(raw_targets, list):
-            raw_targets = []
-        for raw in raw_targets:
+        loaded: list[SavedTarget] = []
+        for row in rows:
             try:
-                target = SavedTarget(**raw)
-            except (TypeError, ValueError):
+                details = json.loads(row["details_json"])
+                target = SavedTarget(
+                    id=str(row["id"]),
+                    alias=str(row["alias"]),
+                    medium=str(row["medium"]),
+                    kind=str(row["kind"]),
+                    identifier=str(row["identifier"]),
+                    details=details,
+                    created_at=float(row["created_at"]),
+                    updated_at=float(row["updated_at"]),
+                    last_locked_at=(
+                        float(row["last_locked_at"])
+                        if row["last_locked_at"] is not None else None
+                    ),
+                    priority=int(row["priority"]),
+                    enabled=bool(row["enabled"]),
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
                 continue
             if (
                 target.medium in _VALID_MEDIA
@@ -90,24 +172,73 @@ class TargetStore:
         self.targets = loaded
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
-        payload = {
-            "version": TARGETS_VERSION,
-            "targets": [asdict(target) for target in self.targets],
-        }
+        connection = self._connection
+        if connection is None:
+            raise TargetStoreError("Targets database is unavailable")
         try:
-            temporary.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            try:
-                os.chmod(temporary, 0o600)
-            except OSError:
-                pass
-            temporary.replace(self.path)
-        except OSError as exc:
+            with self._lock, connection:
+                connection.execute("DELETE FROM targets")
+                connection.executemany(
+                    """
+                    INSERT INTO targets (
+                        id, alias, medium, kind, identifier, details_json,
+                        created_at, updated_at, last_locked_at, priority, enabled
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            target.id, target.alias, target.medium, target.kind,
+                            target.identifier,
+                            json.dumps(target.details, ensure_ascii=False),
+                            target.created_at, target.updated_at,
+                            target.last_locked_at, target.priority,
+                            int(target.enabled),
+                        )
+                        for target in self.targets
+                    ],
+                )
+        except sqlite3.Error as exc:
             raise TargetStoreError(f"Could not save targets: {exc}") from exc
+
+    def _migrate_legacy(self, legacy_path: Path | None) -> None:
+        if legacy_path is None or not legacy_path.exists():
+            return
+        try:
+            payload = json.loads(legacy_path.read_text("utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            self.errors.append(f"Could not migrate targets.json: {exc}")
+            return
+        if not isinstance(payload, dict) or payload.get("version") != TARGETS_VERSION:
+            self.errors.append("Unsupported targets.json version")
+            return
+        connection = self._connection
+        if connection is not None and int(
+            connection.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
+        ) > 0:
+            try:
+                legacy_path.unlink()
+            except OSError as exc:
+                self.errors.append(f"Could not remove migrated targets.json: {exc}")
+            return
+        migrated: list[SavedTarget] = []
+        for raw in payload.get("targets", []):
+            try:
+                target = SavedTarget(**raw)
+            except (TypeError, ValueError):
+                continue
+            if (
+                target.medium in _VALID_MEDIA
+                and target.kind in _VALID_KINDS
+                and target.identifier
+                and isinstance(target.details, dict)
+            ):
+                migrated.append(target)
+        self.targets = migrated
+        self.save()
+        try:
+            legacy_path.unlink()
+        except OSError as exc:
+            self.errors.append(f"Could not remove migrated targets.json: {exc}")
 
     def find(self, medium: str, kind: str, identifier: str) -> SavedTarget | None:
         normalized = identifier.casefold()
@@ -195,3 +326,19 @@ class TargetStore:
             else [target for target in self.targets if target.medium == medium]
         )
         return sorted(targets, key=lambda target: (target.priority, target.created_at))
+
+    def clear_medium(self, medium: str) -> None:
+        if medium not in _VALID_MEDIA:
+            raise TargetStoreError("Unsupported target medium")
+        self.targets = [
+            target for target in self.targets if target.medium != medium
+        ]
+        for priority, target in enumerate(self.targets):
+            target.priority = priority
+        self.save()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None

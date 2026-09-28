@@ -40,11 +40,18 @@ class ClientWidget(Horizontal):
 
     def __init__(self, client, **kwargs) -> None:
         is_fake = bool(getattr(client, "is_fake", False))
-        classes = "client-row fake-client" if is_fake else "client-row"
-        super().__init__(id=_widget_id(client.mac), classes=classes, **kwargs)
+        is_historical = bool(getattr(client, "historical", False))
+        classes = ["client-row"]
+        if is_fake:
+            classes.append("fake-client")
+        if is_historical:
+            classes.append("historical-client")
+        super().__init__(id=_widget_id(client.mac), classes=" ".join(classes), **kwargs)
         self._client = client
         self._mac = client.mac
         self._is_fake = is_fake
+        self._is_historical = is_historical
+        self._history_reasons = set(getattr(client, "history_reasons", set()))
         self._fp = None if self._is_fake else client.fingerprint
         self._manufacturer = (
             "Fake-Connect" if self._is_fake else vendor_for_mac(client.mac) or ""
@@ -53,27 +60,46 @@ class ClientWidget(Horizontal):
         self._packets = client.packets
 
     def compose(self) -> ComposeResult:
-        badge = "[yellow]◈[/yellow]" if self._is_fake else self._fp.emoji if self._fp else ""
+        badge = (
+            "[yellow]◈[/yellow]"
+            if self._is_fake
+            else "[dim]◌[/dim]"
+            if self._is_historical
+            else self._fp.emoji if self._fp else ""
+        )
         self._fp_label = Label(badge, classes="cl-fp")
         self._mac_label = Label(self._mac, classes="cl-bssid")
         self._mfr_label = Label(self._manufacturer, classes="cl-mfr")
-        power = "--" if self._is_fake else str(self._power)
+        power = "--" if self._is_fake or self._is_historical else str(self._power)
         self._pwr_label = Label(
             Text(power, style="yellow" if self._is_fake else dbm_style(self._power)),
             classes="cl-pwr",
         )
-        self._pkts_label = Label(str(self._packets), classes="cl-pkts")
+        self._pkts_label = Label(
+            "--" if self._is_historical else str(self._packets),
+            classes="cl-pkts",
+        )
         if self._is_fake:
             self._fp_label.tooltip = "Temporary fake client created by Fake-Connect"
             self._mac_label.tooltip = self._fp_label.tooltip
+        elif self._is_historical:
+            reasons = " and ".join(sorted(self._history_reasons)) or "observation"
+            tooltip = f"Historical client · {reasons}"
+            self._fp_label.tooltip = tooltip
+            self._mac_label.tooltip = tooltip
+            self._mfr_label.tooltip = tooltip
         elif self._fp is not None:
             self._fp_label.tooltip = self._fp.label
             self._fp_label.add_class("fp-known")
             self._mac_label.add_class("fp-known")
         self._deauth = Button("✕", classes="cl-deauth", tooltip="Deauthenticate Client")
-        if self._is_fake:
+        if self._is_fake or self._is_historical:
             self._deauth.disabled = True
-            self._deauth.tooltip = "Use Disconnect to remove this fake client"
+            self._deauth.tooltip = (
+                "Historical client; no active station to deauthenticate"
+                if self._is_historical
+                else "Use Disconnect to remove this fake client"
+            )
         yield self._fp_label
         yield self._mac_label
         yield self._mfr_label
@@ -84,10 +110,10 @@ class ClientWidget(Horizontal):
     def update_stats(self, power: int, packets: int) -> None:
         """Repaint power/packets in place, only on a real change (a blind ``Label.update`` at 10 Hz
         wipes text selection and burns CPU)."""
-        if power != self._power and not self._is_fake:
+        if power != self._power and not self._is_fake and not self._is_historical:
             self._power = power
             self._pwr_label.update(Text(str(power), style=dbm_style(power)))
-        if packets != self._packets:
+        if packets != self._packets and not self._is_historical:
             self._packets = packets
             self._pkts_label.update(str(packets))
         manufacturer = (
@@ -104,7 +130,7 @@ class ClientWidget(Horizontal):
         self.post_message(self.DeauthRequested(self._mac))
 
     def set_deauth_enabled(self, enabled: bool) -> None:
-        self._deauth.disabled = self._is_fake or not enabled
+        self._deauth.disabled = self._is_fake or self._is_historical or not enabled
 
     def on_click(self, event: events.Click) -> None:
         targets = (self._mac_label, self._mfr_label)
@@ -227,6 +253,10 @@ class ClientsList(Vertical):
                 self._remove_row(mac)
         for c in clients:
             row = self._rows.get(c.mac)
+            historical = bool(getattr(c, "historical", False))
+            if row is not None and row._is_historical != historical:
+                self._remove_row(c.mac)
+                row = None
             if row is None:
                 if self.query(f"#{_widget_id(c.mac)}"):
                     continue
@@ -248,4 +278,10 @@ class ClientsList(Vertical):
             row.set_deauth_enabled(enabled)
 
     def _update_title(self) -> None:
-        self.border_title = f"CLIENTS ({len(self._rows)})"
+        historical = sum(row._is_historical for row in self._rows.values())
+        live = len(self._rows) - historical
+        self.border_title = (
+            f"CLIENTS ({live} live · {historical} history)"
+            if historical
+            else f"CLIENTS ({live})"
+        )

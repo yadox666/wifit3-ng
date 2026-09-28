@@ -27,6 +27,9 @@ captures/
 targets.json
 hidden_ssids.json
 target_events*.jsonl
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 driver_sources/
 driver_captures*/
 kali/

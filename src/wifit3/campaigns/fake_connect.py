@@ -136,7 +136,7 @@ class FakeConnectCampaign(Campaign):
 
     button_id = "btn-fake-connect"
     key = "fake_connect"
-    hotkey = ("o", "Fake-Connect")
+    hotkey = None
     stoppable = True
     idle_label = "Fake-Connect"
     run_label = "Disconnect"

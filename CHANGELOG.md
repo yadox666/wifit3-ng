@@ -4,6 +4,209 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
+## Unreleased
+
+### Added
+
+- Added a private, versioned SQLite AP knowledge store keyed by BSSID. A live
+  AP observed in a later session is enriched automatically with its confirmed
+  SSID, country, security/RSN posture, radio capabilities, WPS state,
+  Enterprise observations, same-radio relationships, and source-preserving
+  OUI/WSC Beacon/WSC M1 identity evidence.
+- Historical data only fills missing fields; current packet evidence remains
+  authoritative. Saved APs never create phantom scanner rows and only appear
+  after their BSSID is observed live.
+- Added ordered schema migrations, foreign-key enforcement, WAL operation,
+  secure deletion, bounded retention of the 20,000 most recently seen APs,
+  debounced updates, serialized cross-thread access for receive callbacks, and
+  owner-private database/directory permissions.
+- New SQLite stores start empty. There is deliberately no automatic migration
+  from legacy JSON/JSONL or historical PCAP analysis; old files are left
+  untouched and ignored.
+- Added a separate private, versioned, bounded Bluetooth/BT/BLE SQLite history.
+  A device observed live again can recover its prior name, service UUIDs,
+  manufacturer IDs, radio modes, transmit power, and class-of-device data.
+  Historical devices never create scanner rows on their own, and live values
+  take precedence.
+- Added evidence-backed Bluetooth device classification. BLE GAP Appearance,
+  Bluetooth Classic Class-of-Device major/minor values, and standard Classic/LE
+  service profiles take precedence over low-confidence name hints. Scanner
+  Focus and exports report the exact inferred type, broad category, evidence
+  source, confidence, and ambiguous conflicts instead of presenting a guessed
+  label as fact.
+- Added GAP Appearance parsing to direct USB HCI advertisements and guarded
+  Linux BlueZ metadata extraction for `Appearance`, `Class`, and `AddressType`.
+  Bluetooth history schema v6 persists Appearance plus a structured snapshot
+  of classification, evidence source, confidence, ambiguity, signal window,
+  advertisement activity, baseline state, discovery source, and fingerprints;
+  normalized advertising-protocol evidence is retained separately so later
+  observations can recover it. Existing databases migrate in place.
+- Bluetooth history updates are now debounced per identifier regardless of
+  changing RSSI or payload fingerprints, preventing high-rate advertisers from
+  causing one SQLite transaction per packet.
+- Expanded classification for earbuds, headsets, headphones, speakers,
+  keyboards, mice, game controllers, smartwatches, computers, phones, toys,
+  health sensors, network devices, displays, appliances, vehicles, and other
+  assigned Appearance and Classic Class-of-Device categories. The Classic
+  decoder now covers computer, phone, wearable, toy, and health minors and
+  correctly consumes all four peripheral-subclass bits.
+- Added a compact, auditable Bluetooth signature catalog based on Bluetooth
+  SIG Assigned Numbers, BlueZ profile constants, and stable identifiers
+  cross-checked against Home Assistant's Apache-2.0 matcher database. It adds
+  current Classic SDP and BLE GATT services without importing broad device-name
+  guesses or treating a protocol as proof of an unsupported physical subtype.
+- Added exact manufacturer-frame signatures from the MIT-licensed reelyActive
+  advlib database for supported Efento, EnOcean, Wiliot, Code Blue, Minew,
+  ELA Innovation, HibouAir, Laird, MOKO/MOKOSmart, and Espruino devices.
+  Selected MIT-licensed AirHound composite signatures add Raven acoustic
+  sensors, Find My-compatible trackers, and Flock devices. Weak OUI-only and
+  unscoped byte signatures are deliberately rejected.
+- Linux BlueZ discovery now consumes a validated Device ID `Modalias` and
+  resolves it against the local systemd hardware database with a bounded,
+  cached, shell-free query. Resolved vendor/product identity is searchable,
+  displayed in Focus, included in exports and classification evidence, and
+  retained by Bluetooth history schema v7. GPLv3 Theengs and CC-BY-SA 4.0
+  CLUES data remain documented research references rather than being copied
+  into this GPL-2.0-only distribution.
+- Added bounded parsing of verified advertising identifiers for Apple iBeacon,
+  Apple Proximity Pairing audio and HomeKit, Google Fast Pair, Eddystone,
+  AltBeacon, BTHome, Ruuvi sensor formats 3/5, Xiaomi MiBeacon, Tile, Estimote,
+  Nordic Secure DFU/UART, SwitchBot, Airthings, Aranet, Find My, and Exposure
+  Notification. Manufacturer-only observations now display a low-confidence
+  vendor-specific device label instead of an unhelpful `Unknown`/`Other`,
+  without guessing a subtype that was not advertised.
+- Widened the Bluetooth scanner `RADIO / TYPE` column so evidence-backed exact
+  types remain visible instead of being truncated to the old broad-category
+  width.
+- Bluetooth scan export now writes owner-private CSV, structured JSON, and
+  streaming-friendly JSONL snapshots with address type, Appearance,
+  Class-of-Device, exact and broad type, evidence source, confidence, baseline
+  state, signal trends, and privacy-safe fingerprints.
+- Added `C · Clear-DB` to the startup device-selection footer as the only
+  database-deletion action.
+  Wi-Fi and Bluetooth/BLE histories can be selected independently or together,
+  and deletion remains disabled until the user types exactly `DELETE NOW!`.
+  Wi-Fi deletion includes AP knowledge, hidden SSIDs, directed probes,
+  association profiles, Enterprise sessions, network metadata, and Wi-Fi
+  targets. Bluetooth deletion includes device history, advertisement/GATT
+  events, and Bluetooth targets. PCAPs, keys, reports, and scan exports remain.
+- Added persistence and integration tests for schema creation,
+  private permissions, live-over-history precedence,
+  source-level identity restoration, sibling relationships, startup AP
+  enrichment, immediate WSC M1 writes, clearing, and malformed input.
+- Added bidirectional AP↔client association history to the private AP database.
+  Exact association/data evidence records first and last observation times and
+  can be queried from either the AP BSSID or client MAC without creating
+  phantom AP scanner rows.
+- AP Focus now merges current stations with prior associated clients and
+  clients that directed probes at the AP's SSID. Historical entries use a
+  soft-grey `◌` row, explain whether the evidence was an association or probe,
+  cannot be deauthenticated, and do not activate the live client connector.
+- The Wi-Fi client table and Client Focus now show previously used APs in grey.
+  Persisted probe requests are grey until seen live again. Probe history is
+  still treated as SSID-only evidence and never promoted to an exact BSSID
+  association.
+- Restricted directed-probe persistence to globally assigned unicast STA MACs
+  with a manufacturer-resolved OUI. Randomized, locally administered, and
+  unknown-OUI probes remain available during the live session but are not
+  written to SQLite. Existing non-manufacturer probe rows are pruned when the
+  private history opens; confirmed AP associations remain persistent
+  regardless of client MAC randomization.
+- The automated probe honeypot can now advertise an OPEN and a WPA2-PSK BSSID
+  at the same time (`OPEN + WPA2` in the security selector). Radios are assigned
+  automatically: when two spoof-capable cards can reach the channel each BSSID
+  gets its own radio (and its own hardware ACK), otherwise both BSSIDs share one
+  card, where the second BSSID responds best-effort in software. Each BSSID is
+  registered and tracked independently, and WPA2 M2 material is saved to Vault
+  per BSSID.
+- Added an **Enterprise** choice to the scanner's upper encryption filter. It
+  selects APs advertising EAP/802.1X authentication, including FT-EAP,
+  EAP-SHA256, Suite-B, Suite-B-192, and FT-EAP-SHA384. Personal PSK/SAE, OWE,
+  OPEN, and WEP networks are excluded; mixed PSK+EAP APs remain included
+  because they advertise an Enterprise authentication path.
+
+#### WPA-Enterprise assessment suite
+
+- Added an Enterprise assessment panel to AP Focus with an `E` shortcut. It
+  explains observed methods, TLS and certificate evidence, findings,
+  confidence, coverage, remaining unknowns, persisted sessions, probe history,
+  and per-phase timelines.
+- Added infrastructure correlation across same-SSID Enterprise BSSIDs and
+  systems sharing certificate fingerprints. The panel compares channels,
+  method consistency, PMF posture, shared certificates, and RADIUS leaf
+  certificate variance.
+- Extended passive EAP analysis with server/client method separation, legacy
+  NAK alternatives, Success/Failure counters, and passive/active evidence
+  sources.
+- Added bounded TLS ClientHello parsing for offered versions and ciphers, SNI,
+  supported groups, and signature algorithms.
+- Extended X.509 parsing with subject, issuer, DNS SAN, EKU, CA status, and
+  ordered chain metadata in addition to fingerprints, validity, signatures,
+  key algorithms, and key sizes.
+- Added structural certificate findings for short EC keys, missing
+  `serverAuth`, a CA-marked leaf, missing DNS SAN, incomplete chains, and
+  issuer/subject mismatches.
+- Added private, bounded, versioned, atomic Enterprise session persistence.
+  Client MAC addresses use per-store HMAC pseudonyms; EAP identities,
+  credential responses, and packet payloads are not persisted.
+- Added a confirmed, cancellable active outer-EAP probe. It associates with a
+  randomized station, sends an anonymous outer identity, uses EAP NAK method
+  negotiation, and supports bounded outer TLS for EAP-TLS, EAP-TTLS, PEAP, and
+  TEAP.
+- Added EAP-TLS fragmentation and acknowledgement handling, duplicate-request
+  retransmission, declared-length checks, lower-flag preservation, TLS 1.2+
+  enforcement, and a 1 MiB reassembly ceiling.
+- The active probe stops before inner authentication and sends no password,
+  MSCHAPv2 response, private key, or client certificate.
+- Added sanitized Enterprise JSON reports to Vault with schema validation, an
+  `ENTERPRISE` tab, `✓ENT` badge, manual save action, archive inclusion, and
+  automatic snapshots after completed, partial, failed, or cancelled probes.
+- Added tests for Enterprise protocol parsing, persistence, certificate
+  findings, infrastructure correlation, active probing, reports, Vault
+  integration, and private file modes.
+
+### Changed
+
+- Migrated saved targets, hidden SSIDs/directed probes, Enterprise sessions,
+  open-network metadata, and Bluetooth target events from JSON/JSONL files to
+  private SQLite databases. Legacy files are not read, changed, or deleted
+  automatically.
+- Bluetooth event capture now writes bounded advertisement and GATT records
+  directly to SQLite. The existing size/part preferences become an equivalent
+  total byte ceiling; unlimited mode remains available.
+- Moved **Fake-Connect** out of the Focus footer menu and made it an
+  upper action-bar button, matching **EvilTwin**. The button is shown only for
+  eligible OPEN and WEP APs and changes to **Disconnect** while the temporary
+  client is connected.
+- Removed the redundant **AP MFR** scanner column. **VENDOR/ID** remains as the
+  single AP identity column because it already combines the IEEE OUI vendor
+  with higher-quality WSC manufacturer, model, and device information.
+- Hardened local persistence: sensitive files use owner-only `0600` modes and
+  private directories use `0700` where POSIX permissions are available. This
+  covers credentials, Hashcat material, PCAP, Enterprise reports and sessions,
+  scan exports, WPS state, Vault job state, configuration stores, and capture
+  archives.
+
+### Fixed
+
+- Preserved the selected client MAC when another client row disappears immediately
+  before a live re-sort. The selection is restored after Textual applies the row
+  removal, preventing the highlight from silently moving to the adjacent client.
+- A card claimed for a fixed-channel campaign (honeypot, Evil Twin, WPS PBC) is
+  now excluded from every hop partition, so a mid-campaign re-hop (a hotplug
+  re-partition, the device watcher, or a single-card pool) can no longer tune it
+  off its channel. Previously a single-card honeypot could keep channel-hopping.
+- The honeypot now keeps a strong reference to in-flight response frames and
+  drains them on teardown, so no auth/assoc/probe/M1 frame is dropped by the GC
+  or transmitted after the radio lease is restored.
+- Clients that engage the honeypot (auth/assoc/M2/DHCP) are always recorded even
+  on a busy channel; the observed-client cap now bounds only passive scanners.
+- Prior scan exports of our own synthetic honeypot APs are no longer reloaded as
+  RSN cloning evidence.
+- Preserved observed TLS certificate order across Enterprise persistence so
+  leaf-to-root structural chain checks do not produce fingerprint-sort
+  mismatches.
+
 ## 0.3.6 - 2026-09-27
 
 ### Added

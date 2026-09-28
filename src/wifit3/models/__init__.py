@@ -14,7 +14,13 @@ from .bluetooth_inspection import (
     BluetoothTraffic,
 )
 from .identity import ApIdentity, IdKey, IdSource
-from .enterprise import EnterpriseCertificate, EnterpriseProfile
+from .enterprise import (
+    EnterpriseCertificate,
+    EnterpriseProbeEvent,
+    EnterpriseProbeRun,
+    EnterpriseProfile,
+    EnterpriseSession,
+)
 from .jobs import ToolCapability, ToolStatus, JobState, ToolResult
 
 __all__ = [
@@ -24,7 +30,10 @@ __all__ = [
     "IdKey",
     "IdSource",
     "EnterpriseCertificate",
+    "EnterpriseProbeEvent",
+    "EnterpriseProbeRun",
     "EnterpriseProfile",
+    "EnterpriseSession",
     "WepStats",
     "CaptureType",
     "PersistedCapture",

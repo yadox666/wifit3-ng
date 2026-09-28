@@ -1,5 +1,6 @@
 import csv
 import json
+import stat
 
 from wifit3.models import AccessPoint, Client, ProbeObservation
 from wifit3.dot11.ie import GENERIC_RSN_IE
@@ -54,8 +55,33 @@ def test_scan_export_writes_json_and_csv(tmp_path, monkeypatch):
     assert [row["type"] for row in rows] == ["access_point", "client"]
     assert rows[0]["name"] == "Test Network"
     assert rows[1]["activity"] == "12"
+    assert stat.S_IMODE(json_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(csv_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(json_path.parent.stat().st_mode) == 0o700
 
     profiles = load_scan_rsn_profiles("Test Network")
     assert len(profiles) == 1
     assert profiles[0].rsn_ie == GENERIC_RSN_IE
     assert profiles[0].akm_suites == (2,)
+
+
+def test_own_fake_ap_is_not_reloaded_as_rsn_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "captures_dir", str(tmp_path))
+    fake = AccessPoint(
+        bssid="02:de:ad:be:ef:01",
+        ssid="Honeypot Net",
+        channel=6,
+        encryption="WPA2",
+        is_own_fake=True,
+        own_fake_active=True,
+    )
+    fake.akms = ["PSK"]
+    fake.akm_suites = [2]
+    fake.last_beacon_frame = wpa2_beacon(
+        bytes.fromhex("02deadbeef01"), fake.ssid, fake.channel,
+    )
+
+    export_scan_snapshot([fake], [])
+
+    # Our own synthetic honeypot AP must never be cloned back as "history".
+    assert load_scan_rsn_profiles("Honeypot Net") == []

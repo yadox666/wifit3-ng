@@ -1,11 +1,15 @@
 """Tests for the typed auto-save module (persist.save)."""
 from __future__ import annotations
 
+import json
+import stat
+
 from wifit3.models import AccessPoint, HandshakeMessage, Handshake
 from wifit3.persist.save import (
     HcFiles,
     consolidate_hc_files,
     save_handshake,
+    save_enterprise_report,
     save_pmkid,
     save_wpa_psk,
     save_wep_key,
@@ -430,6 +434,43 @@ def test_save_wpa_psk_uses_dedicated_type_and_dedupes(tmp_path):
     assert first.path.name.endswith("_wpa_psk.txt")
     assert second is not None and second.was_new is False
     assert second.path == first.path
+
+
+def test_save_enterprise_report_is_sanitized_and_private(tmp_path):
+    ap = AccessPoint(
+        bssid="aa:bb:cc:dd:ee:ff",
+        ssid="Corp",
+        channel=36,
+        encryption="WPA2",
+        akms=["EAP"],
+    )
+    ap.enterprise.server_eap_types.add(25)
+    result = save_enterprise_report(ap)
+
+    assert result is not None
+    payload = json.loads(result.path.read_text(encoding="utf-8"))
+    assert payload["enterprise"]["server_eap_types"] == [25]
+    assert payload["privacy"] == {
+        "credentials": False,
+        "identities": False,
+        "packet_payloads": False,
+        "raw_client_identifiers": False,
+    }
+    assert stat.S_IMODE(result.path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o700
+
+
+def test_saved_credentials_are_private():
+    ap = AccessPoint(bssid="aa:bb:cc:dd:ee:ff", ssid="HomeNet")
+    results = (
+        save_wpa_psk(ap, "correct horse battery staple"),
+        save_wep_key(ap, bytes.fromhex("0102030405")),
+        save_wps_pin(ap, "12345670", "correct horse battery staple"),
+        save_wps_pbc(ap, "correct horse battery staple"),
+    )
+
+    assert all(result is not None for result in results)
+    assert all(stat.S_IMODE(result.path.stat().st_mode) == 0o600 for result in results)
 
 
 # ---- HcFiles class ---------------------------------------------------------

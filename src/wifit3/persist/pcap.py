@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Iterable
 
+from wifit3.persist.private_files import open_private_binary
+
 LINKTYPE_IEEE802_11 = 105
 PCAP_MAGIC = 0xA1B2C3D4
 PCAP_VERSION = (2, 4)
@@ -31,8 +33,7 @@ class PcapWriter:
         max_parts: int = 10,
     ) -> None:
         self.path = path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._stream = path.open("wb")
+        self._stream = open_private_binary(path)
         self._lock = threading.Lock()
         self._closed = False
         self._max_bytes = max_bytes
@@ -70,7 +71,7 @@ class PcapWriter:
         else:
             next_name = f"{self.path.stem}_part{len(self.paths) + 1}.pcap"
         next_path = self.path.with_name(next_name)
-        self._stream = next_path.open("wb")
+        self._stream = open_private_binary(next_path)
         self.paths.append(next_path)
         self._write_header()
         return True

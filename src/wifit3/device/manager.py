@@ -455,8 +455,12 @@ class DeviceManager:
         if self.app.array is None:
             array = WlanArray(
                 sink=WlanSink(
-                    getattr(self.app, "hidden_ssid_store", None),
-                    getattr(self.app, "wifi_profile_store", None),
+                    hidden_ssids=getattr(self.app, "hidden_ssid_store", None),
+                    wifi_profiles=getattr(self.app, "wifi_profile_store", None),
+                    enterprise_sessions=getattr(
+                        self.app, "enterprise_session_store", None,
+                    ),
+                    ap_history=getattr(self.app, "ap_history_store", None),
                 ),
             )
             array.register_disconnect_callback(self.app.notify_device_lost)

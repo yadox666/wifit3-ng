@@ -106,6 +106,9 @@ def _parse_file(path: Path, bssid: str) -> List[PersistedCapture]:
     ext = m.group("ext")
     ssid = m.group("ssid")
 
+    if kind == "enterprise_report" and ext == "json":
+        return [PersistedCapture(type=CaptureType.ENTERPRISE, timestamp=epoch, path=str(path),
+                                 bssid=bssid, ssid=ssid)]
     if kind == "wep_key" and ext == "txt":
         key = _read_wep_key(path)
         if key is None:

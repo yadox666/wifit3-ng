@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 from .client import Fingerprint, fingerprint, fingerprint_client
-from .common import canonical_vendor, hex_mac, lookup_oui, vendor_for_mac
+from .common import (
+    canonical_vendor,
+    hex_mac,
+    is_manufacturer_mac,
+    lookup_oui,
+    vendor_for_mac,
+)
 from .vendors import VENDOR_BY_OUI
 
 __all__ = [
@@ -12,6 +18,7 @@ __all__ = [
     "fingerprint",
     "fingerprint_client",
     "hex_mac",
+    "is_manufacturer_mac",
     "lookup_oui",
     "vendor_for_mac",
 ]

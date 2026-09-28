@@ -1,4 +1,5 @@
 import pytest
+import stat
 from unittest.mock import MagicMock, patch
 from wifit3.vault.manager import JobManager
 from wifit3.models.jobs import ToolCapability, ToolStatus, ToolResult
@@ -21,6 +22,17 @@ class DummyTool:
 
     def kill(self, tracking_data):
         self.killed.append(tracking_data.get("pid"))
+
+
+def test_jobs_file_is_private(tmp_path, monkeypatch):
+    from wifit3.persist.config import Config
+
+    monkeypatch.setattr(Config, "captures_dir", str(tmp_path))
+    manager = JobManager.__new__(JobManager)
+    manager.jobs = {}
+    manager._save()
+
+    assert stat.S_IMODE((tmp_path / "jobs.json").stat().st_mode) == 0o600
 
 @pytest.fixture
 def manager(mocker):
@@ -77,6 +89,7 @@ def test_crack_success_persists_key(manager, tmp_path, monkeypatch):
     written = list(tmp_path.glob("*_wpa_psk.txt"))
     assert len(written) == 1
     assert "hunter2" in written[0].read_text()
+    assert stat.S_IMODE(written[0].stat().st_mode) == 0o600
 
 
 def test_crack_success_writes_real_essid(manager, tmp_path, monkeypatch):

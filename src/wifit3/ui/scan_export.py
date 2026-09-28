@@ -11,6 +11,11 @@ from wifit3.id import vendor_for_mac
 from wifit3.dot11.ie import beacon_rsn_ie
 from wifit3.models import AccessPoint, Client
 from wifit3.persist.config import Config
+from wifit3.persist.private_files import (
+    ensure_private_directory,
+    open_private_text_write,
+    write_private_text,
+)
 
 
 def _iso_time(timestamp: float) -> str:
@@ -93,17 +98,17 @@ def export_scan_snapshot(
     }
 
     directory = Path(Config.captures_dir) / "scan_exports"
-    directory.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(directory)
     stem = f"scan_{exported_at.strftime('%Y%m%d_%H%M%S_%f')}"
     json_path = directory / f"{stem}.json"
     csv_path = directory / f"{stem}.csv"
-    json_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_private_text(json_path, json.dumps(report, indent=2, ensure_ascii=False))
 
     fields = [
         "type", "name", "address", "manufacturer", "signal_dbm", "channel",
         "security_or_network", "country", "activity", "last_seen",
     ]
-    with csv_path.open("w", encoding="utf-8", newline="") as stream:
+    with open_private_text_write(csv_path, newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         for ap in report["access_points"]:

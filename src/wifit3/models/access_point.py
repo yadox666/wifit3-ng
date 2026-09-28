@@ -30,6 +30,7 @@ class CaptureType(StrEnum):
     WPS_PBC = "WPS_PBC"
     WPA_PSK = "WPA_PSK"           # passphrase recovered from a handshake/PMKID (e.g. hashcat)
     PCAP = "PCAP"
+    ENTERPRISE = "ENTERPRISE"
 
 
 @dataclass

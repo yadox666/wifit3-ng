@@ -448,3 +448,36 @@ async def test_claim_when_not_hopping_is_inert():
     async with a.claim(m1) as claimed:
         assert claimed is m1
     assert m1.hop_calls == []
+
+
+async def test_claimed_single_card_survives_a_forced_rehop():
+    """A claimed card is held on a fixed channel: a stray re-hop mid-claim (a hotplug
+    re-partition, the device watcher, etc.) must never tune it away."""
+    a = WlanArray()
+    m1 = FakeIface("wlan0", [1, 6, 11])
+    a.attach(m1)
+    await a.start_hopping([1, 6, 11], interval=0.25)
+
+    async with a.claim(m1):
+        hops_before = len(m1.hop_calls)
+        await a.start_hopping([1, 6, 11], interval=0.25)   # stray re-hop while claimed
+        assert len(m1.hop_calls) == hops_before, "claimed single card must stay parked"
+
+    assert len(m1.hop_calls) > hops_before, "hopping resumes after release"
+
+
+async def test_claimed_card_is_not_rehopped_when_a_card_joins_midclaim():
+    a = WlanArray()
+    m1 = FakeIface("wlan0", [1, 6, 11])
+    a.attach(m1)
+    await a.start_hopping([1, 6, 11], interval=0.25)
+
+    async with a.claim(m1):
+        hops_before = len(m1.hop_calls)
+        a.attach(FakeIface("wlan1", [1, 6, 11]))   # membership change → mid-claim re-partition
+        await asyncio.sleep(0.05)
+        assert len(m1.hop_calls) == hops_before, "claimed card stays parked"
+        # The freshly joined, unclaimed card takes over all the hop channels.
+        assert a.members[1].hop_calls and a.members[1].hop_calls[-1] == [1, 6, 11]
+
+    assert len(m1.hop_calls) > hops_before

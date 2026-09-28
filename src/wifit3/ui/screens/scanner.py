@@ -61,7 +61,6 @@ if TYPE_CHECKING:
 
 
 STALE_DURATION_S = 10.0  # Seconds without a beacon before an AP row is dimmed.
-_AP_MFR_MAX = 28
 _CLIENT_MFR_MAX = 36
 _INFRASTRUCTURE_PREFIX = "infrastructure:"
 
@@ -118,7 +117,6 @@ class _APRowState:
     identity: str = ""
     channel: int = 0
     encryption: str = ""
-    manufacturer: str = ""
     stations: str = ""
     is_target: bool = False
     infrastructure_signature: tuple = ()
@@ -133,6 +131,7 @@ class _ClientRowState:
     packets: int
     last_seen: int
     probes: str
+    historical_aps: tuple[tuple[str, str], ...] = ()
     is_target: bool = False
 
 
@@ -353,7 +352,6 @@ class ScannerView(Screen):
         ("encryption", "ENCRYPT"),
         ("wps", "WPS"),
         ("identity", "VENDOR/ID"),
-        ("mfr", "AP MFR"),
         ("stations", "CLIENT MFR"),
     ]
 
@@ -593,7 +591,6 @@ class ScannerView(Screen):
             chips_markup = self._ssid_chips_markup(ap)
             enc_markup = self._encryption_markup(ap)
             ident_summary = ap.identity.summary
-            mfr = vendor_for_mac(ap.bssid) or ""
             stations = self._station_labels.get(ap.bssid, "")
             is_target = self._ap_is_saved_target(ap)
             infrastructure = self._infrastructure_members.get(ap.bssid)
@@ -622,7 +619,6 @@ class ScannerView(Screen):
                     identity=ident_summary,
                     channel=ap.channel,
                     encryption=enc_markup,
-                    manufacturer=mfr,
                     stations=stations,
                     is_target=is_target,
                     infrastructure_signature=infrastructure_signature,
@@ -666,7 +662,6 @@ class ScannerView(Screen):
                     prev_state.ssid = ap.ssid
                     prev_state.chips_markup = chips_markup
                     prev_state.identity = ident_summary
-                    prev_state.manufacturer = mfr
                     prev_state.stations = stations
                     prev_state.channel = ap.channel
                     prev_state.encryption = enc_markup
@@ -726,10 +721,6 @@ class ScannerView(Screen):
                     if prev_state.identity != ident_summary:
                         prev_state.identity = ident_summary
                         table.update_cell(ap.bssid, "identity", self._render_target_cell(ap, "identity", is_stale))
-
-                    if prev_state.manufacturer != mfr:
-                        prev_state.manufacturer = mfr
-                        table.update_cell(ap.bssid, "mfr", self._render_target_cell(ap, "mfr", is_stale))
 
                     if prev_state.stations != stations:
                         prev_state.stations = stations
@@ -816,7 +807,12 @@ class ScannerView(Screen):
         return aggregate
 
     def _refresh_client_table(self, array, table: DataTable) -> None:
+        try:
+            selected_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+        except Exception:
+            selected_key = None
         visible: set[str] = set()
+        rows_removed = False
         forged = array.forged_macs
         now = time.time()
         for client in list(array.clients.values()):
@@ -835,6 +831,16 @@ class ScannerView(Screen):
             bssid = client.bssid or ""
             ssid = ap.ssid if ap and ap.ssid else ""
             probes = ", ".join(sorted(client.probed_ssids))
+            history_store = getattr(self.app, "ap_history_store", None)
+            historical_aps = tuple(
+                (record.bssid, record.ssid or "")
+                for record in (
+                    history_store.aps_for_client(client.mac)
+                    if history_store is not None
+                    else ()
+                )
+                if record.bssid.casefold() != bssid.casefold()
+            )
             state = _ClientRowState(
                 manufacturer=manufacturer,
                 bssid=bssid,
@@ -843,6 +849,7 @@ class ScannerView(Screen):
                 packets=client.packets,
                 last_seen=int(age),
                 probes=probes,
+                historical_aps=historical_aps,
                 is_target=self._is_saved_target("client", client.mac),
             )
             cells = self._client_cells(client, state)
@@ -860,10 +867,22 @@ class ScannerView(Screen):
             self._client_cache.pop(mac, None)
             try:
                 table.remove_row(mac)
+                rows_removed = True
             except Exception:
                 pass
         if self._should_sort():
-            self._apply_sort(scroll_to_cursor=False)
+            self._last_sort_time = time.time()
+            self._apply_client_sort(table, selected_key, scroll_to_cursor=False)
+        else:
+            self._restore_selected_key(
+                table, selected_key, order_changed=True, scroll_to_cursor=False,
+            )
+        if rows_removed and selected_key is not None:
+            table.call_after_refresh(
+                lambda: self._restore_selected_key(
+                    table, selected_key, order_changed=True, scroll_to_cursor=False,
+                ),
+            )
 
     def _client_matches(self, client: Client, ap: AccessPoint | None) -> bool:
         if client.signal < self._scan_filter.min_signal:
@@ -901,6 +920,10 @@ class ScannerView(Screen):
             network.append(f"  ·  {state.bssid}", style="dim")
         else:
             network.append("‹unassociated›", style="dim italic")
+        for historical_bssid, historical_ssid in state.historical_aps:
+            network.append("  ·  ", style="dim")
+            label = _clip(historical_ssid, 16) if historical_ssid else historical_bssid
+            network.append(f"{label} [history]", style="dim italic")
         identity = Text(no_wrap=True)
         if _is_local_mac(client.mac):
             identity.append("~ ", style="yellow bold")
@@ -909,10 +932,11 @@ class ScannerView(Screen):
         for index, ssid in enumerate(sorted(client.probed_ssids)):
             if index:
                 probes.append("  ·  ", style="dim")
-            probes.append(_clip(ssid, 20), style=fg)
             observation = client.probe_observations.get(ssid)
             if observation is not None and observation.historical:
-                probes.append(" [history]", style="yellow")
+                probes.append(f"{_clip(ssid, 20)} [history]", style="dim italic")
+            else:
+                probes.append(_clip(ssid, 20), style=fg)
         if not client.probed_ssids:
             probes.append("·", style="dim")
         manufacturer = Text(
@@ -1074,18 +1098,6 @@ class ScannerView(Screen):
                     style=f"{dim}cyan",
                 )
             return self._identity_cell(ap, is_stale)
-        if col_key == "mfr":
-            if infrastructure is not None:
-                manufacturers = sorted({
-                    vendor_for_mac(member.bssid)
-                    for member in infrastructure
-                    if vendor_for_mac(member.bssid)
-                })
-                return Text(
-                    _clip(" · ".join(manufacturers), _AP_MFR_MAX),
-                    style=f"{dim}{fg}",
-                )
-            return Text(_clip(vendor_for_mac(ap.bssid) or "", _AP_MFR_MAX), style=f"{dim}{fg}")
         if col_key == "stations":
             label = self._station_labels.get(ap.bssid, "")
             return Text(_clip(label, _CLIENT_MFR_MAX), style=f"{dim}{fg}")
@@ -1468,6 +1480,8 @@ class ScannerView(Screen):
             return
         try:
             row = table.get_row_index(current_key)
+            if row == table.cursor_coordinate.row:
+                return
             if scroll_to_cursor:
                 table.move_cursor(row=row, animate=False)
             else:
@@ -1751,7 +1765,12 @@ class ScannerView(Screen):
                     + (
                         "WPA2 sends EAPOL M1 and saves captured M1/M2 "
                         "authentication material to Vault. "
-                        if encryption == "WPA2" else ""
+                        if encryption in ("WPA2", "BOTH") else ""
+                    )
+                    + (
+                        "BOTH advertises an OPEN and a WPA2 BSSID at once "
+                        "(a second radio is used when available). "
+                        if encryption == "BOTH" else ""
                     )
                     + "No DHCP or Internet is served.",
                 ),
@@ -1866,7 +1885,7 @@ class ScannerView(Screen):
             return
         rsn_ie, rsn_source, profile_ies = (
             self._honeypot_rsn_profile(ssid, observation.channel)
-            if encryption == "WPA2"
+            if encryption in ("WPA2", "BOTH")
             else (None, "OPEN", b"")
         )
         campaign = OpenProbeApCampaign(
@@ -1925,15 +1944,20 @@ class ScannerView(Screen):
         for message in events[self._open_probe_event_index:]:
             self._write_log(treelog.branch(escape(message)))
         self._open_probe_event_index = len(events)
-        if campaign.encryption == "WPA2" and self.app.array is not None:
-            ap = self.app.array.access_points.get(campaign.bssid_text)
-            if ap is not None:
-                for client_mac, attempt in campaign.stats.clients.items():
-                    if not attempt.m2 or client_mac in self._open_probe_saved_clients:
+        if self.app.array is not None:
+            for endpoint in campaign.endpoints:
+                if endpoint.encryption != "WPA2":
+                    continue
+                ap = self.app.array.access_points.get(endpoint.bssid_text)
+                if ap is None:
+                    continue
+                for client_mac, attempt in endpoint.stats.clients.items():
+                    key = f"{endpoint.bssid_text}/{client_mac}"
+                    if not attempt.m2 or key in self._open_probe_saved_clients:
                         continue
                     saved = self.app.vault.save_handshake(ap, client_mac)
                     if saved is not None:
-                        self._open_probe_saved_clients.add(client_mac)
+                        self._open_probe_saved_clients.add(key)
                         self._write_log(treelog.branch(
                             f"WPA2 material saved to Vault · "
                             f"{escape(client_mac)} · {escape(saved.path.name)}"
@@ -1941,10 +1965,16 @@ class ScannerView(Screen):
         if not campaign.done:
             return
         warning.display = False
-        if campaign.stats.clients:
-            self._write_log(treelog.branch("Client MACs observed"))
+        for endpoint in campaign.endpoints:
+            if not endpoint.stats.clients:
+                continue
+            header = "Client MACs observed" + (
+                f" · {endpoint.encryption} {endpoint.bssid_text}"
+                if campaign.is_dual else ""
+            )
+            self._write_log(treelog.branch(header))
             attempts = sorted(
-                campaign.stats.clients.items(),
+                endpoint.stats.clients.items(),
                 key=lambda item: (not item[1].is_target, item[0]),
             )
             for client_mac, attempt in attempts:
@@ -1963,6 +1993,8 @@ class ScannerView(Screen):
                     f"auth {attempt.auth} · assoc {attempt.assoc} · "
                     f"M2 {attempt.m2} · DHCP {attempt.dhcp}"
                 ))
+        wpa2_active = any(ep.encryption == "WPA2" for ep in campaign.endpoints)
+        total_m2 = sum(ep.stats.m2 for ep in campaign.endpoints)
         result = {
             "dhcp": "[bold green]CONFIRMED[/bold green] · client associated and requested DHCP",
             "handshake": (
@@ -1970,7 +2002,7 @@ class ScannerView(Screen):
             ),
             "associated": (
                 "[yellow]ASSOCIATION ATTEMPT[/yellow] · WPA2 4-way handshake not performed"
-                if campaign.encryption == "WPA2"
+                if wpa2_active
                 else "[yellow]ASSOCIATED[/yellow] · no DHCP observed before timeout"
             ),
             "authenticated": "[yellow]AUTHENTICATED[/yellow] · association not completed",
@@ -1979,7 +2011,7 @@ class ScannerView(Screen):
             "stopped": "[dim]STOPPED[/dim]",
             "no-interface": "[red]FAILED[/red] · no compatible interface",
         }.get(campaign.result, escape(campaign.result))
-        if campaign.encryption == "WPA2" and campaign.stats.m2 == 0:
+        if wpa2_active and total_m2 == 0:
             result += (
                 " · [bold yellow]NO M2 CAPTURED[/bold yellow] · "
                 "nothing saved to Vault"

@@ -103,6 +103,16 @@ async def test_unlimited_capture_parts_preference_can_be_saved(monkeypatch):
         assert Config.target_capture_max_parts == 0
 
 
+@pytest.mark.asyncio
+async def test_history_deletion_is_not_available_in_preferences():
+    app = _Host()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesModal())
+        await pilot.pause(0)
+        assert len(app.screen.query("#clear-history-btn")) == 0
+        assert len(app.screen.query("#clear-ap-history")) == 0
+
+
 def test_wps_pbc_hotkey_is_not_shown_in_wifi_footers():
     assert not any(binding.key == "w" for binding in ScannerView.BINDINGS)
     assert not any(

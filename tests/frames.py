@@ -44,6 +44,7 @@ def pkt(d: dict) -> Packet:
                 eap_identifier=r.get("eap_identifier", 0),
                 eap_type=r.get("eap_type"),
                 eap_data=r.get("eap_data", b""),
+                eap_nak_types=tuple(r.get("eap_nak_types", ())),
             )
         return EapolPacket(
             **base,

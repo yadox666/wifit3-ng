@@ -59,6 +59,9 @@ class WlanArray:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._rehop_tasks: Set[asyncio.Task] = set()
         self._close_tasks: Set[asyncio.Task] = set()   # closing vanished cards; never cancelled
+        # Cards a campaign holds on a fixed channel: excluded from every hop partition so a
+        # membership-driven re-hop (or a single-card pool) never tunes them off their lease.
+        self._claimed: Set[WlanInterface] = set()
 
     # ----- membership --------------------------------------------------------
 
@@ -375,7 +378,10 @@ class WlanArray:
         on-band and avoids costly band switches. Any card the spread leaves empty (more cards than
         channels) then hops every filter channel it supports, doubling up for redundant RX rather
         than stranding on its last channel. A channel no card supports is dropped."""
-        pool = members if members is not None else self._members
+        pool = (
+            members if members is not None
+            else [m for m in self._members if m not in self._claimed]
+        )
         assignment = {m: [] for m in pool}
         for ch in sorted(channels, reverse=True):
             capable = [m for m in pool if ch in m.supported_channels]
@@ -394,6 +400,7 @@ class WlanArray:
         was_hopping = self._hopping
         hop_channels = self._hop_channels
         hop_interval = self._hop_interval
+        self._claimed.add(iface)   # never re-hop this card while it is held on a fixed channel
         await iface.stop_hopping()
         if was_hopping:
             remaining = [m for m in self._members if m is not iface]
@@ -407,6 +414,7 @@ class WlanArray:
         try:
             yield iface
         finally:
+            self._claimed.discard(iface)
             if was_hopping and self._hopping:
                 await self.start_hopping(channels=hop_channels, interval=hop_interval)
 

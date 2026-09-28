@@ -9,6 +9,7 @@ the Power reading can pick the strongest antenna, while every other field (beaco
 handshakes) is updated once, on the deduplicated (novel) copy only."""
 import asyncio
 from collections import deque
+import hashlib
 import logging
 import threading
 import time
@@ -16,7 +17,8 @@ from typing import Dict, List, Optional, Set
 
 from wifit3.chips.log_trace import TRACE   # registers Logger.trace + the level name
 from wifit3.models import (
-    AccessPoint, Client, Handshake, HandshakeMessage, IdSource, ProbeObservation,
+    AccessPoint, Client, EnterpriseSession, Handshake, HandshakeMessage, IdSource,
+    ProbeObservation,
 )
 from wifit3.dot11.mac import mac_to_str
 from wifit3.dot11.parser import WlanFrameParser
@@ -29,6 +31,11 @@ from wifit3.dot11.packet import (
 from wifit3.dot11.enterprise import eap_tls_fragment, parse_tls_records
 from wifit3.persist.hidden_ssids import HiddenSsidStore, HiddenSsidStoreError
 from wifit3.persist.wifi_profiles import WifiProfileStore, WifiProfileStoreError
+from wifit3.persist.enterprise_sessions import (
+    EnterpriseSessionStore,
+    EnterpriseSessionStoreError,
+)
+from wifit3.persist.ap_history import ApHistoryStore, ApHistoryStoreError
 from wifit3.wlan.packet_stats import PacketStats
 from wifit3.wlan.wep_store import WepCaptureStore
 
@@ -87,17 +94,22 @@ class WlanSink:
         self,
         hidden_ssids: HiddenSsidStore | None = None,
         wifi_profiles: WifiProfileStore | None = None,
+        enterprise_sessions: EnterpriseSessionStore | None = None,
+        ap_history: ApHistoryStore | None = None,
     ):
         self.access_points: Dict[str, AccessPoint] = {}
         self.clients: Dict[str, Client] = {}
         self.hidden_ssids = hidden_ssids
         self.wifi_profiles = wifi_profiles
+        self.enterprise_sessions = enterprise_sessions
+        self.ap_history = ap_history
         self.wep_store = WepCaptureStore()  # WEP IV tallying
         self.packet_stats = PacketStats()   # Packet dashboard source
         self.own_macs: Set[str] = set()     # MACs we transmit as; dropped at ingest, never a client
         self._waiters: list = []            # (match, future, loop) for the next_frame await-API
         self._waiters_lock = threading.Lock()
         self._eap_tls_fragments: dict[tuple[str, str, int, int], bytearray] = {}
+        self._active_enterprise_sessions: dict[tuple[str, str], EnterpriseSession] = {}
 
     # ----- signal (per-card) -------------------------------------------------
 
@@ -227,6 +239,15 @@ class WlanSink:
                 wps_selected_registrar=wps_selected_registrar,
                 decloak_method="history" if historical_ssid else None,
             )
+            if self.enterprise_sessions is not None:
+                persisted = self.enterprise_sessions.profile_for(bssid)
+                if persisted is not None:
+                    ap.enterprise = persisted
+            if self.ap_history is not None:
+                try:
+                    self.ap_history.enrich(ap)
+                except ApHistoryStoreError:
+                    logger.warning("Could not enrich AP from history", exc_info=True)
             if wps:
                 ap.identity.update(
                     IdSource.WSC_BEACON,
@@ -338,6 +359,11 @@ class WlanSink:
                         hs.beacon_frame = raw_beacon
                     if ap.akm_suites and not hs.akm_offered:
                         hs.akm_offered = list(ap.akm_suites)
+        if self.ap_history is not None:
+            try:
+                self.ap_history.remember(ap)
+            except ApHistoryStoreError:
+                logger.warning("Could not persist AP history", exc_info=True)
         return True
 
     def _on_wepdata_frame(self, pkt: Packet) -> bool:
@@ -357,7 +383,7 @@ class WlanSink:
         frame_type = pkt.type
         if frame_type not in (
             "probe_req", "assoc_req", "reassoc_req", "data", "wep_data", "eapol",
-            "deauth", "assoc_resp",
+            "deauth", "disassoc", "assoc_resp",
         ):
             return False
         bssid = pkt.bssid
@@ -391,8 +417,26 @@ class WlanSink:
         if isinstance(pkt, AssocRequestPacket) and pkt.assoc_akm is not None:
             client.akm_selected = pkt.assoc_akm
 
-        if frame_type in ("assoc_req", "reassoc_req", "data", "wep_data", "eapol") and bssid:
+        association_frames = (
+            "assoc_req", "reassoc_req", "assoc_resp", "data", "wep_data", "eapol",
+        )
+        if frame_type in association_frames and bssid:
             client.bssid = bssid
+            if self.ap_history is not None and bssid in self.access_points:
+                try:
+                    self.ap_history.remember_client_association(
+                        bssid, client.mac, observed_at=now,
+                    )
+                except ApHistoryStoreError:
+                    logger.warning(
+                        "Could not persist client association",
+                        exc_info=True,
+                    )
+        elif (
+            frame_type in ("deauth", "disassoc")
+            and client.bssid == bssid
+        ):
+            client.bssid = None
 
         if frame_type == "probe_req" and self._is_real_ssid(pkt.ssid):
             client.probed_ssids.add(pkt.ssid)
@@ -489,23 +533,45 @@ class WlanSink:
     def _observe_enterprise_eap(self, pkt: EapPacket, ap: AccessPoint) -> None:
         eap_type = pkt.eap_type
         client_mac = pkt.client_mac
-        if eap_type is None or client_mac is None:
+        if client_mac is None:
             return
         client = self.clients.get(client_mac)
         now = time.time()
         profiles = [ap.enterprise]
         if client is not None:
             profiles.append(client.enterprise)
+        session = self._enterprise_session(ap, client_mac, now)
+        session.eap_packets += 1
+        session.last_seen = now
         for profile in profiles:
             profile.eap_packets += 1
             profile.first_seen = profile.first_seen or now
             profile.last_seen = now
             if pkt.eap_code == 1:
-                profile.server_eap_types.add(eap_type)
+                profile.eap_requests += 1
+                if eap_type is not None:
+                    profile.server_eap_types.add(eap_type)
+                    session.server_eap_types.add(eap_type)
             elif pkt.eap_code == 2:
-                profile.client_eap_types.add(eap_type)
+                profile.eap_responses += 1
+                if eap_type is not None:
+                    profile.client_eap_types.add(eap_type)
+                profile.nak_eap_types.update(pkt.eap_nak_types)
+                if eap_type is not None:
+                    session.client_eap_types.add(eap_type)
+                session.nak_eap_types.update(pkt.eap_nak_types)
+            elif pkt.eap_code == 3:
+                profile.eap_successes += 1
+                session.outcome = "success"
+            elif pkt.eap_code == 4:
+                profile.eap_failures += 1
+                session.outcome = "failure"
 
-        if not pkt.eap_data:
+        terminal = pkt.eap_code in (3, 4)
+        self._persist_enterprise(ap, force=terminal, now=now)
+        if terminal:
+            self._active_enterprise_sessions.pop((ap.bssid, client_mac), None)
+        if eap_type is None or not pkt.eap_data:
             return
         more, start, total_length, fragment = eap_tls_fragment(pkt.eap_data)
         key = (pkt.bssid, client_mac, eap_type, pkt.eap_code)
@@ -525,10 +591,64 @@ class WlanSink:
         self._eap_tls_fragments.pop(key, None)
         for profile in profiles:
             profile.tls_versions.update(metadata.versions)
+            profile.tls_client_versions.update(metadata.client_versions)
             profile.tls_cipher_suites.update(metadata.cipher_suites)
+            profile.tls_client_cipher_suites.update(metadata.client_cipher_suites)
+            profile.tls_server_names.update(metadata.server_names)
+            profile.tls_supported_groups.update(metadata.supported_groups)
+            profile.tls_signature_algorithms.update(metadata.signature_algorithms)
             for certificate in metadata.certificates:
-                if len(profile.certificates) < 8:
+                if len(profile.certificates) < 16:
                     profile.certificates[certificate.fingerprint] = certificate
+        session.tls_versions.update(metadata.versions)
+        session.tls_client_versions.update(metadata.client_versions)
+        session.tls_cipher_suites.update(metadata.cipher_suites)
+        session.tls_client_cipher_suites.update(metadata.client_cipher_suites)
+        session.certificate_fingerprints.update(
+            certificate.fingerprint for certificate in metadata.certificates
+        )
+        self._persist_enterprise(
+            ap,
+            force=bool(metadata.cipher_suites or metadata.certificates),
+            now=now,
+        )
+
+    def _enterprise_session(
+        self,
+        ap: AccessPoint,
+        client_mac: str,
+        now: float,
+    ) -> EnterpriseSession:
+        key = (ap.bssid, client_mac)
+        session = self._active_enterprise_sessions.get(key)
+        if session is not None and now - session.last_seen <= 120:
+            return session
+        if self.enterprise_sessions is not None:
+            client_id = self.enterprise_sessions.client_id(ap.bssid, client_mac)
+        else:
+            client_id = hashlib.sha256(
+                f"{ap.bssid.casefold()}|{client_mac.casefold()}".encode("ascii"),
+            ).hexdigest()[:16]
+        session = EnterpriseSession(client_id=client_id, first_seen=now, last_seen=now)
+        ap.enterprise.sessions.append(session)
+        if len(ap.enterprise.sessions) > 128:
+            del ap.enterprise.sessions[:-128]
+        self._active_enterprise_sessions[key] = session
+        return session
+
+    def _persist_enterprise(
+        self,
+        ap: AccessPoint,
+        *,
+        force: bool,
+        now: float,
+    ) -> None:
+        if self.enterprise_sessions is None:
+            return
+        try:
+            self.enterprise_sessions.remember(ap, force=force, now=now)
+        except EnterpriseSessionStoreError:
+            logger.warning("Could not persist Enterprise session", exc_info=True)
 
     def _on_wps_m1_frame(self, pkt: EapolPacket, ap: AccessPoint) -> bool:
         parsed = WSC.parse_rx_frame(pkt.raw)
@@ -537,6 +657,8 @@ class WlanSink:
         if not apply_wsc_identity(ap.identity, IdSource.WSC_M1, parsed.attrs):
             return False
         ap.wps = True
+        if self.ap_history is not None:
+            self.ap_history.remember(ap, force=True)
         return True
 
     def _decloak(self, ap: AccessPoint, ssid: str, method: str) -> None:

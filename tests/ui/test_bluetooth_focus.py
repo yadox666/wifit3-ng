@@ -10,7 +10,11 @@ from wifit3.models import (
     BluetoothService,
 )
 from wifit3.ui.app import WifiteApp
-from wifit3.ui.screens.bluetooth_focus import BluetoothFocusView
+from wifit3.ui.screens.bluetooth_focus import (
+    BluetoothFocusView,
+    gatt_ascii,
+    gatt_display_value,
+)
 
 
 def _inspection():
@@ -108,4 +112,112 @@ async def test_bluetooth_focus_keeps_remote_art_visible_while_disconnected():
         assert "Waiting for connection" in device_art.plain
         assert "██" in device_art.plain
         assert "DISCONNECTED" in str(link)
+
+
+def test_gatt_ascii_converts_only_printable_hex_dumps():
+    assert gatt_ascii("45 50 41 38") == "EPA8"
+    assert gatt_ascii("45 50 00") == "EP"
+    assert gatt_ascii("00 00 00 00") is None
+    assert gatt_ascii("45 00 50") is None
+    assert gatt_ascii("Acme") is None
+    assert gatt_display_value("87%", "57", ascii_mode=True) == "87%"
+    assert gatt_display_value("45 50", "45 50", ascii_mode=False) == "45 50"
+    assert gatt_display_value("45 50", "45 50", ascii_mode=True) == "EP"
+
+
+def _ascii_inspection():
+    device = BluetoothDevice(
+        identifier="AA:BB:CC:DD:EE:FF",
+        name="Orange TV",
+        rssi=-68,
+        service_uuids=(),
+        service_data_uuids=(),
+        manufacturer_ids=(),
+        manufacturer_data_bytes=0,
+        service_data_bytes=0,
+        tx_power=None,
+        advertisement_count=1,
+        advertisement_interval=None,
+        first_seen=1,
+        last_seen=2,
+    )
+    text = b"EPA8XB89"
+    zeros = bytes(8)
+    return BluetoothInspection(
+        device=device,
+        connected=True,
+        connected_at=1,
+        services=[
+            BluetoothService(
+                uuid="3c1d08cd-0000-0000-0000-000000000001",
+                name="Custom",
+                characteristics=[
+                    BluetoothCharacteristic(
+                        handle=1,
+                        uuid="1a00137e-0000-0000-0000-000000000001",
+                        name="Custom",
+                        properties=("read",),
+                        value=text.hex(" "),
+                        value_hex=text.hex(" "),
+                        value_bytes=len(text),
+                    ),
+                    BluetoothCharacteristic(
+                        handle=2,
+                        uuid="ac4f797f-0000-0000-0000-000000000002",
+                        name="Custom",
+                        properties=("read",),
+                        value=zeros.hex(" "),
+                        value_hex=zeros.hex(" "),
+                        value_bytes=len(zeros),
+                    ),
+                    BluetoothCharacteristic(
+                        handle=3,
+                        uuid="00002a19-0000-1000-8000-00805f9b34fb",
+                        name="Battery Level",
+                        properties=("read",),
+                        value="87%",
+                        value_hex="57",
+                        value_bytes=1,
+                    ),
+                ],
+            )
+        ],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_focus_toggles_ascii_for_printable_values():
+    app = WifiteApp()
+    app.bluetooth_manager.connection = SimpleNamespace(inspection=_ascii_inspection())
+
+    async with app.run_test(size=(140, 40)) as pilot:
+        app.push_screen("bluetooth-focus")
+        await pilot.pause(0)
+        screen = app.screen
+        table = screen.query_one("#gatt-table", DataTable)
+        assert table.get_row("1")[3].plain == "45 50 41 38 58 42 38 39"
+        assert table.get_row("2")[3].plain == "00 00 00 00 00 00 00 00"
+        assert table.get_row("3")[3].plain == "87%"
+        detail = screen.query_one("#gatt-detail")
+        assert "ASCII" in str(detail.render())
+        assert "EPA8XB89" in str(detail.render())
+        assert "Hex" in str(detail.render())
+
+        await pilot.press("a")
+        await pilot.pause(0)
+        assert table.get_row("1")[3].plain == "EPA8XB89"
+        assert table.get_row("2")[3].plain == "00 00 00 00 00 00 00 00"
+        assert table.get_row("3")[3].plain == "87%"
+        rendered = str(detail.render())
+        assert "EPA8XB89" in rendered
+        assert "45 50 41 38 58 42 38 39" in rendered
+        assert detail.border_title == "CHARACTERISTIC"
+
+        await pilot.press("a")
+        await pilot.pause(0)
+        assert table.get_row("1")[3].plain == "45 50 41 38 58 42 38 39"
+        assert "EPA8XB89" in str(detail.render())
+        assert "45 50 41 38 58 42 38 39" in str(detail.render())
+        assert detail.border_title == "CHARACTERISTIC"
 

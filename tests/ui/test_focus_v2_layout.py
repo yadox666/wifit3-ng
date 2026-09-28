@@ -79,8 +79,8 @@ async def test_client_connector_is_overlaid_only_while_clients_exist():
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         screen._target_ap = types.SimpleNamespace()
-        original = screen._client_list
-        screen._client_list = lambda: [types.SimpleNamespace(is_fake=False)]
+        original = screen._live_client_list
+        screen._live_client_list = lambda: [types.SimpleNamespace(is_fake=False)]
         try:
             screen._refresh_client_connector()
             horizontal = screen.query_one("#client-connector-horizontal")
@@ -92,7 +92,7 @@ async def test_client_connector_is_overlaid_only_while_clients_exist():
             assert vertical.styles.width.value == 1
             assert junction.display is True
         finally:
-            screen._client_list = original
+            screen._live_client_list = original
             screen._refresh_client_connector()
         assert all(piece.display is False for piece in (horizontal, vertical, junction))
 

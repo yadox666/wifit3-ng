@@ -1,4 +1,4 @@
-"""AP table manufacturer columns for the access point and its clients."""
+"""AP identity and associated-client manufacturer columns."""
 import pytest
 from textual.app import App
 
@@ -49,7 +49,7 @@ def _plain(cell) -> str:
 
 
 @pytest.mark.asyncio
-async def test_scanner_table_shows_ap_and_client_manufacturers():
+async def test_scanner_table_uses_vendor_id_and_client_manufacturers():
     ap = AccessPoint(bssid="00:11:22:33:44:55", ssid="Lab")
     ap.signal_by_card = {"card0": -40}
     clients = [
@@ -79,6 +79,7 @@ async def test_scanner_table_shows_ap_and_client_manufacturers():
         await pilot.pause(0)
 
         table = scanner.query_one("#ap-table")
-        assert _plain(table.get_cell(ap.bssid, "mfr")) == "Acme"
+        assert "mfr" not in table.columns
+        assert _plain(table.get_cell(ap.bssid, "identity")) == "Acme"
         assert _plain(table.get_cell(ap.bssid, "stations")) == "Zebra, Apple, Apple"
         assert scanner._row_states[ap.bssid].clients == 4

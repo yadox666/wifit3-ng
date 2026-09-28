@@ -10,8 +10,9 @@ from wifit3.dot11.mac import str_to_mac
 from wifit3.dot11.packet import EapPacket
 from wifit3.dot11.parser import WlanFrameParser
 from wifit3.dot11.wsc import messages as WSC
-from wifit3.models import AdvertisedCapabilities, IdKey, IdSource
+from wifit3.models import AccessPoint, AdvertisedCapabilities, IdKey, IdSource
 from wifit3.persist.hidden_ssids import HiddenSsidStore
+from wifit3.persist.ap_history import ApHistoryStore
 from wifit3.wlan.sink import WlanSink
 from wifit3.wlan.packet_stats import PACKET_CLASSES
 
@@ -168,6 +169,53 @@ def test_wps_m1_identity_fields_are_applied_by_sink():
     assert ap.identity.summary == "TP-Link Archer AX10"
 
 
+def test_observed_hidden_ap_is_enriched_from_sqlite_history(tmp_path):
+    history = ApHistoryStore(tmp_path / "history.sqlite3")
+    learned = AccessPoint(bssid=BSSID, ssid="Known network")
+    learned.identity.set(IdSource.WSC_BEACON, IdKey.MODEL_NAME, "Known model")
+    history.remember(learned, force=True)
+    sink = WlanSink(ap_history=history)
+
+    sink.update(_beacon({"ssid": "<hidden>", "wsc_model_name": None}), W0)
+
+    ap = sink.access_points[BSSID]
+    assert ap.ssid == "Known network"
+    assert ap.identity.model_name == "Known model"
+
+
+def test_live_wsc_beacon_identity_overrides_sqlite_history(tmp_path):
+    history = ApHistoryStore(tmp_path / "history.sqlite3")
+    learned = AccessPoint(bssid=BSSID, ssid="AP")
+    learned.identity.set(IdSource.WSC_BEACON, IdKey.MODEL_NAME, "Old model")
+    history.remember(learned, force=True)
+    sink = WlanSink(ap_history=history)
+
+    sink.update(_beacon({"wps": True, "wsc_model_name": "Current model"}), W0)
+
+    assert sink.access_points[BSSID].identity.model_name == "Current model"
+
+
+def test_wps_m1_identity_is_immediately_persisted_to_history(tmp_path):
+    path = tmp_path / "history.sqlite3"
+    history = ApHistoryStore(path)
+    sink = WlanSink(ap_history=history)
+    sink.update(_beacon(), W0)
+    frame = _wps_m1_frame(
+        str_to_mac(BSSID), str_to_mac("02:00:00:00:00:01"),
+    )
+
+    sink.update(pkt({
+        "type": "eapol", "to_ds": False, "from_ds": True, "bssid": BSSID,
+        "source": BSSID, "dest": "02:00:00:00:00:01", "rssi": -45, "raw": frame,
+    }), W0)
+    history.close()
+
+    reopened = ApHistoryStore(path)
+    observed = AccessPoint(bssid=BSSID)
+    reopened.enrich(observed)
+    assert observed.identity.model_name == "Archer AX10"
+
+
 def test_parsed_wps_m1_still_updates_identity_through_general_eap_path():
     sink = WlanSink()
     sink.update(_beacon(), W0)
@@ -259,6 +307,21 @@ def test_assoc_req_stamps_client_akm():
     assert s.clients[client].akm_selected == 0x02
 
 
+def test_association_is_persisted_for_ap_and_client_history(tmp_path):
+    history = ApHistoryStore(tmp_path / "history.sqlite3")
+    sink = WlanSink(ap_history=history)
+    client = "12:22:33:44:55:66"
+    sink.update(_beacon(), W0)
+
+    sink.update(pkt({
+        "type": "assoc_req", "bssid": BSSID, "source": client, "dest": BSSID,
+        "rssi": -45,
+    }), W0)
+
+    assert [record.client_mac for record in history.clients_for_ap(BSSID)] == [client]
+    assert [record.bssid for record in history.aps_for_client(client)] == [BSSID]
+
+
 def test_client_advertised_capabilities_merge_across_probe_and_assoc():
     s = WlanSink()
     client = "12:22:33:44:55:66"
@@ -306,22 +369,39 @@ def test_directed_probe_tracks_latest_channel_time_and_count():
     assert observation.count == 2
 
 
+def test_randomized_probe_remains_live_but_is_not_saved(tmp_path):
+    store = HiddenSsidStore(tmp_path / "hidden_ssids.sqlite3")
+    sink = WlanSink(store)
+    client = "02:22:33:44:55:66"
+    sink.update(pkt({
+        "type": "probe_req",
+        "source": client,
+        "dest": "ff:ff:ff:ff:ff:ff",
+        "bssid": "ff:ff:ff:ff:ff:ff",
+        "rssi": -50,
+        "ssid": "SessionOnly",
+    }), W0)
+
+    assert sink.clients[client].probed_ssids == {"SessionOnly"}
+    assert store.probes_for_client(client) == []
+
+
 def test_persisted_client_probe_is_restored_as_history(tmp_path):
     store = HiddenSsidStore(tmp_path / "hidden_ssids.json")
     store.remember_probe(
-        "12:22:33:44:55:66", "DefaultSSID", 11, now=100,
+        "18:7f:88:44:55:66", "DefaultSSID", 11, now=100,
     )
     sink = WlanSink(HiddenSsidStore(store.path))
     sink.update(pkt({
         "type": "data",
-        "source": "12:22:33:44:55:66",
+        "source": "18:7f:88:44:55:66",
         "dest": BSSID,
         "bssid": BSSID,
         "to_ds": True,
         "rssi": -50,
     }), W0, channel_hint=6)
 
-    observation = sink.clients["12:22:33:44:55:66"].probe_observations["DefaultSSID"]
+    observation = sink.clients["18:7f:88:44:55:66"].probe_observations["DefaultSSID"]
     assert observation.channel == 11
     assert observation.count == 1
     assert observation.historical

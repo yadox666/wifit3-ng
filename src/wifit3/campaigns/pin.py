@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from wifit3.persist.config import Config
+from wifit3.persist.private_files import write_private_text
 
 from .campaign import Campaign
 from .wps import known_pins
@@ -259,8 +260,7 @@ class WpsCampaign(Campaign):
         self.state.updated = time.time()
         path = _state_path(self.state_dir, self.bssid)
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(asdict(self.state), indent=2))
+            write_private_text(path, json.dumps(asdict(self.state), indent=2))
         except Exception as e:
             logger.warning("WPS state save failed: %s", e)
 

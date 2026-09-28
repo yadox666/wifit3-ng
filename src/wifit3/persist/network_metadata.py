@@ -1,12 +1,9 @@
-"""Crash-safe persistence for passive network metadata beside capture artifacts."""
+"""SQLite persistence for passive network metadata."""
 from __future__ import annotations
 
-import json
-import os
 import time
-from pathlib import Path
 
-from wifit3.persist.common import bssid_to_dashed, safe_ssid
+from wifit3.persist.ap_history import ApHistoryStore, ApHistoryStoreError
 from wifit3.wlan.network_metadata import NetworkMetadata
 
 
@@ -17,49 +14,32 @@ class NetworkMetadataStoreError(RuntimeError):
     pass
 
 
-def network_metadata_path(directory: Path, ssid: str | None, bssid: str) -> Path:
-    return directory / (
-        f"{safe_ssid(ssid)}_{bssid_to_dashed(bssid)}_network.json"
-    )
-
-
-def _existing_path(directory: Path, ssid: str | None, bssid: str) -> Path:
-    expected = network_metadata_path(directory, ssid, bssid)
-    if expected.exists():
-        return expected
-    matches = list(directory.glob(f"*_{bssid_to_dashed(bssid)}_network.json"))
-    if not matches:
-        return expected
-    try:
-        return max(matches, key=lambda path: path.stat().st_mtime)
-    except OSError:
-        return matches[0]
-
-
 class NetworkMetadataStore:
-    def __init__(self, directory: Path, bssid: str, ssid: str | None) -> None:
-        self.directory = directory
-        self.path = _existing_path(directory, ssid, bssid)
+    def __init__(
+        self,
+        history: ApHistoryStore,
+        bssid: str,
+        ssid: str | None,
+    ) -> None:
+        self.history = history
+        self.bssid = bssid.casefold()
+        self.ssid = ssid or ""
         self.errors: list[str] = []
-        self.metadata = NetworkMetadata(bssid.casefold(), ssid or "")
+        self.metadata = NetworkMetadata(self.bssid, self.ssid)
         self._saved_revision = 0
         self._last_save = 0.0
-        self._load(bssid, ssid or "")
+        self._load()
 
     @property
     def dirty(self) -> bool:
         return self.metadata.revision != self._saved_revision
 
-    def _load(self, bssid: str, ssid: str) -> None:
-        try:
-            payload = json.loads(self.path.read_text("utf-8"))
-        except FileNotFoundError:
-            return
-        except (OSError, json.JSONDecodeError) as exc:
-            self.errors.append(f"Could not load network metadata: {exc}")
+    def _load(self) -> None:
+        payload = self.history.network_metadata_payload(self.bssid)
+        if payload is None:
             return
         metadata = NetworkMetadata.from_dict(
-            payload, expected_bssid=bssid, ssid=ssid,
+            payload, expected_bssid=self.bssid, ssid=self.ssid,
         )
         if metadata is None:
             self.errors.append("Unsupported or invalid network metadata")
@@ -78,24 +58,10 @@ class NetworkMetadataStore:
     def save(self) -> None:
         if not self.dirty:
             return
-        self.directory.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
         payload, revision = self.metadata.serialized_snapshot()
         try:
-            temporary.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            try:
-                os.chmod(temporary, 0o600)
-            except OSError:
-                pass
-            temporary.replace(self.path)
-        except OSError as exc:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
+            self.history.save_network_metadata(self.bssid, self.ssid, payload)
+        except ApHistoryStoreError as exc:
             raise NetworkMetadataStoreError(
                 f"Could not save network metadata: {exc}",
             ) from exc

@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Optional, Set
 from rich.markup import escape
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.binding import ActiveBinding, Binding
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.geometry import Offset
 from textual.screen import Screen
@@ -47,10 +47,11 @@ from wifit3.campaigns.pin import WpsCampaign, load_run_state, run_progress_line
 from wifit3.campaigns.deauth import DeauthCampaign
 from wifit3.campaigns.pbc import WpsPbcCapture
 from wifit3.campaigns.probe import probe_ap
+from wifit3.campaigns.enterprise_probe import EnterpriseProbe, EnterpriseProbeResult
 from .campaign_controls import CampaignControls
 from wifit3.campaigns.wps.registrar import PinResult
 from wifit3.crack.handshake import handshake_uncrackable_label
-from wifit3.models import AccessPoint, IdSource
+from wifit3.models import AccessPoint, Client, EnterpriseProbeRun, IdSource
 from wifit3.safety import deauth_limits
 from wifit3.persist.config import Config
 from wifit3.persist.common import bssid_to_dashed, safe_ssid
@@ -64,7 +65,7 @@ from wifit3.ui.network_metadata_panel import (
 )
 from wifit3.ui.recording_indicator import pcap_progress, recording_indicator
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
-from wifit3.wlan.enterprise_risk import enterprise_findings
+from wifit3.wlan.enterprise_risk import enterprise_findings, is_enterprise_ap
 from wifit3.wlan.network_metadata import PassiveNetworkAnalyzer
 
 from ... import focus_model as fm
@@ -81,12 +82,15 @@ from .clients_list import ClientsList, ClientWidget, FingerprintModal
 from .packet_dashboard import PacketDashboard
 from .log_band import LogBand
 from .router_endpoint import RouterEndpoint
+from .enterprise_panel import EnterprisePanel
 from . import art
 
 if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
 
 logger = logging.getLogger(__name__)
+
+_CLIENT_LIVE_SECONDS = 10.0
 
 _ENDPOINT_W = 20  # the .ans art is exactly 20 cells wide
 _TOPBAR_H = 3
@@ -104,6 +108,7 @@ _PAD_RATE = 0.4
 _PBC_RETRY_COOLDOWN_S = 3.0
 
 _ATTACK_BUTTONS = [
+    ("btn-enterprise", "Enterprise"),
     ("btn-gen-ivs", "ARP Replay"), ("btn-chop", "ChopChop"), ("btn-deauth", "AutoDeauth"),
     ("btn-pmkid", "PMKID"), ("btn-fake-connect", "Fake-Connect"),
     ("btn-wps-pin", "WPS PIN"), ("btn-eviltwin", "EvilTwin"),
@@ -112,6 +117,7 @@ _ATTACK_BUTTONS = [
 
 # Static button tooltips, keyed by live label so toggled buttons get idle/run-specific tips.
 _BUTTON_TIPS = {
+    "Enterprise": "Open the accumulated Enterprise assessment",
     "ARP Replay": "Listen for & replay ARP packets",
     "Stop Replay": "Stop the entire WEP campaign.",
     "ChopChop": "Forge a replayable packet",
@@ -176,6 +182,7 @@ class FocusViewV2(Screen):
     # Attack hotkeys come from the campaign registry
     BINDINGS = [
         Binding("escape", "go_back", "Back", show=True),
+        Binding("e", "enterprise", "Enterprise", show=True),
         Binding("d", "deauth_all", "Deauth", show=True),
         *[Binding(cls.hotkey[0], f"campaign('{cls.key}')", cls.hotkey[1], show=True)
           for cls in fm.BUTTON_CAMPAIGNS if cls.hotkey],
@@ -245,6 +252,9 @@ class FocusViewV2(Screen):
     .client-columns { height: 1; width: 100%%; color: $text-muted; text-style: bold; }
     .client-row { height: 1; width: 100%%; }
     .fake-client .cl-bssid, .fake-client .cl-mfr { color: yellow; text-style: bold; }
+    .historical-client { color: $text-muted; opacity: 65%%; }
+    .historical-client .cl-bssid, .historical-client .cl-mfr,
+    .historical-client .cl-pwr, .historical-client .cl-pkts { color: $text-muted; }
     .cl-fp { width: 2; }
     /* A known fingerprint is clickable (pops up the detail popup): underline + accent color on
        the MAC marks it, same as any other actionable text. Not on the emoji itself -- the
@@ -274,6 +284,7 @@ class FocusViewV2(Screen):
         self._pbc_user_stopped = False
         self._pbc_retry_after = 0.0   # monotonic time before which we won't re-arm a PBC retry
         self._probe_task: Optional[asyncio.Task] = None
+        self._enterprise_probe_task: Optional[asyncio.Task] = None
         self._packet_capture: PcapWriter | None = None
         self._packet_capture_array = None
         self._packet_capture_bssid: str | None = None
@@ -351,16 +362,35 @@ class FocusViewV2(Screen):
         cur = self._controls.current
         return isinstance(cur, WpsPbcCapture) and not cur.done
 
-    def _is_probing(self) -> bool:
+    def _is_wps_probing(self) -> bool:
         return self._probe_task is not None and not self._probe_task.done()
 
+    def _is_enterprise_probing(self) -> bool:
+        return (
+            self._enterprise_probe_task is not None
+            and not self._enterprise_probe_task.done()
+        )
+
+    def _is_probing(self) -> bool:
+        return self._is_wps_probing() or self._is_enterprise_probing()
+
     def _any_campaign_active(self) -> bool:
-        return Campaign.active is not None or self._controls.current is not None
+        return (
+            Campaign.active is not None
+            or self._controls.current is not None
+            or self._is_probing()
+        )
 
     def _stop_probe(self) -> None:
         if self._probe_task is not None and not self._probe_task.done():
             self._probe_task.cancel()
         self._probe_task = None
+        if (
+            self._enterprise_probe_task is not None
+            and not self._enterprise_probe_task.done()
+        ):
+            self._enterprise_probe_task.cancel()
+        self._enterprise_probe_task = None
 
     def _router_values(self) -> dict:
         """The AP identity + power primitives the router endpoint renders, read live from
@@ -387,7 +417,7 @@ class FocusViewV2(Screen):
                     ),
                     wps=bool(ap.wps),
                     has_m1=ap.identity.has_source(IdSource.WSC_M1),
-                    probing=self._is_probing(),
+                    probing=self._is_wps_probing(),
                     probe_disabled=self._any_campaign_active(),
                     identity=ap.identity.summary,
                     identity_details=fm.router_advertised_details(ap))
@@ -411,13 +441,91 @@ class FocusViewV2(Screen):
         ap = self.app.target_ap
         return fm.dashboard_rows(ap) if ap is not None else []
 
-    def _client_list(self) -> list:
-        """The target's real clients plus explicitly exposed Fake-Connect station."""
+    def _live_client_list(self) -> list[Client]:
+        """Clients currently heard on the target, including Fake-Connect."""
         ap = self.app.target_ap
         array = self.app.array
         if ap is None or array is None:
             return []
-        return [c for c in array.clients.values() if c.bssid == ap.bssid]
+        now = time.time()
+        return [
+            client
+            for client in array.clients.values()
+            if client.bssid == ap.bssid
+            and (
+                client.is_fake
+                or now - client.last_seen <= _CLIENT_LIVE_SECONDS
+            )
+        ]
+
+    def _client_list(self) -> list[Client]:
+        """Merge live clients with persisted associations and directed probes."""
+        ap = self.app.target_ap
+        array = self.app.array
+        if ap is None or array is None:
+            return []
+        rows = {client.mac.casefold(): client for client in self._live_client_list()}
+        session_clients = {
+            client.mac.casefold(): client for client in array.clients.values()
+        }
+
+        for record in self.app.ap_history_store.clients_for_ap(ap.bssid):
+            mac = record.client_mac.casefold()
+            if mac in rows:
+                continue
+            source = session_clients.get(mac)
+            if source is not None:
+                rows[mac] = replace(
+                    source,
+                    historical=True,
+                    history_reasons={"associated"},
+                )
+            else:
+                rows[mac] = Client(
+                    mac=record.client_mac,
+                    bssid=ap.bssid,
+                    first_seen=record.first_seen,
+                    last_seen=record.last_seen,
+                    historical=True,
+                    history_reasons={"associated"},
+                )
+
+        if ap.ssid and ap.ssid != "<hidden>":
+            ssid = ap.ssid.casefold()
+            for record in self.app.hidden_ssid_store.client_probes.values():
+                if record.ssid.casefold() != ssid:
+                    continue
+                mac = record.client_mac.casefold()
+                existing = rows.get(mac)
+                if existing is not None:
+                    if existing.historical:
+                        existing.history_reasons.add("probe")
+                    continue
+                source = session_clients.get(mac)
+                if source is not None:
+                    observation = source.probe_observations.get(record.ssid)
+                    is_historical = (
+                        observation is None
+                        or observation.historical
+                        or time.time() - observation.last_seen > _CLIENT_LIVE_SECONDS
+                    )
+                    rows[mac] = replace(
+                        source,
+                        historical=is_historical,
+                        history_reasons={"probe"},
+                    )
+                else:
+                    rows[mac] = Client(
+                        mac=record.client_mac,
+                        first_seen=record.first_seen,
+                        last_seen=record.last_seen,
+                        historical=True,
+                        history_reasons={"probe"},
+                    )
+        return sorted(
+            rows.values(),
+            key=lambda client: (client.historical, -client.last_seen, client.mac),
+        )
 
     @staticmethod
     def _render_status(status) -> Text:
@@ -471,6 +579,10 @@ class FocusViewV2(Screen):
             if probing and not running:
                 btn.disabled, reason = True, "Disabled while probing"
             btn.tooltip = reason or _BUTTON_TIPS.get(str(btn.label))
+        enterprise = self.query_one("#btn-enterprise", Button)
+        enterprise.display = is_enterprise_ap(ap)
+        enterprise.disabled = False
+        enterprise.tooltip = _BUTTON_TIPS["Enterprise"]
         self._refresh_chop_button(ap, active, probing)
         self._refresh_stop_pbc_button(probing)
 
@@ -740,7 +852,7 @@ class FocusViewV2(Screen):
         if (
             not self.is_mounted
             or self._target_ap is None
-            or not self._client_list()
+            or not self._live_client_list()
         ):
             for piece in pieces:
                 piece.display = False
@@ -900,6 +1012,8 @@ class FocusViewV2(Screen):
         bid = event.button.id or ""
         if bid == "back":
             await self.action_go_back()
+        elif bid == "btn-enterprise":
+            self.action_enterprise()
         elif bid == "deauth-all":
             self._request_deauth_broadcast()
         elif bid == "btn-deauth":
@@ -1013,26 +1127,6 @@ class FocusViewV2(Screen):
             connector = treelog.leaf if i == len(lines) - 1 else treelog.branch
             self._log(connector(line))
 
-    # ----- command-bar (footer hotkeys) --------------------------------------
-
-    @property
-    def active_bindings(self) -> dict[str, ActiveBinding]:
-        """Use the footer label that matches Fake-Connect's current toggle action."""
-        bindings = super().active_bindings
-        current = self._controls.current
-        disconnect = current is not None and current.key == "fake_connect"
-        description = "Disconnect" if disconnect else "Fake-Connect"
-        for key, active in tuple(bindings.items()):
-            if active.binding.action != "campaign('fake_connect')":
-                continue
-            bindings[key] = ActiveBinding(
-                active.node,
-                replace(active.binding, description=description),
-                active.enabled,
-                active.tooltip,
-            )
-        return bindings
-
     def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
         """Drive the footer keys off the same state as the buttons."""
         if self._is_probing():
@@ -1056,6 +1150,8 @@ class FocusViewV2(Screen):
             if active is not None and active.key == key and cls.stoppable:
                 return True
             return None if fm.campaign_blocked(cls, ap) is not None else True
+        if action == "enterprise":
+            return ap is not None and is_enterprise_ap(ap)
         if action == "deauth_all":
             if ap is None:
                 return False
@@ -1063,7 +1159,9 @@ class FocusViewV2(Screen):
         if action == "wps_info":
             if ap is None or not ap.wps or ap.identity.has_source(IdSource.WSC_M1):
                 return None
-            return True if self._is_probing() else not self._any_campaign_active()
+            if self._is_enterprise_probing():
+                return False
+            return True if self._is_wps_probing() else not self._any_campaign_active()
         if action == "capture_packets":
             return self._packet_capture is not None or (ap is not None and self.app.array is not None)
         if action == "silence":
@@ -1089,6 +1187,7 @@ class FocusViewV2(Screen):
             btn_sig = tuple((cls.key, cls.visible(ap), True if probing else _disabled(cls))
                             for cls in fm.BUTTON_CAMPAIGNS)
             sig = (btn_sig,
+                   is_enterprise_ap(ap),
                    True if probing else fm.deauth_blocked(ap),
                    Config.is_silenced(ap.bssid),
                    bool(ap.wps),
@@ -1107,8 +1206,211 @@ class FocusViewV2(Screen):
         self._request_campaign(camp_key)
         self._sync_bindings()
 
+    def action_enterprise(self) -> None:
+        ap = self._target_ap
+        if ap is None or not is_enterprise_ap(ap):
+            return
+        self.app.push_screen(
+            EnterprisePanel(
+                self._enterprise_systems(ap),
+                probing=self._is_enterprise_probing(),
+            ),
+            self._on_enterprise_panel_action,
+        )
+
+    def _on_enterprise_panel_action(self, action: str | None) -> None:
+        if action == "probe":
+            self._request_enterprise_probe()
+        elif action == "cancel_probe":
+            self._cancel_enterprise_probe()
+        elif action == "save_report":
+            self._save_enterprise_report()
+
+    def _save_enterprise_report(self) -> None:
+        ap = self._target_ap
+        if ap is None or not is_enterprise_ap(ap):
+            return
+        try:
+            result = self.app.vault.save_enterprise_report(ap)
+        except Exception as exc:
+            logger.exception("Could not save Enterprise report")
+            self.notify(str(exc), title="Enterprise report failed", severity="error")
+            return
+        if result is None:
+            self.notify("No Enterprise evidence to save", severity="warning")
+            return
+        self.notify(
+            f"Saved {result.path.name}",
+            title="Enterprise report added to Vault",
+            severity="information",
+        )
+
+    def _cancel_enterprise_probe(self) -> None:
+        task = self._enterprise_probe_task
+        if task is not None and not task.done():
+            task.cancel()
+            self.notify("Cancelling Enterprise probe…", severity="warning")
+
+    def _enterprise_systems(self, target: AccessPoint) -> tuple[AccessPoint, ...]:
+        array = self.app.array
+        if array is None:
+            return (target,)
+        target_certificates = set(target.enterprise.certificates)
+        systems = [
+            ap for ap in array.access_points.values()
+            if is_enterprise_ap(ap) and (
+                ap is target
+                or (
+                    target.ssid
+                    and target.ssid != "<hidden>"
+                    and ap.ssid == target.ssid
+                )
+                or bool(target_certificates & set(ap.enterprise.certificates))
+            )
+        ]
+        systems.sort(key=lambda ap: (ap is not target, ap.bssid))
+        return tuple(systems) or (target,)
+
+    def _request_enterprise_probe(self) -> None:
+        ap = self._target_ap
+        if ap is None or not is_enterprise_ap(ap):
+            return
+        if self._is_enterprise_probing():
+            self.notify("Enterprise probe is already running", severity="warning")
+            return
+        if self._any_campaign_active():
+            self.notify("Another active operation owns the radio", severity="warning")
+            return
+        self._confirm_active(
+            "Enterprise outer-EAP probe",
+            (
+                "Associates an anonymous temporary client, enumerates EAP methods and "
+                "negotiates outer TLS. It stops before inner authentication and sends no secret."
+            ),
+            self._start_enterprise_probe,
+        )
+
+    def _start_enterprise_probe(self) -> None:
+        ap = self._target_ap
+        if ap is None or self._is_enterprise_probing():
+            return
+        self._enterprise_probe_task = asyncio.create_task(self._run_enterprise_probe(ap))
+        self.refresh_buttons()
+        self._sync_bindings()
+
+    async def _run_enterprise_probe(self, ap: AccessPoint) -> None:
+        array = self.app.array
+        if array is None:
+            self.notify("No active interface", severity="error")
+            self._enterprise_probe_task = None
+            self.refresh_buttons()
+            self._sync_bindings()
+            return
+        iface = array.select_iface(ap.channel)
+        if iface is None:
+            self.notify(f"No interface can probe channel {ap.channel}", severity="error")
+            self._enterprise_probe_task = None
+            self.refresh_buttons()
+            self._sync_bindings()
+            return
+        label = escape(ap.ssid or ap.bssid)
+        self._log(treelog.header(
+            f"[bold]Enterprise probe[/bold] on [cyan]{label}[/cyan] "
+            f"[dim](CH {ap.channel})[/dim]"
+        ))
+        probe: EnterpriseProbe | None = None
+        try:
+            async with array.claim(iface):
+                probe = EnterpriseProbe(
+                    iface,
+                    ap,
+                    tx_observer=array.record_injected_eapol,
+                )
+                result = await probe.run()
+            self._record_enterprise_probe_result(ap, result)
+            marker = treelog.leaf_ok if result.ok else treelog.leaf_fail
+            self._log(marker(escape(result.detail)))
+            self.notify(
+                result.detail,
+                title=f"Enterprise probe: {result.status}",
+                severity="information" if result.ok else "warning",
+                timeout=8,
+            )
+        except asyncio.CancelledError:
+            result = (
+                probe.cancelled_result()
+                if probe is not None else
+                EnterpriseProbeResult(False, "cancelled", "probe cancelled by operator")
+            )
+            self._record_enterprise_probe_result(ap, result)
+            self._log(treelog.leaf_fail("Enterprise probe cancelled"))
+            self.notify("Enterprise probe cancelled", severity="warning")
+        except Exception as exc:
+            logger.exception("Enterprise probe failed")
+            result = EnterpriseProbeResult(False, "failed", str(exc))
+            self._record_enterprise_probe_result(ap, result)
+            self._log(treelog.leaf_fail(f"Enterprise probe error: {escape(str(exc))}"))
+            self.notify(str(exc), title="Enterprise probe failed", severity="error")
+        finally:
+            self._enterprise_probe_task = None
+            try:
+                self.refresh_buttons()
+                self._sync_bindings()
+            except Exception:
+                pass
+
+    def _record_enterprise_probe_result(
+        self,
+        ap: AccessPoint,
+        result: EnterpriseProbeResult,
+    ) -> None:
+        profile = ap.enterprise
+        profile.probe_attempts += 1
+        profile.probe_last_status = result.status
+        profile.probe_last_detail = result.detail
+        profile.probe_last_seen = time.time()
+        profile.probe_history.append(EnterpriseProbeRun(
+            started_at=result.started_at,
+            ended_at=result.ended_at,
+            status=result.status,
+            detail=result.detail,
+            association_ok=result.association_ok,
+            eap_method=result.eap_method,
+            events=list(result.events),
+        ))
+        if len(profile.probe_history) > 32:
+            del profile.probe_history[:-32]
+        profile.server_eap_types.update(result.server_methods)
+        profile.tls_versions.update(result.tls.versions)
+        profile.tls_client_versions.update(result.tls.client_versions)
+        profile.tls_cipher_suites.update(result.tls.cipher_suites)
+        profile.tls_client_cipher_suites.update(result.tls.client_cipher_suites)
+        profile.tls_server_names.update(result.tls.server_names)
+        profile.tls_supported_groups.update(result.tls.supported_groups)
+        profile.tls_signature_algorithms.update(result.tls.signature_algorithms)
+        for certificate in result.tls.certificates:
+            if len(profile.certificates) < 16:
+                profile.certificates[certificate.fingerprint] = certificate
+        store = self.app.enterprise_session_store
+        if result.client_mac:
+            client_id = store.client_id(ap.bssid, result.client_mac)
+            for session in reversed(profile.sessions):
+                if session.client_id != client_id:
+                    continue
+                session.source = "active_probe"
+                session.outcome = "probe_complete" if result.ok else "probe_partial"
+                break
+        try:
+            store.remember(ap, force=True)
+        except Exception:
+            logger.warning("Could not persist Enterprise probe result", exc_info=True)
+        try:
+            self.app.vault.save_enterprise_report(ap)
+        except Exception:
+            logger.warning("Could not save Enterprise report snapshot", exc_info=True)
+
     def action_wps_info(self) -> None:
-        if self._is_probing():
+        if self._is_wps_probing():
             self._stop_probe()
             self.refresh_buttons()
             self._sync_bindings()
@@ -1211,7 +1513,7 @@ class FocusViewV2(Screen):
             self._network_analyzer = None
             return
         self._network_store = NetworkMetadataStore(
-            Path(Config.captures_dir), ap.bssid, ap.ssid,
+            self.app.ap_history_store, ap.bssid, ap.ssid,
         )
         panel.display = True
         for error in self._network_store.errors:

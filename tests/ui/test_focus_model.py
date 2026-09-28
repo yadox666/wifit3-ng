@@ -671,24 +671,21 @@ async def test_buttons_open_hides_attacks_and_shows_fake_connect(buttons_screen)
 
 
 @pytest.mark.asyncio(loop_scope="module")
-async def test_footer_fake_connect_label_toggles_to_disconnect(buttons_screen):
+async def test_fake_connect_is_top_button_not_footer_and_toggles_to_disconnect(buttons_screen):
     ap = _rsn_ap(encryption="OPEN", akms=())
-    buttons_screen._target_ap = ap
+    assert not any(
+        active.binding.action == "campaign('fake_connect')"
+        for active in buttons_screen.active_bindings.values()
+    )
+    idle = _buttons(buttons_screen, ap)["btn-fake-connect"]
+    assert _bs(idle) == (True, False, "Fake-Connect", "primary")
 
-    def label():
-        return next(
-            active.binding.description
-            for active in buttons_screen.active_bindings.values()
-            if active.binding.action == "campaign('fake_connect')"
-        )
-
-    buttons_screen._controls._campaign = None
-    assert label() == "Fake-Connect"
-    buttons_screen._controls._campaign = types.SimpleNamespace(key="fake_connect")
+    Campaign.active = types.SimpleNamespace(key="fake_connect")
     try:
-        assert label() == "Disconnect"
+        running = _buttons(buttons_screen, ap)["btn-fake-connect"]
+        assert _bs(running) == (True, False, "Disconnect", "error")
     finally:
-        buttons_screen._controls._campaign = None
+        Campaign.active = None
 
 
 @pytest.mark.asyncio(loop_scope="module")

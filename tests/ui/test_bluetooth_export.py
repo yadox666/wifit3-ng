@@ -1,8 +1,13 @@
 import csv
+import json
+import stat
 
 from wifit3.models import BluetoothDevice
 from wifit3.persist.config import Config
-from wifit3.ui.bluetooth_export import export_bluetooth_snapshot
+from wifit3.ui.bluetooth_export import (
+    export_bluetooth_bundle,
+    export_bluetooth_snapshot,
+)
 
 
 def test_bluetooth_export_writes_device_details(tmp_path, monkeypatch):
@@ -59,3 +64,45 @@ def test_bluetooth_export_escapes_spreadsheet_formula_names(tmp_path, monkeypatc
     with path.open(encoding="utf-8", newline="") as stream:
         row = next(csv.DictReader(stream))
     assert row["name"] == "'=FORMULA()"
+
+
+def test_bluetooth_bundle_writes_private_json_and_jsonl(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "captures_dir", str(tmp_path))
+    device = BluetoothDevice(
+        identifier="40:22:33:44:55:66",
+        name="Tracker",
+        rssi=-60,
+        service_uuids=("180f",),
+        service_data_uuids=(),
+        manufacturer_ids=(),
+        manufacturer_data_bytes=0,
+        service_data_bytes=0,
+        tx_power=None,
+        advertisement_count=4,
+        advertisement_interval=0.5,
+        first_seen=1,
+        last_seen=2,
+        address_type="resolvable-private",
+        baseline_status="returning",
+        rssi_average=-62.5,
+        rssi_min=-70,
+        rssi_max=-60,
+        rssi_samples=4,
+        rssi_trend="approaching",
+        appearance=0x0943,
+    )
+
+    csv_path, json_path, jsonl_path = export_bluetooth_bundle([device])
+
+    report = json.loads(json_path.read_text("utf-8"))
+    record = report["devices"][0]
+    assert record["address_type"] == "resolvable-private"
+    assert record["signal_trend"] == "approaching"
+    assert record["exact_type"] == "Headphones"
+    assert record["classification_source"] == "Appearance"
+    assert record["appearance"] == "0x0943"
+    assert json.loads(jsonl_path.read_text("utf-8"))["identifier"] == device.identifier
+    if hasattr(stat, "S_IMODE"):
+        assert stat.S_IMODE(csv_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(json_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(jsonl_path.stat().st_mode) == 0o600

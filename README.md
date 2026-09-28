@@ -56,6 +56,7 @@ The startup screen shows centered **START WI-FI** and **SCAN BLE** buttons on on
 | `W` | Startup | Start Wi-Fi on the selected adapters |
 | `B` | Startup | Start the Bluetooth/BLE scanner |
 | `U` | Startup | Update the local OUI database |
+| `C` | Startup, before the first scan | Open `Clear-DB` |
 | `Ctrl+P` | Everywhere | Preferences. `A` opens About, `T` opens the target editor |
 | `Ctrl+D` | Everywhere | Active-adapter diagnostics |
 | `Ctrl+Q` | Everywhere | Quit |
@@ -67,8 +68,8 @@ The startup screen shows centered **START WI-FI** and **SCAN BLE** buttons on on
 | `A` | Wi-Fi client table | Test a selected directed probe with an automated open AP |
 | `X` | Wi-Fi scanner | Export the scan as CSV and JSON |
 | `X` | AP Focus | Start or stop a focused libpcap capture |
-| `O` | AP Focus on an open network | Start Fake-Connect or disconnect its temporary client |
-| `X` | Bluetooth scanner | Export the scan as CSV |
+| `E` | Enterprise AP Focus | Open the Enterprise assessment panel |
+| `X` | Bluetooth scanner | Export the scan as CSV, JSON, and JSONL |
 | `V` | Wi-Fi AP/client tables and AP Focus | Open Vault |
 
 Vault is available only in Wi-Fi mode.
@@ -76,7 +77,9 @@ Vault is available only in Wi-Fi mode.
 ### Wi-Fi scanner
 
 - AP and client tables share signal colours, fixed columns, sorting, reverse sorting, filtering, pause, channel lock, and export.
-- AP rows show manufacturer, a client-manufacturer summary, security, WPS, identity, channel, signal, beacon activity, client count, and last-seen or expiry information.
+- AP rows show one combined vendor/model identity, a client-manufacturer summary,
+  security, WPS, channel, signal, beacon activity, client count, and last-seen
+  or expiry information.
 - Client rows show the associated AP, manufacturer, signal, packets, age, and probe requests.
 - AP expiry is set in Preferences, including a Never option.
 - Manufacturer names come from the local OUI database. `U` updates it immediately. When an update is required, the cache is refreshed if it is older than 30 days. The file is the IEEE `oui.txt` list, stored in the operating system's wifit3 cache directory.
@@ -97,6 +100,14 @@ Vault is available only in Wi-Fi mode.
 
 - AP Focus shows the primary channel and active width in plain language, such as `channel 36 · 80 MHz`. Its magnifying-glass details separate the operating primary/secondary/center channels from supported radio widths, spatial streams, rates, BSS load, timing, power constraints, RSN ciphers, AKMs, PMF, roaming features, vendor IEs, WPS identity, and device identity.
 - Client information includes manufacturer, randomized or local MAC status, association, selected AKM, PMF, radio capabilities, limits, probe requests, and observed Enterprise authentication.
+- AP Focus keeps currently heard clients first and adds prior associated clients
+  or manufacturer-identified clients that probed the AP's SSID as soft-grey
+  `◌` history rows. Historical rows cannot be deauthenticated and do not
+  activate the AP-to-client link.
+- The Wi-Fi client table and Client Focus show previously used APs in grey.
+  Restored probe requests are also grey until observed live again; directed
+  probes remain SSID evidence and are not presented as proof of a specific
+  BSSID.
 - WPS Info stays on the AP Focus key menu and on the magnifying-glass control.
 - Entering AP Focus fixes the scanner to that AP's channel until Focus is left.
 - Wide 40/80/160 MHz networks remain tuned through their primary 20 MHz channel. Center-frequency segments are displayed for diagnosis but are never mistaken for the tune target; campaigns stop if the adapter cannot confirm the requested channel.
@@ -112,12 +123,17 @@ confirmation is accepted, WiFiT3:
 - Lets you choose a duration from one to five minutes, then automatically
   selects a spoof-capable adapter, the probe's most recently observed channel,
   and a random locally administered BSSID.
-- Advertises either an `OPEN` ESS or a `WPA2-PSK` ESS and responds to probe,
-  Open-System authentication, and association frames from every client
-  requesting it. WPA2 first derives a PSK-compatible profile from a live
-  same-SSID AP, then from automatically persisted beacon profiles, then from
-  prior JSON scan exports, and uses generic PSK/CCMP only as a clearly logged
-  fallback.
+- Advertises an `OPEN` ESS, a `WPA2-PSK` ESS, or both at once (`OPEN + WPA2`,
+  the dual honeypot) and responds to probe, Open-System authentication, and
+  association frames from every client requesting it. WPA2 first derives a
+  PSK-compatible profile from a live same-SSID AP, then from automatically
+  persisted beacon profiles, then from prior JSON scan exports, and uses generic
+  PSK/CCMP only as a clearly logged fallback.
+- In `OPEN + WPA2` mode each BSSID is broadcast with a distinct locally
+  administered address, registered, and tracked independently, and radios are
+  assigned automatically: when two spoof-capable cards can reach the channel
+  each BSSID gets its own radio (and its own hardware ACK), otherwise both
+  share one card and the second BSSID answers best-effort in software.
 - Reports probe, authentication, association, and DHCP Discover/Request as
   separate evidence stages. Only association followed by DHCP is marked
   confirmed.
@@ -129,8 +145,11 @@ confirmation is accepted, WiFiT3:
   those addresses.
 - Shows a blinking red top banner with the selected SSID, channel, adapter, and
   remaining time while the test is active.
-- Inserts the generated BSSID as a separate red `◆ FAKE AP [ACTIVE]` row in
+- Inserts each generated BSSID as a separate red `◆ FAKE AP [ACTIVE]` row in
   the AP table. It changes to `STOPPED` when the test ends and expires normally.
+- Parks the selected adapter on the probe channel for the whole run: a card held
+  for a fixed-channel test is excluded from channel hopping, so even a single
+  adapter stays fixed instead of drifting across the band.
 - Continues collecting clients until the selected timeout or a second press of
   `A`, even after DHCP evidence is observed.
 - In WPA2 mode, sends EAPOL M1 after association and saves each captured M2 pair
@@ -151,17 +170,85 @@ normalized to the selected 20 MHz channel. RSNXE/SAE and 802.11r Mobility
 Domain are deliberately omitted until their authentication state machines are
 implemented, avoiding an internally inconsistent fake AP.
 
-### Passive WPA-Enterprise analysis
+### WPA-Enterprise assessment suite
 
-The fork parses visible non-key EAPOL/EAP exchanges. EAP Identity values and credential-response payloads are not kept in the profile.
+Enterprise assessment starts passively and can optionally continue with a
+bounded active outer-EAP probe. Open the panel from an Enterprise AP in Focus
+with **Enterprise** or `E`.
 
-- Recognises Identity, EAP-MD5, EAP-TLS, LEAP, EAP-TTLS, PEAP, EAP-MSCHAPv2, EAP-FAST, EAP-AKA', and TEAP.
-- Reassembles fragmented outer EAP-TLS data within a fixed bound.
-- Records visible TLS versions, selected cipher suites, certificate fingerprints, validity dates, signature algorithms, key algorithms, and key sizes.
-- Explains findings for WEP, legacy WPA, TKIP, missing or optional PMF, EAP-MD5, LEAP, direct EAP-MSCHAPv2, obsolete TLS, weak TLS ciphers, expired certificates, MD5 or SHA-1 signatures, and short RSA keys.
-- Findings include evidence and confidence. High-risk observations add a `!WEAK` marker on the AP table and a security warning in Focus.
-- PEAP and TTLS inner methods, and whether the client validates the RADIUS certificate, are encrypted. Passive scanning cannot determine them.
-- This fork does not include an automated rogue-RADIUS or credential-validation attack.
+#### Passive EAP, TLS, and certificate analysis
+
+- Parses visible non-key EAPOL/EAP exchanges without retaining EAP Identity
+  values, credential responses, or packet payloads.
+- Recognises Identity, EAP-MD5, EAP-TLS, LEAP, EAP-TTLS, PEAP,
+  EAP-MSCHAPv2, EAP-FAST, EAP-AKA', and TEAP. It records server requests,
+  client responses, legacy NAK alternatives, and visible Success/Failure
+  outcomes.
+- Reassembles fragmented outer EAP-TLS data within fixed packet and memory
+  bounds.
+- Parses TLS ClientHello and ServerHello evidence: offered and selected
+  versions and cipher suites, SNI names, supported groups, and signature
+  algorithms.
+- Parses visible X.509 metadata: SHA-256 fingerprint, subject, issuer, DNS SAN,
+  EKU, CA status, validity, signature algorithm, public-key algorithm, and key
+  size. Certificate order is preserved for structural leaf-to-root checks.
+- Reports obsolete TLS and weak ciphers; expired or not-yet-valid
+  certificates; MD5/SHA-1 signatures; short RSA/EC keys; missing
+  `serverAuth`; a leaf marked as CA; missing DNS SAN; incomplete chains; and
+  issuer/subject mismatches.
+- Combines protocol, RSN, PMF, TLS, and certificate findings with explicit
+  evidence and confidence. High-risk observations add `!WEAK` in the scanner
+  and a warning in Focus.
+
+#### Enterprise panel and infrastructure correlation
+
+- Shows each observed Enterprise system's methods, TLS evidence,
+  certificates, sessions, findings, evidence coverage, and remaining unknowns.
+- Groups same-SSID Enterprise BSSIDs and systems sharing certificate
+  fingerprints. The infrastructure summary compares channels, method
+  consistency, PMF posture, shared certificates, and multiple RADIUS leaf
+  certificates.
+- Keeps a bounded timeline for every active probe, including association,
+  EAP-method discovery, outer TLS progress, result, and partial-failure detail.
+- Persists bounded Enterprise profiles and probe history in private,
+  versioned, atomic storage. Client MAC addresses are replaced by per-store
+  HMAC pseudonyms; identities and credentials are never stored.
+
+#### Active outer-EAP probe
+
+- Requires the normal active-action confirmation and exclusive ownership of
+  the selected radio. It can be cancelled from the Enterprise panel.
+- Associates with a randomized temporary station and uses an anonymous outer
+  identity.
+- Uses legacy EAP NAK method negotiation to enumerate server-supported methods,
+  then supports bounded outer TLS negotiation for EAP-TLS, EAP-TTLS, PEAP, and
+  TEAP.
+- Handles EAP-TLS fragmentation, acknowledgements, retransmissions, duplicate
+  requests, declared-length validation, and a 1 MiB reassembly ceiling.
+- Requires TLS 1.2 or newer and stops before inner authentication. It sends no
+  password, MSCHAPv2 response, private key, or client certificate.
+- Merges newly observed methods, TLS parameters, and certificates into the
+  existing passive profile, fills previously unknown fields, persists the
+  result, and saves a report snapshot automatically.
+
+#### Enterprise reports in Vault
+
+- **Save report to Vault** creates a timestamped, sanitized JSON assessment;
+  every completed, partial, failed, or cancelled active probe also creates a
+  snapshot automatically.
+- Vault indexes Enterprise reports with an `ENTERPRISE` tab and `✓ENT` badge,
+  validates their schema, includes them in archive export, and presents them
+  beside PCAP and authentication artifacts.
+- Reports contain AP security posture, bounded Enterprise metadata, probe
+  history, certificate metadata, findings, and privacy declarations. They do
+  not contain raw client identifiers, EAP identities, credentials, private
+  keys, or packet payloads.
+
+PEAP/TTLS inner methods and client RADIUS-certificate validation remain
+encrypted unless a client completes authentication. Structural chain findings
+are evidence-based heuristics, not cryptographic trust validation. The suite
+does not automate a rogue RADIUS server, Enterprise Evil Twin, inner
+credential harvesting, or credential validation.
 
 ### Packet capture and Vault
 
@@ -187,14 +274,19 @@ Starting a focused PCAP capture on a confirmed unencrypted `OPEN` AP also starts
 - Keeps conflicting DHCP servers, gateways, DNS sets, and network ranges with source, confidence, first/last observation times, and expiry instead of silently overwriting them.
 - Shows a compact live/history summary in AP Focus and Client Focus. Select the NETWORK row to expand its evidence.
 - Clicking a client in AP Focus opens its detail box with the captured client IP, ranges, gateway, DHCP/DNS, connectivity, and portal evidence. Missing client-specific values are clearly marked, while relevant AP-wide values are labeled `(AP)`.
-- Saves one versioned `<ssid>_<bssid>_network.json` per BSSID beside PCAP and key artifacts. Writes are private, atomic, debounced, and merged across following sessions.
+- Saves versioned per-BSSID AP/client network metadata in the private AP SQLite
+  database. Writes are transactional, debounced, and merged across following
+  sessions.
 - Bounds clients, non-website facts, packet fields, options, and individual URL lengths. Website lists retain every deduplicated URL. It does not retain DHCP hostnames/client identifiers, HTTP bodies, cookies, credentials, fragments, or sensitive query values; detected sensitive values are saved as `REDACTED`.
 
 The analyzer only consumes packets seen during a live capture; it does not retrospectively analyze old PCAP files.
 
 ### Fake-Connect for open and WEP APs
 
-AP Focus shows **Fake-Connect** for confirmed open and WEP APs with a confirmed or sibling-derived SSID. After the normal active-action confirmation, it:
+The upper AP Focus action bar shows **Fake-Connect** for confirmed open and WEP
+APs with a confirmed or sibling-derived SSID. While its temporary client is
+connected, the same button changes to **Disconnect**. After the normal
+active-action confirmation, it:
 
 - Generates a randomized temporary client MAC.
 - Performs Open-System authentication and association. A yellow sibling-derived `SSID [guess]` can be attempted when the hidden AP has no exact name; only the SSID itself is transmitted, and the AP may reject it.
@@ -202,7 +294,7 @@ AP Focus shows **Fake-Connect** for confirmed open and WEP APs with a confirmed 
 - Sends bounded DHCP Discover probes, requests one offered lease, and releases it after the connectivity check. The same randomized client MAC is reused for that AP during the session to avoid accumulating unclaimed offers.
 - ARP-checks the default gateway, resolves `connectivitycheck.gstatic.com` through the advertised DNS server, and makes one bounded HTTP request to `http://connectivitycheck.gstatic.com/generate_204`. The active-action confirmation discloses this destination before anything is transmitted.
 - Classifies the expected HTTP 204 as confirmed Internet access, a redirect as an observed captive portal, an unexpected response as suspected interception, and timeouts as limited or inconclusive rather than automatically calling them portals.
-- Immediately merges DHCP and connectivity evidence into the AP and temporary-client NETWORK sections and atomically saves the per-BSSID JSON, even when PCAP recording is not active.
+- Immediately merges DHCP and connectivity evidence into the AP and temporary-client NETWORK sections and atomically saves it in the private AP database, even when PCAP recording is not active.
 - Keeps the temporary association active so the AP may emit otherwise-idle broadcast or client-directed traffic for the running capture.
 - Shows the temporary station in the right-side CLIENTS panel with a yellow `◈` and `Fake-Connect` label; it cannot be deauthenticated separately. While any client is connected, a steady cyan L-shaped line links the AP drawing to the center of the CLIENTS panel.
 - Changes the button to **Disconnect** while associated.
@@ -216,7 +308,8 @@ The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and 
 
 - `N` on a selected Wi-Fi AP, Wi-Fi client, or exact Bluetooth device opens New Target.
 - The dialog shows known details and offers Save & Continue, Save & Lock, and Cancel.
-- A target has an alias and can hold Wi-Fi APs, Wi-Fi clients, and Bluetooth devices together in one private `targets.json`.
+- A target has an alias and can hold Wi-Fi APs, Wi-Fi clients, and Bluetooth
+  devices together in the private targets SQLite database.
 - Seeing a target again fills details that were previously empty.
 - Auto-lock is optional and off by default. The first eligible observed target can lock automatically. A manual lock replaces the active lock.
 - An associated Wi-Fi client opens Client Focus. An unassociated client waits until an association is observed. The fork does not guess a channel.
@@ -225,28 +318,119 @@ The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and 
 
 ### Bluetooth and BLE
 
-- The Bluetooth scanner has filters, stable columns, activity counters, signal colours, sorting, reverse sorting, and CSV export.
-- Columns include manufacturer, likely category, advertised services, advertisement counts, intervals, identifiers, first seen, and last seen.
+- The Bluetooth scanner has filters, stable columns, activity counters, signal
+  colours, sorting, reverse sorting, and owner-private CSV, JSON, and JSONL
+  exports.
+- Device classification combines BLE GAP Appearance, Bluetooth Classic
+  Class-of-Device major/minor values, standard Classic and LE service profiles,
+  verified advertising protocols, and finally conservative name hints. Focus
+  reports the exact inferred type, broad category, evidence source, and
+  confidence; equally strong conflicting evidence is shown as ambiguous rather
+  than silently choosing one. Recognized protocol evidence includes iBeacon,
+  Apple Proximity Pairing and HomeKit, Google Fast Pair, Eddystone, AltBeacon,
+  BTHome, Ruuvi sensor formats 3/5, Xiaomi MiBeacon, Tile, Estimote, Nordic
+  Secure DFU/UART, SwitchBot, Airthings, Aranet, Find My, and Exposure
+  Notification.
+- The compact signature catalog is based on Bluetooth SIG Assigned Numbers,
+  BlueZ profile constants, and stable identifiers cross-checked against Home
+  Assistant's Apache-2.0 Bluetooth matcher database. It covers additional
+  Classic SDP profiles, current GATT services, and assigned Class-of-Device
+  minors without importing broad third-party name guesses. A protocol or DFU
+  mode is not promoted to a physical subtype unless its identifier proves it.
+- Exact manufacturer-frame signatures derived from reelyActive's MIT-licensed
+  [`advlib-ble-manufacturers`](https://github.com/reelyactive/advlib-ble-manufacturers)
+  recognize supported Efento, EnOcean, Wiliot,
+  Code Blue, Minew, ELA Innovation, HibouAir, Laird, MOKO/MOKOSmart, and
+  Espruino devices. Selected composite rules from the MIT-licensed
+  [AirHound](https://github.com/dougborg/AirHound) catalog recognize Raven
+  sensors, Find My-compatible trackers, and Flock devices only when the required
+  evidence agrees; weak OUI-only and unscoped byte patterns are not accepted.
+- On Linux, a valid BlueZ Device ID `Modalias` is resolved locally through
+  systemd `hwdb`. Available vendor/product names are searchable, shown in
+  Bluetooth Focus, exported, used as classification evidence, and retained in
+  SQLite. No hardware identifier is submitted to an online lookup service.
+- The GPLv3 [Theengs](https://github.com/theengs/decoder) catalog and CC-BY-SA
+  4.0 [CLUES](https://github.com/darkmentorllc/CLUES_Schema) dataset are useful
+  research references but are not bundled because their licenses cannot be
+  incorporated into this GPL-2.0-only distribution.
+- When privacy-limited platform scans expose only a company identifier, the row
+  shows an honest manufacturer-specific device label instead of generic
+  `Unknown`/`Other`; it does not invent a phone, computer, or headset subtype.
+- Direct USB HCI parses Appearance from advertising data. On Linux, the normal
+  Bleak scanner also consumes BlueZ `Appearance`, `Class`, and `AddressType`
+  properties through a guarded platform adapter; unsupported platforms retain
+  their available portable evidence.
+- Categories include audio, wearable, input, beacon, health, phone, computer,
+  network, sensor, display, appliance, and vehicle. Recognized subtypes include
+  earbuds, headsets, headphones, speakers, keyboards, mice, gamepads,
+  smartwatches, health sensors, and common smart-home devices.
+- Columns include manufacturer, likely type, advertised services, advertisement
+  counts, intervals, identifiers, first seen, and last seen.
 - Anonymous Apple privacy identifiers can appear as a clearly marked approximate group. Expanding that group does not treat rotating identifiers as one physical device.
 - An exact Bluetooth device can be connected read-only, without pairing.
-- Bluetooth Focus shows identity, manufacturer, likely category, services, characteristics, values, notifications, traffic, and exposure findings.
+- Bluetooth Focus shows identity, manufacturer, evidence-backed likely type,
+  services, characteristics, values, notifications, traffic, and exposure
+  findings.
 - Diagnostics report the active system adapter and scanner health.
 - A locked Bluetooth target reconnects within the configured reacquisition timeout.
-- Bleak does not provide raw BLE link-layer packets. Locked Bluetooth targets record advertisements and read-only GATT observations as rotating JSONL files. They are not written as PCAP.
+- Bleak does not provide raw BLE link-layer packets. Locked Bluetooth targets
+  record advertisements and read-only GATT observations in bounded SQLite
+  event captures. They are not written as PCAP.
 - Bluetooth Focus shows a blinking red `BLE EVENT RECORDING` indicator.
+- Exact Bluetooth/BT/BLE identifiers are persisted in a private SQLite history.
+  A device must be observed live before its prior name, services, manufacturer
+  IDs, radio modes, transmit power, or class can enrich the scanner row;
+  historical devices never appear as phantom rows.
+- The same SQLite row stores the latest structured classification
+  (category, exact type, evidence, confidence, ambiguity), signal window,
+  advertisement activity, baseline state, address type, Appearance, profile
+  fingerprint, payload fingerprint, normalized protocol evidence, BlueZ
+  modalias, and locally resolved hardware vendor/product/source. Dynamic
+  summaries are debounced to at most one database update per device every five
+  seconds; schema v7 migrates existing Bluetooth databases in place.
 
 ### Hidden SSID history
 
-- Every confirmed BSSID-to-SSID observation is stored in private `hidden_ssids.json`, including APs first seen with a visible name.
-- Directed client probes are stored in a separate `client_probes` section of
-  the same file, keyed by client MAC and SSID with channels, count, and
-  first/last observation times. They are never treated as confirmed
-  BSSID-to-SSID mappings because a probe does not identify an AP.
+- Every confirmed BSSID-to-SSID observation is stored in a private SQLite
+  table, including APs first seen with a visible name.
+- Directed client probes are stored only when the STA uses a globally assigned
+  unicast MAC whose OUI resolves to a manufacturer. They are keyed by client
+  MAC and SSID with channels, count, and first/last observation times.
+  Randomized, locally administered, and unknown-OUI probe MACs remain visible
+  only in the current session and do not fill the database. Probes are never
+  treated as confirmed BSSID-to-SSID mappings because they do not identify an
+  AP.
 - Restored probes are marked `[history]` until that client emits them again.
 - When a network first appears hidden and its SSID is later revealed, the reveal method is retained.
 - A later hidden observation of that exact BSSID is labelled with the historical SSID.
 - Historical, unconfirmed names use a yellow `SSID [history]` label until they are observed again.
 - Each record stores the reveal method and the first and last reveal times.
+
+### Persistent AP knowledge
+
+WiFiT3 keeps a private, versioned SQLite history keyed by BSSID. When that
+BSSID is observed in a later scan, the live row is automatically enriched with
+its known SSID, vendor/model evidence and provenance, security, country, radio
+capabilities, Enterprise profile, and same-radio relationships. Current packet
+evidence always wins over history, and saved APs never appear as scanner rows
+until they are observed live again.
+
+Exact AP-to-client association evidence is stored bidirectionally. When either
+endpoint is seen again, AP Focus can recover prior clients and the client views
+can recover prior APs. Directed probes are correlated only by SSID and remain
+visually distinct from exact association history; only manufacturer-resolved
+probe MACs are retained.
+
+There is no automatic migration from legacy JSON or JSONL stores. Existing
+files are left untouched and ignored, while the new databases start empty.
+PCAP, key, report, scan-export, and Wi-Fi association-profile artifacts remain
+ordinary files; historical PCAPs are not reanalyzed.
+
+The startup device-selection footer has the only history-deletion action:
+`C · Clear-DB`. It can clear Wi-Fi history, Bluetooth/BLE history, or both, and
+requires typing exactly `DELETE NOW!`. The selected medium's observations,
+event history, and saved targets are deleted. PCAPs, keys, reports, and scan
+exports are retained.
 
 ### Preferences and diagnostics
 
@@ -274,15 +458,21 @@ Automatic update checking is off until it is enabled. When it is on, startup sen
 | File | Location | Contents |
 |---|---|---|
 | `config.toml` | OS user-config directory for `wifit3` | Preferences |
-| `targets.json` | Same config directory | Aliases and observed target metadata |
-| `hidden_ssids.json` | Same config directory | Historical BSSID-to-SSID mappings and client probe observations |
+| `wifi_profiles.json` | Same config directory | Bounded reusable secure-beacon association profiles |
+| `targets.sqlite3` | OS user-data directory for `wifit3` | Wi-Fi and Bluetooth target aliases, details, lock state, and priority |
+| `hidden_ssids.sqlite3` | Same user-data directory | Historical BSSID-to-SSID mappings and directed client probes |
+| `enterprise_sessions.sqlite3` | Same user-data directory | Bounded Enterprise profiles, pseudonymized sessions, certificates, and probe history |
+| `ap_history.sqlite3` | Same user-data directory | Bounded AP identity, radio, security, AP/client associations, relationships, and AP/client network metadata |
+| `bluetooth_history.sqlite3` | Same user-data directory | Bluetooth/BT/BLE identity history and bounded advertisement/GATT event captures |
 | `oui.txt` | OS user-cache directory for `wifit3` | IEEE manufacturer database |
-| `captures/` | Path set in Preferences, default `captures` | Handshakes, focused PCAP files, and other Vault artifacts |
-| `captures/<ssid>_<bssid>_network.json` | Beside the AP's capture artifacts | Versioned passive AP/client network metadata |
-| `captures/scan_exports/` | Under the capture directory | Wi-Fi CSV/JSON and Bluetooth CSV snapshots |
-| `captures/bluetooth_targets/target_events_*.jsonl` | Under the capture directory | Bluetooth advertisement and GATT observations |
+| `captures/` | Path set in Preferences, default `captures` | Handshakes, focused PCAP files, sanitized Enterprise reports, and other Vault artifacts |
+| `captures/scan_exports/` | Under the capture directory | Wi-Fi CSV/JSON and Bluetooth CSV/JSON/JSONL snapshots |
 
-Configuration JSON is written with private file permissions where the operating system supports them. These artifacts are excluded by `.gitignore`. Do not publish the capture directory.
+Sensitive files are written with owner-only permissions (`0600`) and private
+directories use `0700` where the operating system supports POSIX modes. This
+includes credentials, Hashcat material, PCAP, Enterprise reports, scan
+exports, WPS state, Vault job state, and capture archives. These artifacts are
+excluded by `.gitignore`. Do not publish the capture directory.
 
 ## Screenshots
 
@@ -402,7 +592,13 @@ Architecture, driver porting, and USB trace replay are documented in [docs/porti
 
 ## Validation
 
-Version 0.3.4 is covered by the upstream test suite plus tests for Bluetooth, targets, PCAP rotation, hidden SSID history, infrastructure grouping, and passive Enterprise analysis.
+The project is covered by the upstream test suite plus tests for Bluetooth,
+targets, PCAP rotation, hidden SSID history, infrastructure grouping,
+Enterprise EAP/TLS/X.509 parsing, session persistence, infrastructure
+correlation, active outer-EAP probing, Vault reports, and private file modes.
+The current full suite contains more than 3,100 passing tests, in addition to
+explicit skips, deselections, and expected failures for unavailable or
+platform-specific facilities.
 
 ```bash
 uv run pytest
@@ -424,6 +620,11 @@ The original development by [derv82](https://github.com/derv82) is what made thi
 
 **Firmware:** Vendor firmware blobs loaded onto adapters are redistributed verbatim under their manufacturers' licenses. See [docs/FIRMWARE.md](docs/FIRMWARE.md).
 
-**Use only on networks and equipment you own or are explicitly authorised to audit.** wifit3 talks to USB hardware registers without kernel guardrails. PCAP and JSONL files can contain traffic, identifiers, EAP material, service values, and network metadata. Protect the capture directory and do not publish it.
+**Use only on networks and equipment you own or are explicitly authorised to audit.** wifit3 talks to USB hardware registers without kernel guardrails. PCAP files and private databases can contain traffic-derived identifiers, EAP material, service values, and network metadata. Protect both the capture and user-data directories and do not publish them.
 
-Approximate Bluetooth groups and same-SSID Wi-Fi groups are presentation aids. They are not proof of physical identity or ownership. Passive Enterprise findings describe observed evidence only. They cannot prove the security of encrypted inner authentication or of client certificate validation.
+Approximate Bluetooth groups and same-SSID or certificate-correlated Wi-Fi
+groups are presentation aids. They are not proof of physical identity or
+ownership. Enterprise findings describe observed or explicitly probed outer
+EAP evidence only. They cannot prove the security of encrypted inner
+authentication, cryptographic certificate trust, or client certificate
+validation.

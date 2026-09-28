@@ -14,12 +14,12 @@ from textual.widgets import DataTable, Footer, Header, Input, RichLog, Select
 from textual.widgets._header import HeaderClock, HeaderIcon, HeaderTitle
 
 from wifit3.bluetooth.assigned_numbers import manufacturer_label, service_label, service_name
-from wifit3.bluetooth.classification import device_category
+from wifit3.bluetooth.classification import device_classification
 from wifit3.models import BluetoothDevice
 from wifit3.persist.config import Config
 from wifit3.persist.targets import SavedTarget, TargetStoreError
 from wifit3.targeting import TargetCandidate, bluetooth_candidate
-from wifit3.ui.bluetooth_export import export_bluetooth_snapshot
+from wifit3.ui.bluetooth_export import export_bluetooth_bundle
 from wifit3.ui.signal_bar import dbm_style
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
 from wifit3.ui.screens.new_target import NewTargetModal, NewTargetResult
@@ -110,7 +110,7 @@ class BluetoothScannerView(Screen):
         Binding("s", "cycle_sort", "Sort Col"),
         Binding("o", "toggle_sort_dir", "Sort Asc/Desc"),
         Binding("n", "new_target", "New Target"),
-        Binding("x", "export_scan", "Export CSV"),
+        Binding("x", "export_scan", "Export"),
         Binding("f", "focus_filter", "Filter"),
         Binding("l", "toggle_log", "Toggle Log"),
     ]
@@ -137,7 +137,7 @@ class BluetoothScannerView(Screen):
     _COLUMN_WIDTHS = {
         "name": 22,
         "rssi": 8,
-        "category": 16,
+        "category": 30,
         "advertisements": 8,
         "interval": 10,
         "first_seen": 10,
@@ -174,7 +174,8 @@ class BluetoothScannerView(Screen):
                 yield Select(
                     [(category, category) for category in (
                         "All", "Audio", "Wearable", "Input", "Beacon", "Health",
-                        "Phone", "Computer", "Other", "Unknown",
+                        "Phone", "Computer", "Network", "Sensor", "Display",
+                        "Appliance", "Vehicle", "Ambiguous", "Other", "Unknown",
                     )],
                     value="All", allow_blank=False, compact=True,
                     id="bluetooth-filter-type",
@@ -343,7 +344,7 @@ class BluetoothScannerView(Screen):
         first_age = max(0.0, now - device.first_seen)
         is_stale = age > STALE_DURATION_S
         manufacturer = manufacturer_label(device.manufacturer_ids, device.identifier)
-        category = device_category(device)
+        classification = device_classification(device)
         all_services = sorted(set(device.service_uuids) | set(device.service_data_uuids))
         service_names = [service_name(uuid) for uuid in all_services]
         last_seen = "now" if age < 1 else f"{int(age)}s ago"
@@ -359,6 +360,10 @@ class BluetoothScannerView(Screen):
             name_cell.append("‹unnamed›", style="dim italic")
         else:
             name_cell.append(_clip(name, 22), style="bold")
+        if device.baseline_status == "new":
+            name_cell = Text("+ ", style="bold cyan") + name_cell
+        elif device.baseline_status == "changed":
+            name_cell = Text("Δ ", style="bold yellow") + name_cell
         advertisements_cell = Text(
             str(device.advertisement_count), style="bold", justify="right", no_wrap=True,
         )
@@ -398,7 +403,14 @@ class BluetoothScannerView(Screen):
         cells = [
             name_cell,
             signal_cell,
-            Text(f"{device.radio_label} {category}", style="cyan", no_wrap=True),
+            Text(
+                _clip(
+                    f"{device.radio_label} {classification.detail}",
+                    self._COLUMN_WIDTHS["category"],
+                ),
+                style="cyan",
+                no_wrap=True,
+            ),
             advertisements_cell,
             interval_cell,
             first_seen_cell,
@@ -425,7 +437,8 @@ class BluetoothScannerView(Screen):
     def _matches_filter(self, device: BluetoothDevice) -> bool:
         if device.rssi < self._min_signal:
             return False
-        category = device_category(device)
+        classification = device_classification(device)
+        category = classification.category
         if self._category != "All" and category != self._category:
             return False
         services = set(device.service_uuids) | set(device.service_data_uuids)
@@ -434,6 +447,11 @@ class BluetoothScannerView(Screen):
             device.identifier,
             manufacturer_label(device.manufacturer_ids, device.identifier),
             category,
+            classification.detail,
+            classification.source,
+            device.hardware_vendor,
+            device.hardware_product,
+            device.modalias,
             device.radio_label,
             *(service_label(uuid) for uuid in services),
         )).casefold()
@@ -450,7 +468,8 @@ class BluetoothScannerView(Screen):
         log = self.query_one("#bluetooth-log", RichLog)
         log.clear()
         manufacturer = manufacturer_label(device.manufacturer_ids, device.identifier) or "Unknown"
-        category = device_category(device)
+        classification = device_classification(device)
+        category = classification.category
         services = sorted(set(device.service_uuids) | set(device.service_data_uuids))
         service_details = ", ".join(service_label(uuid) for uuid in services) or "None advertised"
         tx_power = f"{device.tx_power} dBm" if device.tx_power is not None else "not advertised"
@@ -476,7 +495,38 @@ class BluetoothScannerView(Screen):
         elif self._apple_expanded and _is_anonymous_apple(device):
             log.write("[dim]Expanded Apple privacy identifier; press Enter to collapse the group.[/dim]")
         log.write(f"Manufacturer: [bold]{manufacturer}[/bold]")
-        log.write(f"Probable type: [bold cyan]{category}[/bold cyan] [dim](advertisement inference)[/dim]")
+        if device.hardware_product or device.hardware_vendor:
+            hardware = " ".join(
+                part
+                for part in (device.hardware_vendor, device.hardware_product)
+                if part
+            )
+            log.write(
+                f"Hardware identity: [bold]{escape(hardware)}[/bold]  "
+                f"Source: {escape(device.hardware_source or 'BlueZ Device ID')}"
+            )
+        if device.modalias:
+            log.write(f"BlueZ modalias: {escape(device.modalias)}")
+        log.write(
+            f"Probable type: [bold cyan]{escape(classification.detail)}[/bold cyan]  "
+            f"Category: [bold]{category}[/bold]  "
+            f"Evidence: {escape(classification.source)} ({classification.confidence})"
+        )
+        if classification.ambiguous:
+            log.write(
+                "[bold yellow]Ambiguous classification:[/bold yellow] equally strong "
+                "advertised evidence disagrees."
+            )
+        baseline_labels = {
+            "new": "[bold cyan]new identifier[/bold cyan]",
+            "returning": "[green]seen previously[/green]",
+            "changed": "[bold yellow]advertising profile changed[/bold yellow]",
+            "unavailable": "[dim]history unavailable[/dim]",
+        }
+        log.write(
+            f"Baseline: {baseline_labels.get(device.baseline_status, escape(device.baseline_status))}  "
+            f"Address type: [bold]{escape(device.address_type)}[/bold]"
+        )
         if device.similar_identifier_count > 1 and not device.approximate_group:
             log.write(
                 f"[yellow]Privacy history:[/yellow] {device.similar_identifier_count} identifiers "
@@ -486,13 +536,26 @@ class BluetoothScannerView(Screen):
             f"Signal: [{dbm_style(device.rssi)}]{device.rssi} dBm[/]  TX: {tx_power}  "
             f"Observations: {device.advertisement_count}  Latest gap: {interval}"
         )
+        if device.rssi_average is not None:
+            log.write(
+                f"Signal window: average [bold]{device.rssi_average:.1f} dBm[/bold]  "
+                f"range {device.rssi_min}…{device.rssi_max} dBm  "
+                f"trend [bold]{device.rssi_trend}[/bold]  samples {device.rssi_samples}"
+            )
         log.write(
             f"Observed for: {duration:.1f}s  Discovery payload: "
             f"manufacturer {device.manufacturer_data_bytes} B, service {device.service_data_bytes} B"
         )
         if device.class_of_device is not None:
             log.write(f"Classic class of device: [bold]0x{device.class_of_device:06x}[/bold]")
+        if device.appearance is not None:
+            log.write(f"BLE Appearance: [bold]0x{device.appearance:04x}[/bold]")
         log.write(f"Advertised services: {service_details}")
+        if device.payload_fingerprint:
+            log.write(
+                f"Payload fingerprint: [dim]{device.payload_fingerprint}[/dim]  "
+                f"Profile: [dim]{device.profile_fingerprint}[/dim]"
+            )
         if device.is_connectable_with_bleak:
             log.write("[dim]A complete GATT service list requires connecting to the device.[/dim]")
         else:
@@ -683,11 +746,15 @@ class BluetoothScannerView(Screen):
             self.notify("No Bluetooth devices to export", severity="warning")
             return
         try:
-            path = export_bluetooth_snapshot(devices)
+            paths = export_bluetooth_bundle(devices)
         except OSError as exc:
             self.notify(str(exc), title="Export failed", severity="error")
             return
-        self.notify(path.name, title="Bluetooth CSV exported", timeout=6)
+        self.notify(
+            ", ".join(path.suffix.lstrip(".").upper() for path in paths),
+            title="Bluetooth scan exported",
+            timeout=6,
+        )
 
     def action_focus_filter(self) -> None:
         self.query_one("#bluetooth-filter-text", Input).focus()

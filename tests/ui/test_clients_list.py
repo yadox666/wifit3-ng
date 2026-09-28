@@ -13,10 +13,19 @@ _MAC = "18:7f:88:aa:bb:cc"
 _RING = Fingerprint("🔔", "Ring device")
 
 
-def _client(mac=_MAC, power=-50, packets=3, fingerprint=None, is_fake=False):
+def _client(
+    mac=_MAC,
+    power=-50,
+    packets=3,
+    fingerprint=None,
+    is_fake=False,
+    historical=False,
+):
     return SimpleNamespace(
         mac=mac, signal=power, packets=packets,
         fingerprint=fingerprint, is_fake=is_fake,
+        historical=historical,
+        history_reasons={"associated"} if historical else set(),
     )
 
 
@@ -66,6 +75,17 @@ def test_fake_client_has_distinct_badge_label_and_no_deauth():
     assert w._fp_label.tooltip == "Temporary fake client created by Fake-Connect"
     assert str(w._mfr_label.content) == "Fake-Connect"
     assert str(w._pwr_label.content) == "--"
+    assert w._deauth.disabled is True
+
+
+def test_historical_client_is_dimmed_and_cannot_be_deauthenticated():
+    w = _composed(_client(historical=True))
+
+    assert w.has_class("historical-client")
+    assert "◌" in str(w._fp_label.content)
+    assert "Historical client" in w._mac_label.tooltip
+    assert str(w._pwr_label.content) == "--"
+    assert str(w._pkts_label.content) == "--"
     assert w._deauth.disabled is True
 
 

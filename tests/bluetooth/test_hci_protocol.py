@@ -44,7 +44,11 @@ def test_extended_inquiry_result_is_marked_classic():
 
 
 def test_le_advertising_report_is_marked_ble():
-    advertising = _ad(b"\x09Sensor", b"\x03\x0f\x18")
+    advertising = _ad(
+        b"\x09Sensor",
+        b"\x03\x0f\x18",
+        b"\x19\x43\x09",
+    )
     parameters = (
         bytes([LE_ADVERTISING_REPORT, 1, 0, 1])
         + bytes.fromhex("665544332211")
@@ -60,3 +64,36 @@ def test_le_advertising_report_is_marked_ble():
     assert observed[0].radio_type == "BLE"
     assert observed[0].name == "Sensor"
     assert observed[0].rssi == -60
+    assert observed[0].address_type == "non-resolvable-private"
+    assert observed[0].appearance == 0x0943
+
+
+def test_le_report_classifies_resolvable_private_address():
+    parameters = (
+        bytes([LE_ADVERTISING_REPORT, 1, 0, 1])
+        + bytes.fromhex("665544332240")
+        + b"\x00"
+        + bytes([0xC4])
+    )
+
+    observed = parse_discovery_event(EVENT_LE_META, parameters)
+
+    assert observed[0].identifier == "40:22:33:44:55:66"
+    assert observed[0].address_type == "resolvable-private"
+
+
+def test_le_report_recognizes_apple_proximity_pairing_protocol():
+    advertising = _ad(b"\xff\x4c\x00\x07\x19\x01\x0e\x20")
+    parameters = (
+        bytes([LE_ADVERTISING_REPORT, 1, 0, 1])
+        + bytes.fromhex("665544332240")
+        + bytes([len(advertising)])
+        + advertising
+        + bytes([0xC4])
+    )
+
+    observed = parse_discovery_event(EVENT_LE_META, parameters)[0]
+
+    assert observed.protocol_category == "Audio"
+    assert observed.protocol_type == "Apple Proximity Pairing audio"
+    assert observed.protocol_confidence == "high"

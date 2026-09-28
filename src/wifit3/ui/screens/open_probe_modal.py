@@ -67,6 +67,7 @@ class OpenProbeSsidModal(ModalScreen[tuple[str, int, str] | None]):
                 [
                     ("OPEN (association and DHCP observation)", "OPEN"),
                     ("WPA2-PSK (capture M1/M2 material to Vault)", "WPA2"),
+                    ("OPEN + WPA2 (dual honeypot, auto radios)", "BOTH"),
                 ],
                 value="OPEN",
                 allow_blank=False,
@@ -94,7 +95,7 @@ class OpenProbeSsidModal(ModalScreen[tuple[str, int, str] | None]):
                 if (
                     isinstance(ssid, str)
                     and isinstance(duration, int)
-                    and encryption in ("OPEN", "WPA2")
+                    and encryption in ("OPEN", "WPA2", "BOTH")
                 )
                 else None
             )

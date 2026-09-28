@@ -34,7 +34,7 @@ class EnterpriseFinding:
 
 
 def is_enterprise_ap(ap) -> bool:
-    return any("EAP" in akm or "SUITE-B" in akm for akm in ap.akms)
+    return any("EAP" in akm or "SUITE-B" in akm for akm in getattr(ap, "akms", ()))
 
 
 def enterprise_findings(ap) -> list[EnterpriseFinding]:
@@ -95,7 +95,8 @@ def enterprise_findings(ap) -> list[EnterpriseFinding]:
             "high",
         ))
     now = time.time()
-    for certificate in ap.enterprise.certificates.values():
+    certificates = list(ap.enterprise.certificates.values())
+    for certificate in certificates:
         name = certificate.fingerprint[:12]
         if certificate.not_after is not None and certificate.not_after < now:
             findings.append(EnterpriseFinding(
@@ -124,6 +125,65 @@ def enterprise_findings(ap) -> list[EnterpriseFinding]:
                 f"Observed certificate: {name}",
                 "high",
             ))
+        if (
+            certificate.public_key_algorithm == "EC"
+            and certificate.public_key_bits is not None
+            and certificate.public_key_bits < 256
+        ):
+            findings.append(EnterpriseFinding(
+                2,
+                f"Short EC certificate key ({certificate.public_key_bits} bits)",
+                f"Observed certificate: {name}",
+                "high",
+            ))
+    if certificates:
+        leaf = certificates[0]
+        leaf_name = leaf.fingerprint[:12]
+        if leaf.extended_key_usage and "serverAuth" not in leaf.extended_key_usage:
+            findings.append(EnterpriseFinding(
+                3,
+                "RADIUS leaf certificate lacks serverAuth EKU",
+                f"Observed leaf certificate: {leaf_name}",
+                "high",
+            ))
+        if leaf.is_ca:
+            findings.append(EnterpriseFinding(
+                2,
+                "RADIUS leaf certificate is marked as a CA",
+                f"Observed leaf certificate: {leaf_name}",
+                "high",
+            ))
+        if leaf.subject and not leaf.san_dns:
+            findings.append(EnterpriseFinding(
+                1,
+                "RADIUS leaf certificate has no DNS SAN",
+                f"Observed leaf certificate: {leaf_name}",
+                "medium",
+            ))
+        subjects = {
+            certificate.subject
+            for certificate in certificates
+            if certificate.subject
+        }
+        if (
+            leaf.issuer
+            and leaf.issuer != leaf.subject
+            and leaf.issuer not in subjects
+        ):
+            findings.append(EnterpriseFinding(
+                1,
+                "RADIUS certificate chain appears incomplete",
+                f"Leaf issuer not present in observed chain: {leaf.issuer}",
+                "medium",
+            ))
+        for child, parent in zip(certificates, certificates[1:]):
+            if child.issuer and parent.subject and child.issuer != parent.subject:
+                findings.append(EnterpriseFinding(
+                    2,
+                    "RADIUS certificate chain issuer mismatch",
+                    f"{child.fingerprint[:12]} issuer does not match {parent.fingerprint[:12]}",
+                    "high",
+                ))
     return sorted(findings, key=lambda finding: (-finding.severity, finding.label))
 
 

@@ -44,6 +44,30 @@ def _exposure_cell(finding: ExposureFinding | None) -> Text | str:
     return Text(label, style=style)
 
 
+def gatt_ascii(value_hex: str) -> str | None:
+    """Printable ASCII when every hex byte converts, ignoring trailing NULs."""
+    parts = value_hex.split(" ")
+    if not parts or any(len(part) != 2 for part in parts):
+        return None
+    try:
+        raw = bytes(int(part, 16) for part in parts)
+    except ValueError:
+        return None
+    if raw.hex(" ") != value_hex:
+        return None
+    text = raw.rstrip(b"\x00")
+    if not text or any(byte < 0x20 or byte > 0x7E for byte in text):
+        return None
+    return text.decode("ascii")
+
+
+def gatt_display_value(value: str, value_hex: str, *, ascii_mode: bool) -> str:
+    """Characteristic text, using ASCII only for an undecoded printable dump."""
+    if not ascii_mode or not value_hex or value != value_hex:
+        return value
+    return gatt_ascii(value_hex) or value
+
+
 def _exposure_detail(finding: ExposureFinding | None) -> str:
     if finding is None:
         return "[dim]none observed[/dim]"
@@ -270,6 +294,7 @@ class BluetoothFocusView(Screen):
     BINDINGS = [
         Binding("escape", "go_back", "Back"),
         Binding("r", "read_selected", "Read selected"),
+        Binding("a", "toggle_ascii", "ASCII"),
     ]
 
     CSS = """
@@ -302,6 +327,7 @@ class BluetoothFocusView(Screen):
         super().__init__()
         self._table_signature = None
         self._reconnecting = False
+        self._show_ascii = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -321,7 +347,13 @@ class BluetoothFocusView(Screen):
             yield device
         with Horizontal(id="bt-bottom"):
             table = DataTable(cursor_type="row", id="gatt-table")
-            table.add_columns("SERVICE", "CHARACTERISTIC", "PROPERTIES", "VALUE", "EXPOSURE")
+            table.add_columns(
+                ("SERVICE", "service"),
+                ("CHARACTERISTIC", "characteristic"),
+                ("PROPERTIES", "properties"),
+                ("VALUE", "value"),
+                ("EXPOSURE", "exposure"),
+            )
             yield table
             detail = Static("", id="gatt-detail")
             detail.border_title = "CHARACTERISTIC"
@@ -468,7 +500,7 @@ class BluetoothFocusView(Screen):
         for service in inspection.services:
             for characteristic in service.characteristics:
                 if characteristic.value:
-                    value = Text(characteristic.value)
+                    value = Text(self._shown_value(characteristic))
                 elif characteristic.read_error:
                     value = Text(characteristic.read_error, style="red")
                 else:
@@ -498,7 +530,7 @@ class BluetoothFocusView(Screen):
             for characteristic in service.characteristics:
                 if str(characteristic.handle) != handle:
                     continue
-                value = escape(characteristic.value) if characteristic.value else "[dim]not read[/dim]"
+                value = self._value_markup(characteristic)
                 self.query_one("#gatt-detail", Static).update(
                     f"[bold]{escape(characteristic.name)}[/bold]\n"
                     f"[dim]{escape(characteristic.uuid)}[/dim]\n\n"
@@ -520,6 +552,48 @@ class BluetoothFocusView(Screen):
 
     def action_read_selected(self) -> None:
         self.read_selected()
+
+    def action_toggle_ascii(self) -> None:
+        self._show_ascii = not self._show_ascii
+        detail = self.query_one("#gatt-detail", Static)
+        detail.border_title = "CHARACTERISTIC"
+        inspection = self._inspection()
+        table = self.query_one("#gatt-table", DataTable)
+        if inspection is not None:
+            for service in inspection.services:
+                for characteristic in service.characteristics:
+                    if not characteristic.value:
+                        continue
+                    table.update_cell(
+                        str(characteristic.handle),
+                        "value",
+                        Text(self._shown_value(characteristic)),
+                    )
+        if table.row_count:
+            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+            self._show_characteristic(str(row_key.value))
+
+    def _shown_value(self, characteristic) -> str:
+        return gatt_display_value(
+            characteristic.value,
+            characteristic.value_hex,
+            ascii_mode=self._show_ascii,
+        )
+
+    def _value_markup(self, characteristic) -> str:
+        if not characteristic.value:
+            return "[dim]not read[/dim]"
+        ascii_value = (
+            gatt_ascii(characteristic.value_hex)
+            if characteristic.value == characteristic.value_hex
+            else None
+        )
+        if ascii_value is None:
+            return escape(characteristic.value)
+        return (
+            f"[dim]ASCII[/dim]\n{escape(ascii_value)}\n\n"
+            f"[dim]Hex[/dim]\n{escape(characteristic.value)}"
+        )
 
     @work(exclusive=True, group="target-reconnect")
     async def reconnect_target(self, device) -> None:

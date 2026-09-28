@@ -21,6 +21,10 @@ from wifit3.ui.vault.global_tracker import GlobalJobTracker
 from wifit3.bluetooth import BluetoothScanError
 from wifit3.device.manager import Status
 from wifit3.id import oui_db
+from wifit3.ui.screens.clear_history import (
+    ClearHistoryModal,
+    HistoryClearSelection,
+)
 
 if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
@@ -131,6 +135,7 @@ class SplashView(Screen):
         ("b", "start_bluetooth", "BLE"),
         ("d", "start_usb_bluetooth", "BT + BLE"),
         ("u", "update_oui", "Update OUI DB"),
+        Binding("c", "clear_db", "Clear-DB"),
         Binding("enter", "enter", "Start", priority=True),
     ]
 
@@ -176,7 +181,7 @@ class SplashView(Screen):
                         variant="primary",
                     )
             with Center():
-                # Reverses wifit3's driver/access changes for the highlighted card.
+                # Reverses driver/access changes for the highlighted card.
                 yield Button("Uninstall", id="uninstall-btn", variant="error")
         yield GlobalJobTracker()
         yield Footer()
@@ -397,6 +402,59 @@ class SplashView(Screen):
             if dev is not None:
                 self.perform_uninstall(dev)
 
+    def action_clear_db(self) -> None:
+        if self.app.history_deletion_available:
+            self.app.push_screen(ClearHistoryModal(), self._clear_history)
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action == "clear_db" and not self.app.history_deletion_available:
+            return None
+        return True
+
+    def _clear_history(self, selection: HistoryClearSelection | None) -> None:
+        if selection is None:
+            return
+        cleared: list[str] = []
+        errors: list[str] = []
+        if selection.wifi:
+            for label, action in (
+                ("Wi-Fi database", self.app.ap_history_store.clear),
+                ("hidden SSIDs", self.app.hidden_ssid_store.clear),
+                ("association profiles", self.app.wifi_profile_store.clear),
+                ("Enterprise history", self.app.enterprise_session_store.clear),
+                (
+                    "Wi-Fi saved targets",
+                    lambda: self.app.target_store.clear_medium("wifi"),
+                ),
+            ):
+                try:
+                    action()
+                except Exception as exc:
+                    errors.append(f"{label}: {exc}")
+            if not errors:
+                cleared.append("Wi-Fi")
+        if selection.bluetooth:
+            bluetooth_errors = len(errors)
+            try:
+                self.app.bluetooth_history_store.clear()
+                self.app.bluetooth_manager.forget_devices()
+                self.app.target_store.clear_medium("bluetooth")
+            except Exception as exc:
+                errors.append(f"Bluetooth / BLE database: {exc}")
+            if len(errors) == bluetooth_errors:
+                cleared.append("Bluetooth / BLE")
+        if cleared:
+            self.notify(
+                f"Cleared {' and '.join(cleared)} history. Capture artifacts were kept.",
+                title="History databases",
+            )
+        if errors:
+            self.notify(
+                "\n".join(errors),
+                title="History deletion incomplete",
+                severity="error",
+            )
+
     def _enter_busy(self) -> None:
         self._is_initializing = True
         self.app.device_watch.pause()     # freeze the device watch so the list can't churn mid-bring-up
@@ -449,6 +507,7 @@ class SplashView(Screen):
                 self.notify(f"{len(failures)} card(s) failed to start.", severity="warning")
             self.app.locked_target_id = None
             self.app.auto_lock_armed = True
+            self._disable_history_deletion()
             self.app.switch_screen("scanner")
         elif failures:
             self._show_error(failures[-1])
@@ -476,6 +535,7 @@ class SplashView(Screen):
         self._exit_busy()
         self.app.locked_target_id = None
         self.app.auto_lock_armed = True
+        self._disable_history_deletion()
         self.app.switch_screen("bluetooth")
 
     @work(exclusive=True)
@@ -491,7 +551,12 @@ class SplashView(Screen):
         self._exit_busy()
         self.app.locked_target_id = None
         self.app.auto_lock_armed = True
+        self._disable_history_deletion()
         self.app.switch_screen("bluetooth")
+
+    def _disable_history_deletion(self) -> None:
+        """The destructive menu exists only before the first scanner starts."""
+        self.app.history_deletion_available = False
 
     @work(exclusive=True)
     async def perform_uninstall(self, device_id) -> None:

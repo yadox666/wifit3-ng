@@ -10,6 +10,7 @@ from pathlib import Path
 from platformdirs import user_config_dir
 
 from wifit3.dot11.ie import iter_information_elements
+from wifit3.persist.private_files import ensure_private_directory
 
 WIFI_PROFILES_PATH = (
     Path(user_config_dir("wifit3", appauthor=False)) / "wifi_profiles.json"
@@ -138,7 +139,7 @@ class WifiProfileStore:
     def save(self) -> None:
         if not self._dirty and self.path.exists():
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.path.parent)
         temporary = self.path.with_suffix(".tmp")
         payload = {
             "version": WIFI_PROFILES_VERSION,
@@ -166,6 +167,18 @@ class WifiProfileStore:
             ) from exc
         self._last_save = time.time()
         self._dirty = False
+
+    def clear(self) -> None:
+        """Forget persisted association profiles."""
+        self.records.clear()
+        self._dirty = False
+        self._last_save = 0.0
+        try:
+            self.path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise WifiProfileStoreError(
+                f"Could not clear Wi-Fi profiles: {exc}",
+            ) from exc
 
 
 def _canonical_ies(beacon: bytes) -> bytes:

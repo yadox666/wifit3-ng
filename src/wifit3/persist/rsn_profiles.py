@@ -59,6 +59,8 @@ def _profile_from_record(
 ) -> ScanRsnProfile | None:
     if not isinstance(raw, dict) or raw.get("ssid") != ssid:
         return None
+    if raw.get("is_own_fake"):
+        return None  # never clone our own synthetic honeypot AP back as evidence
     encoded = raw.get("rsn_ie_hex")
     try:
         rsn_ie = bytes.fromhex(encoded) if isinstance(encoded, str) else b""

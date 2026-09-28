@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -22,7 +23,14 @@ from wifit3.persist.common import (
     safe_ssid,
 )
 from wifit3.persist.config import Config
+from wifit3.persist.enterprise_sessions import enterprise_profile_payload
 from wifit3.persist.pcap import write_pcap
+from wifit3.persist.private_files import (
+    ensure_private_directory,
+    open_private_text_append,
+    write_private_text,
+)
+from wifit3.wlan.enterprise_risk import enterprise_findings
 
 
 @dataclass(frozen=True)
@@ -30,6 +38,45 @@ class SaveResult:
     """Outcome of a save_*; was_new is False when a dedupe hit returned an existing path."""
     path: Path
     was_new: bool
+
+
+def save_enterprise_report(ap: AccessPoint) -> SaveResult | None:
+    """Save a sanitized Enterprise assessment snapshot for Vault review."""
+    if ap.enterprise is None:
+        return None
+    captures_dir = Path(Config.captures_dir)
+    ensure_private_directory(captures_dir)
+    path = _fresh_path(
+        captures_dir,
+        ap.ssid,
+        ap.bssid,
+        "_enterprise_report.json",
+    )
+    payload = {
+        "schema_version": 1,
+        "generated_at": int(time.time()),
+        "network": {
+            "ssid": ap.ssid,
+            "bssid": ap.bssid,
+            "channel": ap.channel,
+            "encryption": ap.encryption,
+            "akms": sorted(ap.akms),
+            "pairwise_ciphers": sorted(ap.pairwise_ciphers),
+            "group_cipher": ap.group_cipher,
+            "pmf_capable": ap.pmf_capable,
+            "pmf_required": ap.pmf_required,
+        },
+        "enterprise": enterprise_profile_payload(ap.enterprise),
+        "findings": [asdict(finding) for finding in enterprise_findings(ap)],
+        "privacy": {
+            "raw_client_identifiers": False,
+            "identities": False,
+            "credentials": False,
+            "packet_payloads": False,
+        },
+    }
+    write_private_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return SaveResult(path=path, was_new=True)
 
 
 def _fresh_path(captures_dir: Path, ssid: str | None, bssid: str, suffix: str) -> Path:
@@ -136,7 +183,7 @@ class HcFiles:
 
     def write_handshake(self, lines: list[str]) -> Path:
         """Persist handshake lines to the AP's .hc22000 file."""
-        self.captures_dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.captures_dir)
         if self.agg_path.exists():
             existing_anonces = _read_anonces(self.agg_path)
             new_lines = []
@@ -146,23 +193,23 @@ class HcFiles:
                     new_lines.append(ln)
                     existing_anonces.add(entry.anonce)
             if new_lines:
-                with self.agg_path.open("a", encoding="utf-8") as f:
+                with open_private_text_append(self.agg_path) as f:
                     f.write("\n".join(new_lines) + "\n")
         else:
-            self.agg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            write_private_text(self.agg_path, "\n".join(lines) + "\n")
         return self.agg_path
 
     def write_pmkid(self, line: str) -> Path:
         """Persist PMKID line to the AP's .hc22000 file."""
-        self.captures_dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.captures_dir)
         if self.agg_path.exists():
             existing_pmkids = _read_pmkids(self.agg_path)
             entry = parse_hc22000(line)
             if entry and entry.pmkid_or_mic and entry.pmkid_or_mic not in existing_pmkids:
-                with self.agg_path.open("a", encoding="utf-8") as f:
+                with open_private_text_append(self.agg_path) as f:
                     f.write(line + "\n")
         else:
-            self.agg_path.write_text(line + "\n", encoding="utf-8")
+            write_private_text(self.agg_path, line + "\n")
         return self.agg_path
 
     def consolidate(self, legacy_paths: list[Path]) -> tuple[int, int]:
@@ -214,7 +261,7 @@ class HcFiles:
 
         deleted = 0
         if merged_lines:
-            self.agg_path.write_text("\n".join(merged_lines) + "\n", encoding="utf-8")
+            write_private_text(self.agg_path, "\n".join(merged_lines) + "\n")
             for lf in files_to_delete:
                 if lf.resolve() != self.agg_path.resolve():
                     try:
@@ -337,7 +384,7 @@ def save_wep_key(ap: AccessPoint, key: bytes) -> Optional[SaveResult]:
         if m and m.group(1).lower() == key_hex:
             return SaveResult(path=p, was_new=False)
 
-    captures_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(captures_dir)
     path = _fresh_path(captures_dir, ap.ssid, ap.bssid, "_wep_key.txt")
     lines = [
         f"SSID:  {ap.ssid or '<hidden>'}",
@@ -346,7 +393,7 @@ def save_wep_key(ap: AccessPoint, key: bytes) -> Optional[SaveResult]:
     ]
     if all(0x20 <= b < 0x7F for b in key):
         lines.append(f'WEP key (ASCII): "{key.decode("ascii")}"')
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_private_text(path, "\n".join(lines) + "\n")
     return SaveResult(path=path, was_new=True)
 
 
@@ -368,7 +415,7 @@ def save_wps_pin(ap: AccessPoint, pin: str, psk: str) -> Optional[SaveResult]:
                 and pin_match and pin_match.group(1).strip() == pin):
             return SaveResult(path=p, was_new=False)
 
-    captures_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(captures_dir)
     path = _fresh_path(captures_dir, ap.ssid, ap.bssid, "_wps_pin.txt")
     body = (
         f"SSID: {ap.ssid or ''}\n"
@@ -376,7 +423,7 @@ def save_wps_pin(ap: AccessPoint, pin: str, psk: str) -> Optional[SaveResult]:
         f"PSK: {psk}\n"
         f"PIN: {pin}\n"
     )
-    path.write_text(body, encoding="utf-8")
+    write_private_text(path, body)
     return SaveResult(path=path, was_new=True)
 
 
@@ -394,14 +441,14 @@ def save_wps_pbc(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
         if m and m.group(1).strip() == psk:
             return SaveResult(path=p, was_new=False)
 
-    captures_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(captures_dir)
     path = _fresh_path(captures_dir, ap.ssid, ap.bssid, "_wps_pbc.txt")
     body = (
         f"SSID: {ap.ssid or ''}\n"
         f"BSSID: {ap.bssid}\n"
         f"PSK: {psk}\n"
     )
-    path.write_text(body, encoding="utf-8")
+    write_private_text(path, body)
     return SaveResult(path=path, was_new=True)
 
 
@@ -417,10 +464,10 @@ def save_wpa_psk(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
             continue
         if match and match.group(1).strip() == psk:
             return SaveResult(path=path, was_new=False)
-    captures_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(captures_dir)
     path = _fresh_path(captures_dir, ap.ssid, ap.bssid, "_wpa_psk.txt")
-    path.write_text(
+    write_private_text(
+        path,
         f"SSID: {ap.ssid or ''}\nBSSID: {ap.bssid}\nPSK: {psk}\n",
-        encoding="utf-8",
     )
     return SaveResult(path=path, was_new=True)

@@ -4,11 +4,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from dataclasses import replace
 from typing import Any, Callable
 
 from bleak import BleakClient, BleakScanner
 
+from wifit3.bluetooth.analytics import (
+    bluez_platform_metadata,
+    payload_fingerprint,
+    platform_address_type,
+    profile_fingerprint,
+    protocol_type_hint,
+    signal_summary,
+)
 from wifit3.bluetooth.connection import BluetoothConnection, BluetoothConnectionError
 from wifit3.bluetooth.hci_protocol import DiscoveryObservation
 from wifit3.bluetooth.usb_hci import (
@@ -19,6 +28,7 @@ from wifit3.bluetooth.usb_hci import (
 )
 from wifit3.models import BluetoothDevice
 from wifit3.models.bluetooth_device import BLE_RADIO
+from wifit3.persist.bluetooth_history import BluetoothHistoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -38,16 +48,19 @@ class BluetoothManager:
         usb_controller_finder: Callable[[], list[UsbBluetoothController]] = (
             find_usb_bluetooth_controllers
         ),
+        history: BluetoothHistoryStore | None = None,
     ) -> None:
         self._scanner_factory = scanner_factory
         self._client_factory = client_factory
         self._usb_scanner_factory = usb_scanner_factory
         self._usb_controller_finder = usb_controller_finder
+        self.history = history
         self._scanner = None
         self._usb_scanner = None
         self._devices: dict[str, BluetoothDevice] = {}
         self._platform_devices: dict[str, Any] = {}
         self._similar_identifiers: dict[tuple, set[str]] = {}
+        self._rssi_history: dict[str, deque[int]] = {}
         self.connection: BluetoothConnection | None = None
         self._advertisement_callbacks: list[Callable[[BluetoothDevice], None]] = []
         self._inspection_callbacks: list[Callable[[Any], None]] = []
@@ -79,6 +92,17 @@ class BluetoothManager:
 
     def devices(self) -> list[BluetoothDevice]:
         return list(self._devices.values())
+
+    def forget_devices(self) -> None:
+        """Drop the in-memory discovery picture after confirmed history deletion."""
+        if self.is_scanning:
+            raise BluetoothScanError(
+                "Stop Bluetooth discovery before clearing its history",
+            )
+        self._devices.clear()
+        self._platform_devices.clear()
+        self._similar_identifiers.clear()
+        self._rssi_history.clear()
 
     def available_usb_controllers(self) -> list[UsbBluetoothController]:
         try:
@@ -219,7 +243,18 @@ class BluetoothManager:
             tuple(sorted(uuid.lower() for uuid in service_data_uuids)),
         )
         similar_identifier_count = 1
-        if _is_private_identifier(identifier) and any(similarity_key):
+        platform_metadata = bluez_platform_metadata(
+            getattr(advertisement_data, "platform_data", ()), identifier,
+        )
+        address_type = (
+            platform_metadata.get("address_type")
+            or (
+                previous.address_type
+                if previous is not None
+                else platform_address_type(identifier)
+            )
+        )
+        if _is_private_identifier(identifier, address_type) and any(similarity_key):
             identifiers = self._similar_identifiers.setdefault(similarity_key, set())
             identifiers.add(identifier)
             similar_identifier_count = len(identifiers)
@@ -229,6 +264,13 @@ class BluetoothManager:
                     self._devices[similar_identifier] = replace(
                         known, similar_identifier_count=similar_identifier_count,
                     )
+        signal = self._signal_fields(identifier, advertisement_data.rssi)
+        protocol_hint = protocol_type_hint(
+            advertisement_data.manufacturer_data,
+            advertisement_data.service_data,
+            advertisement_data.service_uuids or (),
+            name=name,
+        )
         observed = BluetoothDevice(
             identifier=identifier,
             name=name,
@@ -250,7 +292,62 @@ class BluetoothManager:
             similar_identifier_count=similar_identifier_count,
             radio_types=(BLE_RADIO,),
             discovery_source="system",
+            class_of_device=(
+                platform_metadata.get("class_of_device")
+                or (previous.class_of_device if previous is not None else None)
+            ),
+            appearance=(
+                platform_metadata.get("appearance")
+                or (previous.appearance if previous is not None else None)
+            ),
+            address_type=address_type,
+            payload_fingerprint=payload_fingerprint(
+                advertisement_data.manufacturer_data,
+                advertisement_data.service_data,
+            ),
+            baseline_status=(
+                previous.baseline_status if previous is not None else "unavailable"
+            ),
+            profile_changed=previous.profile_changed if previous is not None else False,
+            protocol_category=(
+                protocol_hint.get("protocol_category")
+                or (previous.protocol_category if previous is not None else "")
+            ),
+            protocol_type=(
+                protocol_hint.get("protocol_type")
+                or (previous.protocol_type if previous is not None else "")
+            ),
+            protocol_source=(
+                protocol_hint.get("protocol_source")
+                or (previous.protocol_source if previous is not None else "")
+            ),
+            protocol_confidence=(
+                protocol_hint.get("protocol_confidence")
+                or (previous.protocol_confidence if previous is not None else "")
+            ),
+            modalias=(
+                platform_metadata.get("modalias")
+                or (previous.modalias if previous is not None else "")
+            ),
+            hardware_vendor=(
+                platform_metadata.get("hardware_vendor")
+                or (previous.hardware_vendor if previous is not None else "")
+            ),
+            hardware_product=(
+                platform_metadata.get("hardware_product")
+                or (previous.hardware_product if previous is not None else "")
+            ),
+            hardware_source=(
+                platform_metadata.get("hardware_source")
+                or (previous.hardware_source if previous is not None else "")
+            ),
+            **signal,
         )
+        observed.profile_fingerprint = _profile_fingerprint(observed)
+        if self.history is not None:
+            self.history.enrich(observed, classify=previous is None)
+            observed.profile_fingerprint = _profile_fingerprint(observed)
+            self.history.remember(observed)
         self._devices[identifier] = observed
         for callback in list(self._advertisement_callbacks):
             try:
@@ -266,6 +363,7 @@ class BluetoothManager:
         name = observation.name
         if name == "<Unknown>" and previous is not None:
             name = previous.name
+        signal = self._signal_fields(observation.identifier, observation.rssi)
         observed = BluetoothDevice(
             identifier=observation.identifier,
             name=name,
@@ -307,7 +405,51 @@ class BluetoothManager:
             class_of_device=observation.class_of_device or (
                 previous.class_of_device if previous is not None else None
             ),
+            appearance=(
+                observation.appearance
+                if observation.appearance is not None
+                else previous.appearance if previous is not None else None
+            ),
+            address_type=(
+                observation.address_type
+                if observation.address_type != "unknown"
+                else previous.address_type if previous is not None else "unknown"
+            ),
+            payload_fingerprint=(
+                observation.payload_fingerprint
+                or (previous.payload_fingerprint if previous is not None else "")
+            ),
+            baseline_status=(
+                previous.baseline_status if previous is not None else "unavailable"
+            ),
+            profile_changed=previous.profile_changed if previous is not None else False,
+            protocol_category=(
+                observation.protocol_category
+                or (previous.protocol_category if previous is not None else "")
+            ),
+            protocol_type=(
+                observation.protocol_type
+                or (previous.protocol_type if previous is not None else "")
+            ),
+            protocol_source=(
+                observation.protocol_source
+                or (previous.protocol_source if previous is not None else "")
+            ),
+            protocol_confidence=(
+                observation.protocol_confidence
+                or (previous.protocol_confidence if previous is not None else "")
+            ),
+            modalias=previous.modalias if previous is not None else "",
+            hardware_vendor=previous.hardware_vendor if previous is not None else "",
+            hardware_product=previous.hardware_product if previous is not None else "",
+            hardware_source=previous.hardware_source if previous is not None else "",
+            **signal,
         )
+        observed.profile_fingerprint = _profile_fingerprint(observed)
+        if self.history is not None:
+            self.history.enrich(observed, classify=previous is None)
+            observed.profile_fingerprint = _profile_fingerprint(observed)
+            self.history.remember(observed)
         self._devices[observation.identifier] = observed
         for callback in list(self._advertisement_callbacks):
             try:
@@ -315,13 +457,39 @@ class BluetoothManager:
             except Exception:
                 logger.debug("Bluetooth observation callback failed", exc_info=True)
 
+    def _signal_fields(self, identifier: str, rssi: int) -> dict[str, Any]:
+        samples = self._rssi_history.setdefault(identifier, deque(maxlen=12))
+        samples.append(rssi)
+        average, minimum, maximum, count, trend = signal_summary(samples)
+        return {
+            "rssi_average": average,
+            "rssi_min": minimum,
+            "rssi_max": maximum,
+            "rssi_samples": count,
+            "rssi_trend": trend,
+        }
 
-def _is_private_identifier(identifier: str) -> bool:
-    parts = identifier.split(":")
-    if len(parts) == 6:
-        try:
-            return bool(int(parts[0], 16) & 0x02)
-        except ValueError:
-            return False
-    return len(identifier) == 36 and identifier.count("-") == 4
+
+def _profile_fingerprint(device: BluetoothDevice) -> str:
+    return profile_fingerprint(
+        name=device.name,
+        address_type=device.address_type,
+        service_uuids=device.service_uuids,
+        service_data_uuids=device.service_data_uuids,
+        manufacturer_ids=device.manufacturer_ids,
+        class_of_device=device.class_of_device,
+        appearance=device.appearance,
+        protocol_type=device.protocol_type,
+        modalias=device.modalias,
+        hardware_product=device.hardware_product,
+    )
+
+
+def _is_private_identifier(identifier: str, address_type: str) -> bool:
+    return address_type in {
+        "resolvable-private",
+        "non-resolvable-private",
+        "platform-opaque",
+        "anonymous",
+    }
 

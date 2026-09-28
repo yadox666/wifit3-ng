@@ -31,6 +31,25 @@ class BluetoothDevice:
     radio_types: tuple[str, ...] = (BLE_RADIO,)
     discovery_source: str = "system"
     class_of_device: int | None = None
+    appearance: int | None = None
+    address_type: str = "unknown"
+    payload_fingerprint: str = ""
+    profile_fingerprint: str = ""
+    baseline_status: str = "unavailable"
+    profile_changed: bool = False
+    rssi_average: float | None = None
+    rssi_min: int | None = None
+    rssi_max: int | None = None
+    rssi_samples: int = 0
+    rssi_trend: str = "insufficient"
+    protocol_category: str = ""
+    protocol_type: str = ""
+    protocol_source: str = ""
+    protocol_confidence: str = ""
+    modalias: str = ""
+    hardware_vendor: str = ""
+    hardware_product: str = ""
+    hardware_source: str = ""
 
     @property
     def radio_label(self) -> str:
