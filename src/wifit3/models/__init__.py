@@ -7,6 +7,7 @@ from .client import Client, ProbeObservation
 from .capabilities import AdvertisedCapabilities
 from .device_id import DeviceID
 from .bluetooth_device import BluetoothDevice
+from .location import LocationFix, SignalPosition
 from .bluetooth_inspection import (
     BluetoothCharacteristic,
     BluetoothInspection,
@@ -43,6 +44,8 @@ __all__ = [
     "AdvertisedCapabilities",
     "DeviceID",
     "BluetoothDevice",
+    "LocationFix",
+    "SignalPosition",
     "BluetoothCharacteristic",
     "BluetoothInspection",
     "BluetoothService",

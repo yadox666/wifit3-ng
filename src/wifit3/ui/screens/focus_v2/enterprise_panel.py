@@ -303,7 +303,7 @@ class EnterprisePanel(ModalScreen[str | None]):
     #enterprise-systems { height: 1fr; }
     .enterprise-system { width: 100%; height: auto; margin-bottom: 1; }
     #enterprise-actions { height: 3; }
-    #enterprise-probe, #enterprise-save-report, #enterprise-close { width: 1fr; }
+    #enterprise-probe, #enterprise-eap-lab, #enterprise-save-report, #enterprise-close { width: 1fr; }
     """
 
     def __init__(self, systems: Iterable[AccessPoint], *, probing: bool = False) -> None:
@@ -338,12 +338,19 @@ class EnterprisePanel(ModalScreen[str | None]):
                     "Associates with an anonymous identity and stops before inner authentication"
                 )
                 yield probe
+                yield Button(
+                    "Start PEAP EAP lab honeypot",
+                    id="enterprise-eap-lab",
+                    variant="warning",
+                )
                 yield Button("Save report to Vault", id="enterprise-save-report")
                 yield Button("Close", id="enterprise-close", variant="primary")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "enterprise-probe":
             self.dismiss("cancel_probe" if self._probing else "probe")
+        elif event.button.id == "enterprise-eap-lab":
+            self.dismiss("eap_lab")
         elif event.button.id == "enterprise-save-report":
             self.dismiss("save_report")
         elif event.button.id == "enterprise-close":

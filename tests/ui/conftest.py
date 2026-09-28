@@ -9,6 +9,11 @@ def _isolate_config(tmp_path, monkeypatch):
     """UI tests build WifiteApp, which loads and persists Config: keep that off the real on-disk
     config file and reset the class-level defaults so a theme edit can't leak between tests."""
     monkeypatch.setattr("wifit3.persist.config._PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(
+        "wifit3.persist.locations.LOCATION_HISTORY_PATH",
+        tmp_path / "location_history.sqlite3",
+    )
+    monkeypatch.setattr("wifit3.gps.manager.list_ports.comports", lambda: [])
     Config.theme = "wifit3-green-dark"
     Config.scanner_sort = "signal"
     Config.scanner_sort_reverse = True
@@ -18,6 +23,9 @@ def _isolate_config(tmp_path, monkeypatch):
     Config.confirm_active_actions = True
     Config.auto_wps_pbc = False
     Config.active_action_intensity = "normal"
+    Config.gps_port = ""
+    Config.gps_movement_threshold_m = 20.0
+    Config.gps_max_accuracy_m = 20.0
     Config.silenced_bssids = []
     yield
 

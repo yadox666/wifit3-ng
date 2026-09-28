@@ -75,7 +75,11 @@ SUPPORTED_RATES_5GHZ = bytes([0x8C, 0x12, 0x98, 0x24, 0xB0, 0x48, 0x60, 0x6C])
 # Generic WPA2-PSK-CCMP RSN IE (tag 48): version 1, CCMP group + pairwise, single
 # AKM = PSK, no PMF. The client-side fallback when the AP's own IE is unusable.
 GENERIC_RSN_IE = bytes.fromhex("30140100000fac040100000fac040100000fac020000")
+GENERIC_ENTERPRISE_RSN_IE = bytes.fromhex(
+    "30140100000fac040100000fac040100000fac010000"
+)
 
+_AKM_8021X = 0x01
 _AKM_PSK = 0x02
 _RSN_CAP_MFPC = 0x0080          # RSN caps MFPC bit (bit 7)
 _BIP_CMAC_128 = b"\x00\x0f\xac\x06"
@@ -123,6 +127,15 @@ def ecsa_ie(new_channel: int, *, operating_class: int, mode: int = 1, count: int
 def secondary_channel_offset_ie(offset: int = 0) -> bytes:
     """Secondary Channel Offset IE (tag 62): 0 = SCN (20 MHz), 1 = above, 3 = below."""
     return bytes([0x3E, 0x01, offset & 0xFF])
+
+
+def force_eap_akm(
+    rsn_ie: bytes,
+    *,
+    pmf_capable: bool = False,
+) -> Optional[bytes]:
+    """Rewrite an RSN IE to a single 802.1X AKM for an Enterprise lab AP."""
+    return force_psk_akm(rsn_ie, akm=_AKM_8021X, pmf_capable=pmf_capable)
 
 
 def force_psk_akm(rsn_ie: bytes, akm: int = _AKM_PSK, *, pmf_capable: bool = False) -> Optional[bytes]:

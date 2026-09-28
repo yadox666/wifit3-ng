@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from wifit3.campaigns.enterprise_probe import EnterpriseProbe
-from wifit3.dot11.eap import EAP_TYPE_IDENTITY
+from wifit3.dot11.eap import EAP_TLS_TYPES, EAP_TYPE_IDENTITY
 from wifit3.dot11.eapol import LLC_SNAP_EAPOL, data_header
 from wifit3.dot11.enterprise import eap_tls_fragment, parse_tls_records
 from wifit3.dot11.mac import str_to_mac
@@ -83,7 +83,7 @@ async def test_exchange_uses_anonymous_identity_and_naks_unsupported_method():
     assert transport.sent[1] == transport.sent[2]
     assert isinstance(nak, EapPacket)
     assert nak.eap_type == 3
-    assert set(nak.eap_nak_types) == {13, 21, 25, 55}
+    assert set(nak.eap_nak_types) == EAP_TLS_TYPES
     assert result.status == "failed"
     assert result.server_methods == {1, 4}
     assert any(event.phase == "retransmission" for event in result.events)

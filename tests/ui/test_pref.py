@@ -2,7 +2,7 @@
 and Consolidate has moved out of Prefs into the Vault screen."""
 import pytest
 from textual.app import App
-from textual.widgets import Button, Checkbox, Select
+from textual.widgets import Button, Checkbox, Input, Select
 
 from wifit3.persist.config import Config, ConfigError
 from wifit3.persist.vault import Vault
@@ -101,6 +101,21 @@ async def test_unlimited_capture_parts_preference_can_be_saved(monkeypatch):
         await pilot.pause(0)
 
         assert Config.target_capture_max_parts == 0
+
+
+@pytest.mark.asyncio
+async def test_gps_accuracy_preference_can_be_saved(monkeypatch):
+    monkeypatch.setattr(Config, "gps_max_accuracy_m", 20.0)
+    monkeypatch.setattr(Config, "save", staticmethod(lambda: None))
+    app = _Host()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesModal())
+        await pilot.pause(0)
+        app.screen.query_one("#gps_max_accuracy_m", Input).value = "12"
+        app.screen.query_one("#save", Button).press()
+        await pilot.pause(0)
+
+        assert Config.gps_max_accuracy_m == 12.0
 
 
 @pytest.mark.asyncio

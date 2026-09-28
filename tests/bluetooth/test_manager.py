@@ -67,6 +67,8 @@ async def test_manager_collects_and_updates_advertisements():
     assert updated.advertisement_count == 2
     assert updated.advertisement_interval is not None
     assert updated.first_seen <= updated.last_seen
+    assert manager.observations_by_radio["BLE"] == 2
+    assert manager.last_observation_by_radio["BLE"] is not None
 
     await manager.stop()
     assert scanner.stopped
@@ -335,6 +337,8 @@ async def test_usb_scanner_is_separate_and_marks_classic_observations():
         radio_type="BT",
         rssi=-50,
         class_of_device=0x240404,
+        page_scan_repetition_mode=1,
+        clock_offset=0x1234,
     ))
 
     observed = manager.devices()[0]
@@ -343,7 +347,11 @@ async def test_usb_scanner_is_separate_and_marks_classic_observations():
     assert observed.radio_label == "BT"
     assert observed.discovery_source == "usb-hci"
     assert observed.class_of_device == 0x240404
+    assert observed.page_scan_repetition_mode == 1
+    assert observed.clock_offset == 0x1234
     assert not observed.is_connectable_with_bleak
+    assert manager.observations_by_radio["BT"] == 1
+    assert manager.last_observation_by_radio["BT"] is not None
 
     await manager.stop()
     assert scanner.stopped
@@ -488,4 +496,37 @@ def test_usb_then_ble_observations_keep_both_radios_and_sources():
     assert observed.radio_label == "BT+BLE"
     assert observed.discovery_source == "system+usb-hci"
     assert observed.is_connectable_with_bleak
+
+
+def test_separate_classic_and_ble_addresses_are_probabilistically_linked():
+    manager = BluetoothManager()
+    manager._on_usb_observation(DiscoveryObservation(
+        identifier="AA:BB:CC:DD:EE:FF",
+        radio_type="BT",
+        rssi=-48,
+        name="Living Room Speaker",
+        service_uuids=("110b",),
+    ))
+    manager._on_advertisement(
+        SimpleNamespace(address="11:22:33:44:55:66", name=None),
+        SimpleNamespace(
+            local_name="Living Room Speaker",
+            rssi=-45,
+            service_uuids=["110b"],
+            service_data={},
+            manufacturer_data={},
+            tx_power=None,
+        ),
+    )
+
+    classic = next(
+        device for device in manager.devices() if device.identifier.startswith("AA:")
+    )
+    ble = next(
+        device for device in manager.devices() if device.identifier.startswith("11:")
+    )
+    assert classic.related_identifiers == (ble.identifier,)
+    assert ble.related_identifiers == (classic.identifier,)
+    assert classic.correlation_confidence == "high"
+    assert "exact normalized name" in classic.correlation_evidence
 

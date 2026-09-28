@@ -4,6 +4,116 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
+## Unreleased
+
+## 0.3.8 - 2026-09-28
+
+### Added
+
+- Added direct USB support for the Sena Parani-UD100 / CSR BlueCore4-ROM
+  (`0a12:0001`). Its Bluetooth 2.0 ROM is correctly treated as Classic-only,
+  while the operating-system Bleak scanner continues BLE discovery
+  concurrently.
+- Added read-only Bluetooth Classic remote-name resolution and public SDP
+  browsing over the dedicated USB HCI controller. The bounded transport reads
+  controller ACL limits, applies packet-credit flow control, handles split and
+  coalesced USB ACL packets, reassembles L2CAP fragments, completes
+  bidirectional channel configuration, validates SDP continuations/data
+  elements, and performs best-effort L2CAP/HCI teardown.
+- Classic SDP never accepts pairing, stores link keys, opens RFCOMM profiles,
+  or writes remote profile data. PIN, link-key, Secure Simple Pairing, passkey,
+  and OOB requests receive explicit negative replies.
+- Added a Classic Focus view with inquiry metadata, probable BT/BLE identity
+  links, discovered service classes, and live HCI health counters. Classic
+  Focus leaves split direct-Classic and system-BLE discovery running.
+- Added cautious, bidirectional Classic/BLE identity correlation based on exact
+  normalized names, compatible advertised/SDP profiles, temporal overlap, and
+  RSSI proximity. Related identifiers remain separate and are labeled
+  probable with medium/high confidence and supporting evidence.
+- Bluetooth scan export now includes bounded raw HCI command, event, and ACL
+  traffic as an owner-private Wireshark-readable `.btsnoop` file.
+- Added an **Enterprise EAP lab honeypot** for authorized lab and engagement
+  testing. From AP Focus → **Enterprise** (`E`) → **Start PEAP EAP lab
+  honeypot**, a spoof-capable radio advertises a locally administered twin BSSID
+  with the target ESSID and a **full cloned beacon** (same IE fingerprint as the
+  real AP, with RSN rewritten to a single 802.1X AKM and SAE/RSNXE stripped),
+  then terminates outer **PEAP**, **EAP-TTLS**, or **EAP-TLS** with an ephemeral
+  OpenSSL-generated lab certificate under the private data directory.
+- The lab server captures inner **MS-CHAPv2** challenge/response material for
+  PEAP and TTLS tunnels. Each capture is written to Vault as paired Hashcat
+  lines: `*_mschapv2.mschapv2` (mode **5500**) and `*_netntlmv2.netntlmv2`
+  (mode **5600** NetNTLMv2-SSP). Vault Hashcat launch selects the mode from
+  the file extension (22000, 5500, and 5600).
+- Optional **deauthentication, CSA, and BTM** eviction bursts toward the real AP
+  (respecting PMF) can run on a fixed interval to encourage clients to attach
+  to the lab twin. Eviction is configurable in the launch modal and uses the
+  same bounded punt machinery as other active campaigns.
+- **EAP-TLS** can request a client certificate (`CERT_OPTIONAL`). When a client
+  presents one, the lab logs the SHA-256 fingerprint only; private keys and
+  certificate payloads are not stored.
+- Added `EapLabModal` launch options (duration, eviction, client-cert request),
+  Enterprise panel integration, Vault indexing for MS-CHAPv2 and NetNTLMv2
+  artifacts, capture-history typing, and tests for MS-CHAPv2 parsing, PEAP/TTLS
+  server behaviour, persistence, and Hashcat mode mapping.
+- Added **Enterprise client misconfiguration assessment** to the EAP lab: weak
+  outer EAP ordering, inner **PAP** probe, empty MS-CHAPv2 detection, untrusted
+  EAP-TLS Success findings, isolated **lab DHCP Offer/ACK** (`10.99.0.0/24`), and
+  automatic Vault **`_eap_lab_report.json`** snapshots with pseudonymized client
+  IDs and structured outcomes.
+- Added optional cross-platform **NMEA USB GPS** support through `pyserial`.
+  Startup enumerates serial ports on Linux, macOS, and Windows, prioritizes
+  likely GNSS/Prolific devices, verifies checksummed NMEA sentences, and tries
+  common GNSS baud rates automatically instead of identifying a receiver from
+  a generic USB-to-serial VID/PID alone. A toast reports the detected port and
+  baud rate; missing `pyserial` now produces a warning instead of preventing
+  application startup.
+- Added GPS Preferences for a manual serial port (blank keeps automatic
+  detection) and portable-device movement distance, with a 20-metre default
+  and minimum. A separate required-accuracy preference sets the maximum
+  accepted GPS error radius and defaults to 20 metres. Changing the port
+  reconfigures the background GPS reader without restarting the application.
+- Added owner-private `location_history.sqlite3` persistence. Observed Wi-Fi
+  APs retain the valid GPS position associated with their strongest RSSI;
+  locally created evil-twin and probe-test APs record the current valid fix
+  when the test starts. Stale, invalid, no-fix, and fixes worse than the
+  configured accuracy requirement are rejected.
+- Wi-Fi stations and Bluetooth/BT/BLE devices retain multiple position
+  clusters when observations move beyond the configured distance. Each
+  cluster keeps its strongest-RSSI position, using better GPS accuracy to
+  break equal-RSSI ties. Position lookups are cached in memory so high-rate
+  wireless observations do not perform a SQLite read per packet.
+- Added position evidence to Wi-Fi JSON/CSV and Bluetooth CSV/JSON/JSONL scan
+  exports. Coordinates are explicitly the receiver's position at observation
+  time, not proof of a transmitter's exact location; rotating BLE identifiers
+  can retain separate histories.
+- Expanded `Ctrl+D` diagnostics with a live GPS section showing serial port,
+  detected baud, coordinates, satellite count, estimated accuracy, fix age,
+  and `SEARCHING`, `NO FIX`, `LOW ACCURACY`, `FIX`, `STALE`, or `UNAVAILABLE`
+  state. A clickable Google Maps link is enabled only when coordinates exist
+  and sends that coordinate to Google only when clicked.
+
+### Changed
+
+- Hardened RTL8761BU startup by distinguishing the known stock ROM from the
+  bundled patched identity, rejecting unknown controller revisions, and
+  confirming that the expected firmware identity is active after upload.
+- Added the upstream ASUS RTL8761BU USB ID `0b05:190e`.
+- BLE GATT timeouts now show an actionable explanation. When the selected row
+  also has Classic evidence, scanning resumes and the app opens read-only
+  Classic Focus automatically instead of displaying a raw `TimeoutError`.
+- Bluetooth and BLE rows now use the same configurable inactivity expiry as
+  Wi-Fi, including **Never**; the Preferences label names both media.
+- A dedicated-controller claim failure now displays a red bottom notification
+  asking for the Sena UD100 by name, or a generic Bluetooth USB device, to be
+  unplugged and re-plugged so wifit3 can claim it from the OS.
+- Split Bluetooth diagnostics into separate **BLE** and **Classic Bluetooth**
+  rows with per-radio device counts, observation totals, activity age,
+  backend, GATT reads, and scanner health.
+- Updated Enterprise documentation and UI copy: the assessment suite still
+  performs passive/active **outer** EAP analysis only for normal probes, while
+  the separate EAP lab honeypot is an explicit, confirmed active action for
+  inner MS-CHAPv2 capture and client hardening tests where policy allows.
+
 ## 0.3.7 - 2026-09-28
 
 ### Added

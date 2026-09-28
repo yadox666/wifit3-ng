@@ -26,9 +26,11 @@ from wifit3.persist.bluetooth_history import (
     BluetoothHistoryStoreError,
 )
 from wifit3.persist.targets import SavedTarget, TargetStore, TargetStoreError
+from wifit3.persist.locations import LocationStore
 from wifit3.persist.vault import Vault
 from wifit3.errors import WifiteDeviceLostError, WifiteFatalError
 from wifit3.bluetooth import BluetoothManager
+from wifit3.gps import GpsManager, GpsStatus
 from wifit3.bluetooth.capture import BluetoothEventCapture
 from wifit3.device.manager import DeviceManager, Status
 from wifit3.device.watch import DeviceWatch
@@ -39,6 +41,7 @@ from .screens.splash import SplashView
 from .screens.scanner import ScannerView
 from .screens.bluetooth_scanner import BluetoothScannerView
 from .screens.bluetooth_focus import BluetoothFocusView
+from .screens.bluetooth_classic_focus import BluetoothClassicFocusView
 from .screens.client_focus import ClientFocusView
 from .screens.about import AboutModal, UpdateAvailableModal
 from .screens.diagnostics import AdapterDiagnosticsModal
@@ -150,8 +153,20 @@ class WifiteApp(App):
             self._config_error = str(e)
         _configure_file_logging(cli_log_level)
         self.array: Optional[WlanArray] = None
+        self.location_store = LocationStore()
+        self.gps_manager = GpsManager(
+            port=Config.gps_port,
+            on_detected=self._gps_detected,
+            on_error=self._gps_error,
+        )
         self.bluetooth_history_store = BluetoothHistoryStore()
-        self.bluetooth_manager = BluetoothManager(history=self.bluetooth_history_store)
+        self.bluetooth_manager = BluetoothManager(
+            history=self.bluetooth_history_store,
+            location_store=self.location_store,
+            fix_provider=lambda: self.gps_manager.latest_fix,
+            movement_provider=lambda: Config.gps_movement_threshold_m,
+            accuracy_provider=lambda: Config.gps_max_accuracy_m,
+        )
         self.bluetooth_target_capture: BluetoothEventCapture | None = None
         self.device_manager = DeviceManager(self)
         self.device_watch = DeviceWatch(device_manager=self.device_manager,
@@ -250,10 +265,13 @@ class WifiteApp(App):
             self.notify(msg, severity="warning", title="AP history")
         for msg in self.bluetooth_history_store.errors:
             self.notify(msg, severity="warning", title="Bluetooth history")
+        for msg in self.location_store.errors:
+            self.notify(msg, severity="warning", title="Location history")
         self.install_screen(SplashView(), name="splash")
         self.install_screen(ScannerView(), name="scanner")
         self.install_screen(BluetoothScannerView(), name="bluetooth")
         self.install_screen(BluetoothFocusView(), name="bluetooth-focus")
+        self.install_screen(BluetoothClassicFocusView(), name="bluetooth-classic-focus")
         self.install_screen(ClientFocusView(), name="client-focus")
         self.install_screen(FocusViewV2(), name="focus")
         
@@ -262,8 +280,26 @@ class WifiteApp(App):
         self.set_interval(2.0, self._poll_jobs)
         self.call_after_refresh(self.device_watch.poll)
         self.call_after_refresh(self._poll_jobs)
+        self.gps_manager.start()
         if Config.auto_check_updates:
             self.check_updates()
+
+    def _gps_detected(self, status: GpsStatus) -> None:
+        self.notify(
+            f"{status.port} at {status.baudrate} baud",
+            title="GPS detected",
+            severity="information",
+        )
+
+    def _gps_error(self, message: str) -> None:
+        self.notify(message, title="GPS unavailable", severity="warning")
+
+    def reconfigure_gps(self, port: str) -> None:
+        self.run_worker(
+            self.gps_manager.reconfigure(port),
+            exclusive=True,
+            group="gps-reconfigure",
+        )
 
     def _poll_jobs(self) -> None:
         self.vault.manager.poll_jobs()
@@ -451,12 +487,15 @@ class WifiteApp(App):
         client_focus.stop_capture(notify=False)
         scanner = self.get_screen("scanner", ScannerView)
         await scanner.stop_open_probe_test()
+        await focus.stop_eap_lab_honeypot()
         await self.bluetooth_manager.disconnect()
         await self.bluetooth_manager.stop()
+        await self.gps_manager.stop()
         if self.array:
             await self.array.close()
         self.ap_history_store.close()
         self.bluetooth_history_store.close()
+        self.location_store.close()
         self.hidden_ssid_store.close()
         self.enterprise_session_store.close()
         self.target_store.close()
@@ -465,7 +504,10 @@ class WifiteApp(App):
     def action_toggle_vault(self) -> None:
         """Open the vault drawer."""
         if isinstance(
-            self.screen, (BluetoothScannerView, BluetoothFocusView, ClientFocusView),
+            self.screen, (
+                BluetoothScannerView, BluetoothFocusView,
+                BluetoothClassicFocusView, ClientFocusView,
+            ),
         ) or (
             isinstance(self.screen, ScannerView)
             and self.screen._view_mode == "clients"
@@ -481,7 +523,10 @@ class WifiteApp(App):
 
     def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
         if action == "toggle_vault" and isinstance(
-            self.screen, (BluetoothScannerView, BluetoothFocusView, ClientFocusView)
+            self.screen, (
+                BluetoothScannerView, BluetoothFocusView,
+                BluetoothClassicFocusView, ClientFocusView,
+            )
         ):
             return False
         return True

@@ -207,6 +207,44 @@ class Vault:
                                     path=str(result.path), bssid=ap.bssid, value=psk, ssid=ap.ssid))
         return result
 
+    def save_mschapv2(
+        self,
+        ap: "AccessPoint",
+        capture,
+        *,
+        lab_bssid: str | None = None,
+    ) -> Optional[save.EapLabSaveResult]:
+        result = save.save_mschapv2(ap, capture, lab_bssid=lab_bssid)
+        if result is None:
+            return None
+        bssid = lab_bssid or ap.bssid
+        ts = int(time.time())
+        if result.mschapv2.was_new:
+            self._index.setdefault(ap.bssid, []).insert(
+                0,
+                PersistedCapture(
+                    type=CaptureType.MSCHAPV2,
+                    timestamp=ts,
+                    path=str(result.mschapv2.path),
+                    bssid=bssid,
+                    ssid=ap.ssid,
+                    value=capture.username,
+                ),
+            )
+        if result.netntlmv2.was_new:
+            self._index.setdefault(ap.bssid, []).insert(
+                0,
+                PersistedCapture(
+                    type=CaptureType.NETNTLMV2,
+                    timestamp=ts,
+                    path=str(result.netntlmv2.path),
+                    bssid=bssid,
+                    ssid=ap.ssid,
+                    value=capture.username,
+                ),
+            )
+        return result
+
     def save_enterprise_report(self, ap: "AccessPoint") -> Optional[SaveResult]:
         result = save.save_enterprise_report(ap)
         if result and result.was_new:
@@ -217,6 +255,36 @@ class Vault:
                     path=str(result.path),
                     bssid=ap.bssid,
                     ssid=ap.ssid,
+                ),
+            )
+        return result
+
+    def save_eap_lab_report(
+        self,
+        ap: "AccessPoint",
+        *,
+        lab_bssid: str,
+        launch,
+        clients,
+        campaign_result: str,
+    ) -> Optional[SaveResult]:
+        result = save.save_eap_lab_report(
+            ap,
+            lab_bssid=lab_bssid,
+            launch=launch,
+            clients=clients,
+            campaign_result=campaign_result,
+        )
+        if result and result.was_new:
+            self._index.setdefault(ap.bssid, []).insert(
+                0,
+                PersistedCapture(
+                    type=CaptureType.ENTERPRISE,
+                    timestamp=int(time.time()),
+                    path=str(result.path),
+                    bssid=ap.bssid,
+                    ssid=ap.ssid,
+                    value="EAP lab client assessment",
                 ),
             )
         return result
@@ -242,6 +310,20 @@ class Vault:
                 return (
                     (True, "Valid PCAP header")
                     if header in magics else (False, "Invalid or truncated PCAP header")
+                )
+            if capture.type == CaptureType.MSCHAPV2:
+                text = path.read_text(encoding="utf-8", errors="replace").strip()
+                valid = text.startswith("$MSCHAPv2$") or ":$MSCHAPv2$" in text
+                return (
+                    (True, "Valid Hashcat MS-CHAPv2 line")
+                    if valid else (False, "Invalid MS-CHAPv2 hash line")
+                )
+            if capture.type == CaptureType.NETNTLMV2:
+                text = path.read_text(encoding="utf-8", errors="replace").strip()
+                valid = text.count(":") >= 4 and "::" in text
+                return (
+                    (True, "Valid Hashcat NetNTLMv2-SSP line")
+                    if valid else (False, "Invalid NetNTLMv2 hash line")
                 )
             if capture.type == CaptureType.ENTERPRISE:
                 payload = json.loads(path.read_text(encoding="utf-8"))

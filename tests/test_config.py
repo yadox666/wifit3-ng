@@ -12,7 +12,8 @@ _DEFAULTS = {n: getattr(Config, n)
                  "save_pcap", "auto_check_updates", "confirm_active_actions", "auto_wps_pbc",
                  "active_action_intensity", "auto_lock_targets",
                  "target_reacquire_timeout", "target_capture_max_mb",
-                 "target_capture_max_parts")}
+                 "target_capture_max_parts", "gps_port",
+                 "gps_movement_threshold_m", "gps_max_accuracy_m")}
 
 
 @pytest.fixture(autouse=True)
@@ -198,3 +199,19 @@ def test_unlimited_capture_parts_save_load_roundtrip(config_path):
     Config.target_capture_max_parts = 10
     Config.load()
     assert Config.target_capture_max_parts == 0
+
+
+def test_gps_preferences_save_load_roundtrip(config_path):
+    Config.gps_port = "COM7"
+    Config.gps_movement_threshold_m = 35.0
+    Config.gps_max_accuracy_m = 12.0
+    Config.save()
+    Config.gps_port = ""
+    Config.gps_movement_threshold_m = 20.0
+    Config.gps_max_accuracy_m = 20.0
+
+    Config.load()
+
+    assert Config.gps_port == "COM7"
+    assert Config.gps_movement_threshold_m == 35.0
+    assert Config.gps_max_accuracy_m == 12.0

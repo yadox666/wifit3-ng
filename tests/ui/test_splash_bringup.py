@@ -12,7 +12,7 @@ from wifit3.chips.driver import DeviceID
 from wifit3.device.manager import BringupResult
 from wifit3.setup.base import SetupResult
 from wifit3.ui.app import WifiteApp
-from wifit3.ui.screens.splash import SplashView
+from wifit3.ui.screens.splash import SplashView, _bluetooth_usb_claim_alert
 
 
 def _fake_iface():
@@ -22,6 +22,34 @@ def _fake_iface():
         supported_channels=[1, 6, 11], on_tx=None,
         register_rx_callback=lambda cb: None, register_disconnect_callback=lambda cb: None,
         connect=AsyncMock(return_value=True), close=AsyncMock())
+
+
+def test_bluetooth_claim_alert_names_sena_ud100():
+    controller = SimpleNamespace(vid=0x0A12, pid=0x0001)
+
+    message = _bluetooth_usb_claim_alert(
+        controller,
+        RuntimeError("Could not detach BlueCore4-ROM from the OS Bluetooth driver"),
+    )
+
+    assert message == (
+        "Please unplug and re-plug your Sena UD100 adapter "
+        "to claim it from the OS!"
+    )
+
+
+def test_bluetooth_claim_alert_uses_generic_usb_name():
+    controller = SimpleNamespace(vid=0x1234, pid=0x5678)
+
+    message = _bluetooth_usb_claim_alert(
+        controller,
+        RuntimeError("Could not detach OtherChip from the OS Bluetooth driver"),
+    )
+
+    assert message == (
+        "Please unplug and re-plug your Bluetooth USB device "
+        "to claim it from the OS!"
+    )
 
 
 @pytest.mark.asyncio

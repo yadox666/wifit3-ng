@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Optional
 
 from wifit3.crack.hc22000_format import eapol_hashlines, pmkid_hashline
+from wifit3.crack.mschapv2 import MsChapV2Capture, hashcat5500_line, hashcat5600_line
+from wifit3.campaigns.eap_lab_assessment import EapLabClientRecord
+from wifit3.campaigns.eap_lab_config import EapLabLaunchConfig
 from wifit3.models import AccessPoint
 from wifit3.persist.common import (
     LEGACY_CAPTURE_RE,
@@ -75,6 +78,63 @@ def save_enterprise_report(ap: AccessPoint) -> SaveResult | None:
             "packet_payloads": False,
         },
     }
+    write_private_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return SaveResult(path=path, was_new=True)
+
+
+def save_eap_lab_report(
+    ap: AccessPoint,
+    *,
+    lab_bssid: str,
+    launch: EapLabLaunchConfig,
+    clients: tuple[EapLabClientRecord, ...],
+    campaign_result: str,
+) -> SaveResult | None:
+    """Save sanitized EAP lab client misconfiguration assessment to Vault."""
+    captures_dir = Path(Config.captures_dir)
+    ensure_private_directory(captures_dir)
+    path = _fresh_path(
+        captures_dir,
+        ap.ssid,
+        ap.bssid,
+        "_eap_lab_report.json",
+    )
+    payload = {
+        "schema_version": 1,
+        "report_type": "eap_lab_client_assessment",
+        "generated_at": int(time.time()),
+        "campaign_result": campaign_result,
+        "network": {
+            "ssid": ap.ssid,
+            "bssid": ap.bssid,
+            "channel": ap.channel,
+            "encryption": ap.encryption,
+        },
+        "lab_bssid": lab_bssid,
+        "launch": {
+            "timeout": launch.timeout,
+            "eviction": launch.eviction,
+            "security_assessment": launch.security_assessment,
+            "weak_outer_first": launch.weak_outer_first,
+            "probe_inner_pap": launch.probe_inner_pap,
+            "probe_empty_mschap": launch.probe_empty_mschap,
+            "lab_dhcp": launch.lab_dhcp,
+            "request_client_cert": launch.request_client_cert,
+            "eap_methods": list(launch.eap_methods),
+        },
+        "clients": [
+            record.to_report_dict(lab_bssid=lab_bssid)
+            for record in clients
+        ],
+        "privacy": {
+            "client_macs": "pseudonymized",
+            "identities": "username only when misconfiguration captured",
+            "passwords": False,
+            "packet_payloads": False,
+        },
+    }
+    if ap.enterprise is not None:
+        payload["enterprise"] = enterprise_profile_payload(ap.enterprise)
     write_private_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return SaveResult(path=path, was_new=True)
 
@@ -450,6 +510,65 @@ def save_wps_pbc(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
     )
     write_private_text(path, body)
     return SaveResult(path=path, was_new=True)
+
+
+@dataclass(frozen=True)
+class EapLabSaveResult:
+    mschapv2: SaveResult
+    netntlmv2: SaveResult
+
+
+def save_mschapv2(
+    ap: AccessPoint,
+    capture: MsChapV2Capture,
+    *,
+    lab_bssid: str | None = None,
+) -> Optional[EapLabSaveResult]:
+    """Persist Hashcat mode 5500 (MS-CHAPv2) and 5600 (NetNTLMv2-SSP) lines."""
+    captures_dir = Path(Config.captures_dir)
+    ensure_private_directory(captures_dir)
+    bssid = lab_bssid or ap.bssid
+    mschap_line = hashcat5500_line(capture)
+    ntlm_line = hashcat5600_line(capture)
+    mschap_path = _write_or_reuse(
+        captures_dir,
+        ap.ssid,
+        bssid,
+        "_mschapv2.mschapv2",
+        mschap_line,
+    )
+    ntlm_path = _write_or_reuse(
+        captures_dir,
+        ap.ssid,
+        bssid,
+        "_netntlmv2.netntlmv2",
+        ntlm_line,
+    )
+    if mschap_path is None or ntlm_path is None:
+        return None
+    return EapLabSaveResult(
+        mschapv2=mschap_path,
+        netntlmv2=ntlm_path,
+    )
+
+
+def _write_or_reuse(
+    captures_dir: Path,
+    ssid: str | None,
+    bssid: str,
+    suffix: str,
+    line: str,
+) -> SaveResult | None:
+    for path in _existing(captures_dir, bssid, suffix):
+        try:
+            existing = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if existing == line.strip():
+            return SaveResult(path=path, was_new=False)
+    target = _fresh_path(captures_dir, ssid, bssid, suffix)
+    write_private_text(target, line + "\n")
+    return SaveResult(path=target, was_new=True)
 
 
 def save_wpa_psk(ap: AccessPoint, psk: str) -> Optional[SaveResult]:

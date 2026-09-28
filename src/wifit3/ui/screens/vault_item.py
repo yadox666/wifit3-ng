@@ -352,6 +352,8 @@ class VaultItemView(Vertical):
             "WPS PSKs": [c for c in captures if c.type in (CaptureType.WPS_PIN, CaptureType.WPS_PBC) and c.value],
             "WPS PINs": [c for c in captures if c.type == CaptureType.WPS_PIN and c.pin],
             "WEP KEYs": [c for c in captures if c.type == CaptureType.WEP],
+            "MS-CHAPv2": [c for c in captures if c.type == CaptureType.MSCHAPV2],
+            "NetNTLMv2": [c for c in captures if c.type == CaptureType.NETNTLMV2],
         }
         cracked_key = next((c.value for c in captures if c.type == CaptureType.WPA_PSK and c.value), None)
         for title, group in groups.items():

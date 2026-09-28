@@ -11,6 +11,7 @@ from .handshake import Handshake
 from .identity import ApIdentity, IdKey, IdSource
 from .capabilities import AdvertisedCapabilities
 from .enterprise import EnterpriseProfile
+from .location import SignalPosition
 
 
 @dataclass
@@ -31,6 +32,8 @@ class CaptureType(StrEnum):
     WPA_PSK = "WPA_PSK"           # passphrase recovered from a handshake/PMKID (e.g. hashcat)
     PCAP = "PCAP"
     ENTERPRISE = "ENTERPRISE"
+    MSCHAPV2 = "MSCHAPV2"
+    NETNTLMV2 = "NETNTLMV2"
 
 
 @dataclass
@@ -120,6 +123,7 @@ class AccessPoint:
     # Smoothed RSSI per receiving card (card name -> dBm), written by WlanSink.
     signal_by_card: Dict[str, int] = field(default_factory=dict)
     signal_history: Dict[str, deque[int]] = field(default_factory=dict, repr=False)
+    positions: List[SignalPosition] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.bssid and not self.identity.get_source_value(IdKey.MANUFACTURER, IdSource.OUI):

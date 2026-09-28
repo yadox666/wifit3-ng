@@ -31,6 +31,21 @@ def _json_safe(value):
     return value
 
 
+def _positions(entity) -> list[dict]:
+    return [
+        {
+            "latitude": position.latitude,
+            "longitude": position.longitude,
+            "altitude_m": position.altitude_m,
+            "accuracy_m": position.accuracy_m,
+            "observed_at": _iso_time(position.observed_at),
+            "source": position.source,
+            "signal_dbm": position.rssi,
+        }
+        for position in entity.positions
+    ]
+
+
 def _ap_record(ap: AccessPoint) -> dict:
     rsn_ie = beacon_rsn_ie(ap.last_beacon_frame)
     return {
@@ -54,6 +69,7 @@ def _ap_record(ap: AccessPoint) -> dict:
         "first_seen": _iso_time(ap.first_seen),
         "last_seen": _iso_time(ap.last_seen),
         "capabilities": _json_safe(asdict(ap.capabilities)),
+        "positions": _positions(ap),
     }
 
 
@@ -79,6 +95,7 @@ def _client_record(client: Client, access_points: dict[str, AccessPoint]) -> dic
         },
         "last_seen": _iso_time(client.last_seen),
         "capabilities": _json_safe(asdict(client.capabilities)),
+        "positions": _positions(client),
     }
 
 
@@ -107,6 +124,7 @@ def export_scan_snapshot(
     fields = [
         "type", "name", "address", "manufacturer", "signal_dbm", "channel",
         "security_or_network", "country", "activity", "last_seen",
+        "latitude", "longitude", "accuracy_m",
     ]
     with open_private_text_write(csv_path, newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
@@ -123,6 +141,9 @@ def export_scan_snapshot(
                 "country": ap["country"] or "",
                 "activity": "",
                 "last_seen": ap["last_seen"],
+                "latitude": ap["positions"][0]["latitude"] if ap["positions"] else "",
+                "longitude": ap["positions"][0]["longitude"] if ap["positions"] else "",
+                "accuracy_m": ap["positions"][0]["accuracy_m"] if ap["positions"] else "",
             })
         for client in report["clients"]:
             probes = "; ".join(client["probe_requests"])
@@ -137,5 +158,8 @@ def export_scan_snapshot(
                 "country": "",
                 "activity": client["packets"],
                 "last_seen": client["last_seen"],
+                "latitude": client["positions"][-1]["latitude"] if client["positions"] else "",
+                "longitude": client["positions"][-1]["longitude"] if client["positions"] else "",
+                "accuracy_m": client["positions"][-1]["accuracy_m"] if client["positions"] else "",
             })
     return json_path, csv_path

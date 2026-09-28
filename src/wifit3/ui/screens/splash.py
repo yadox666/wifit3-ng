@@ -40,6 +40,20 @@ _DUP_SUFFIX = " #{n}"
 _LEFT_MARGIN = " "
 
 
+def _bluetooth_usb_claim_alert(controller, error: Exception) -> str | None:
+    if "could not detach" not in str(error).casefold():
+        return None
+    device_name = (
+        "Sena UD100 adapter"
+        if (controller.vid, controller.pid) == (0x0A12, 0x0001)
+        else "Bluetooth USB device"
+    )
+    return (
+        f"Please unplug and re-plug your {device_name} "
+        "to claim it from the OS!"
+    )
+
+
 def _alpha_head(chipset: str) -> str:
     """The leading non-digit run of a chipset name (``"RTL"`` of ``"RTL8812AU"``)."""
     i = 0
@@ -176,7 +190,7 @@ class SplashView(Screen):
                         variant="primary",
                     )
                     yield Button(
-                        Text.from_markup("SCAN [bold bright_yellow]D[/]UAL BT + BLE"),
+                        Text("BT/BLE Scan"),
                         id="bluetooth-usb-btn",
                         variant="primary",
                     )
@@ -546,7 +560,14 @@ class SplashView(Screen):
             await self.app.bluetooth_manager.start_usb(controller)
         except BluetoothScanError as exc:
             self._exit_busy()
-            self._show_error(f"Bluetooth USB scan failed: {exc}", title="Bluetooth USB unavailable")
+            claim_alert = _bluetooth_usb_claim_alert(controller, exc)
+            if claim_alert is not None:
+                self._show_error(claim_alert, title="Bluetooth USB device busy")
+            else:
+                self._show_error(
+                    f"Bluetooth USB scan failed: {exc}",
+                    title="Bluetooth USB unavailable",
+                )
             return
         self._exit_busy()
         self.app.locked_target_id = None

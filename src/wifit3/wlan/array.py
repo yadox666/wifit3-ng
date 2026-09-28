@@ -283,6 +283,19 @@ class WlanArray:
     def mark_evil_twin(self, bssid: str) -> None:
         """Hide this BSSID's AP from get_access_points(include_eviltwin=False): it's our own twin."""
         self._evil_twin_bssids.add(bssid.lower())
+        if self._sink.location_store is not None and self._sink.fix_provider is not None:
+            self._sink.location_store.observe(
+                "test_ap",
+                bssid,
+                self._sink.fix_provider(),
+                None,
+                mobile=False,
+                movement_m=0.0,
+                max_accuracy_m=(
+                    self._sink.accuracy_provider()
+                    if self._sink.accuracy_provider else 20.0
+                ),
+            )
 
     def register_own_fake_ap(
         self,
@@ -310,9 +323,9 @@ class WlanArray:
         ap.ssid = ssid
         ap.channel = channel
         ap.encryption = encryption
-        if encryption == "WPA2":
-            ap.akms = ["PSK"]
-            ap.akm_suites = [2]
+        if encryption in ("WPA2", "WPA2-EAP"):
+            ap.akms = ["EAP"] if encryption == "WPA2-EAP" else ["PSK"]
+            ap.akm_suites = [1] if encryption == "WPA2-EAP" else [2]
             ap.pairwise_cipher = "CCMP"
             ap.pairwise_ciphers = ["CCMP"]
             ap.group_cipher = "CCMP"
@@ -326,6 +339,7 @@ class WlanArray:
         ap.own_fake_active = True
         ap.last_seen = now
         self._sink.access_points[bssid] = ap
+        self._sink.observe_ap_position(ap)
         return ap
 
     def record_own_fake_ap_beacon(self, bssid: str) -> None:

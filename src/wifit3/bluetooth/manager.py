@@ -28,9 +28,10 @@ from wifit3.bluetooth.usb_hci import (
     UsbHciScanner,
     find_usb_bluetooth_controllers,
 )
-from wifit3.models import BluetoothDevice
-from wifit3.models.bluetooth_device import BLE_RADIO
+from wifit3.models import BluetoothDevice, LocationFix
+from wifit3.models.bluetooth_device import BLE_RADIO, CLASSIC_RADIO
 from wifit3.persist.bluetooth_history import BluetoothHistoryStore
+from wifit3.persist.locations import LocationStore
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +52,20 @@ class BluetoothManager:
             find_usb_bluetooth_controllers
         ),
         history: BluetoothHistoryStore | None = None,
+        location_store: LocationStore | None = None,
+        fix_provider: Callable[[], LocationFix | None] | None = None,
+        movement_provider: Callable[[], float] | None = None,
+        accuracy_provider: Callable[[], float] | None = None,
     ) -> None:
         self._scanner_factory = scanner_factory
         self._client_factory = client_factory
         self._usb_scanner_factory = usb_scanner_factory
         self._usb_controller_finder = usb_controller_finder
         self.history = history
+        self.location_store = location_store
+        self.fix_provider = fix_provider
+        self.movement_provider = movement_provider
+        self.accuracy_provider = accuracy_provider
         self._scanner = None
         self._usb_scanner = None
         self._usb_reservations: dict[tuple, Any] = {}
@@ -66,12 +75,15 @@ class BluetoothManager:
         self._platform_devices: dict[str, Any] = {}
         self._similar_identifiers: dict[tuple, set[str]] = {}
         self._rssi_history: dict[str, deque[int]] = {}
+        self._classic_focus_identifier: str | None = None
         self.connection: BluetoothConnection | None = None
         self._advertisement_callbacks: list[Callable[[BluetoothDevice], None]] = []
         self._inspection_callbacks: list[Callable[[Any], None]] = []
         self.scan_started_at: float | None = None
         self.last_advertisement_at: float | None = None
         self.received_advertisements = 0
+        self.observations_by_radio = {BLE_RADIO: 0, CLASSIC_RADIO: 0}
+        self.last_observation_by_radio: dict[str, float] = {}
         self.scan_failures = 0
 
     @property
@@ -80,6 +92,60 @@ class BluetoothManager:
             self._usb_scanner is not None
             and getattr(self._usb_scanner, "is_scanning", True)
         )
+
+    @property
+    def hci_capture_records(self) -> tuple:
+        if self._usb_scanner is None:
+            return ()
+        return tuple(getattr(self._usb_scanner, "capture_records", ()))
+
+    @property
+    def hci_health(self):
+        if self._usb_scanner is None:
+            return None
+        return getattr(self._usb_scanner, "health", None)
+
+    @property
+    def classic_focus_device(self) -> BluetoothDevice | None:
+        if self._classic_focus_identifier is None:
+            return None
+        return self._devices.get(self._classic_focus_identifier)
+
+    def select_classic_focus(self, identifier: str) -> None:
+        self._classic_focus_identifier = identifier
+
+    def classic_focus_fallback(
+        self,
+        device: BluetoothDevice,
+    ) -> BluetoothDevice | None:
+        if CLASSIC_RADIO in device.radio_types:
+            return device
+        for identifier in device.related_identifiers:
+            related = self._devices.get(identifier)
+            if related is not None and CLASSIC_RADIO in related.radio_types:
+                return related
+        return None
+
+    async def browse_classic_sdp(self, identifier: str):
+        if self._usb_scanner is None:
+            raise BluetoothScanError("No dedicated USB HCI controller is active")
+        services = await self._usb_scanner.browse_sdp(identifier)
+        device = self._devices.get(identifier)
+        if device is not None:
+            device.service_uuids = tuple(sorted({
+                *device.service_uuids,
+                *(service.uuid for service in services),
+            }))
+            device.profile_fingerprint = _profile_fingerprint(device)
+            self._correlate_radios(device)
+            if self.history is not None:
+                self.history.remember(device)
+            for callback in list(self._advertisement_callbacks):
+                try:
+                    callback(device)
+                except Exception:
+                    logger.debug("Bluetooth SDP callback failed", exc_info=True)
+        return services
 
     @property
     def is_usb_scanning(self) -> bool:
@@ -101,6 +167,40 @@ class BluetoothManager:
 
     def devices(self) -> list[BluetoothDevice]:
         return list(self._devices.values())
+
+    def active_radio_types(self) -> tuple[str, ...]:
+        radios = set()
+        if self._scanner is not None or self.connection is not None:
+            radios.add(BLE_RADIO)
+        if self._usb_scanner is not None:
+            controller = self._usb_scanner.controller
+            if controller.supports_le:
+                radios.add(BLE_RADIO)
+            if controller.supports_classic:
+                radios.add(CLASSIC_RADIO)
+        return tuple(radio for radio in (BLE_RADIO, CLASSIC_RADIO) if radio in radios)
+
+    def backend_name_for_radio(self, radio_type: str) -> str:
+        usb_scanner = self._usb_scanner
+        if usb_scanner is not None:
+            controller = usb_scanner.controller
+            if (
+                radio_type == CLASSIC_RADIO and controller.supports_classic
+                or radio_type == BLE_RADIO and controller.supports_le
+            ):
+                return controller.chipset
+        scanner = self._scanner
+        return scanner.__class__.__name__ if scanner is not None else "Bleak"
+
+    def is_usb_radio(self, radio_type: str) -> bool:
+        usb_scanner = self._usb_scanner
+        if usb_scanner is None:
+            return False
+        controller = usb_scanner.controller
+        return (
+            radio_type == CLASSIC_RADIO and controller.supports_classic
+            or radio_type == BLE_RADIO and controller.supports_le
+        )
 
     def forget_devices(self) -> None:
         """Drop the in-memory discovery picture after confirmed history deletion."""
@@ -272,6 +372,8 @@ class BluetoothManager:
         now = time.time()
         self.last_advertisement_at = now
         self.received_advertisements += 1
+        self.observations_by_radio[BLE_RADIO] += 1
+        self.last_observation_by_radio[BLE_RADIO] = now
         previous = self._devices.get(identifier)
         name = advertisement_data.local_name or (
             previous.name if previous is not None else device.name or "<Unknown>"
@@ -396,6 +498,8 @@ class BluetoothManager:
             **signal,
         )
         observed.profile_fingerprint = _profile_fingerprint(observed)
+        self._correlate_radios(observed)
+        self._observe_position(observed)
         if self.history is not None:
             self.history.enrich(observed, classify=previous is None)
             observed.profile_fingerprint = _profile_fingerprint(observed)
@@ -411,6 +515,8 @@ class BluetoothManager:
         now = time.time()
         self.last_advertisement_at = now
         self.received_advertisements += 1
+        self.observations_by_radio[observation.radio_type] += 1
+        self.last_observation_by_radio[observation.radio_type] = now
         previous = self._devices.get(observation.identifier)
         name = observation.name
         if name == "<Unknown>" and previous is not None:
@@ -459,6 +565,12 @@ class BluetoothManager:
             class_of_device=observation.class_of_device or (
                 previous.class_of_device if previous is not None else None
             ),
+            page_scan_repetition_mode=observation.page_scan_repetition_mode or (
+                previous.page_scan_repetition_mode if previous is not None else None
+            ),
+            clock_offset=observation.clock_offset or (
+                previous.clock_offset if previous is not None else None
+            ),
             appearance=(
                 observation.appearance
                 if observation.appearance is not None
@@ -500,6 +612,8 @@ class BluetoothManager:
             **signal,
         )
         observed.profile_fingerprint = _profile_fingerprint(observed)
+        self._correlate_radios(observed)
+        self._observe_position(observed)
         if self.history is not None:
             self.history.enrich(observed, classify=previous is None)
             observed.profile_fingerprint = _profile_fingerprint(observed)
@@ -510,6 +624,80 @@ class BluetoothManager:
                 callback(observed)
             except Exception:
                 logger.debug("Bluetooth observation callback failed", exc_info=True)
+
+    def _correlate_radios(self, observed: BluetoothDevice) -> None:
+        """Link, but never merge, Classic and BLE identities using cautious evidence."""
+        matches: list[tuple[BluetoothDevice, str, tuple[str, ...]]] = []
+        for candidate in self._devices.values():
+            if candidate.identifier == observed.identifier:
+                continue
+            if set(candidate.radio_types) & set(observed.radio_types):
+                continue
+            evidence: list[str] = []
+            observed_name = _correlation_name(observed.name)
+            candidate_name = _correlation_name(candidate.name)
+            if observed_name and observed_name == candidate_name:
+                evidence.append("exact normalized name")
+            shared_services = set(observed.service_uuids) & set(candidate.service_uuids)
+            if shared_services:
+                evidence.append("shared advertised/SDP service")
+            if (
+                observed.protocol_type
+                and observed.protocol_type == candidate.protocol_type
+            ):
+                evidence.append("matching protocol profile")
+            if abs(observed.last_seen - candidate.last_seen) <= 10:
+                evidence.append("observed within 10 seconds")
+            if abs(observed.rssi - candidate.rssi) <= 10:
+                evidence.append("RSSI within 10 dB")
+            strong_identity = any(
+                item in evidence for item in (
+                    "exact normalized name",
+                    "shared advertised/SDP service",
+                    "matching protocol profile",
+                )
+            )
+            if not strong_identity or len(evidence) < 2:
+                continue
+            confidence = "high" if (
+                "exact normalized name" in evidence and len(evidence) >= 3
+            ) else "medium"
+            matches.append((candidate, confidence, tuple(evidence)))
+        if not matches:
+            return
+        observed.related_identifiers = tuple(
+            sorted(candidate.identifier for candidate, _, _ in matches)
+        )
+        observed.correlation_confidence = (
+            "high" if any(level == "high" for _, level, _ in matches) else "medium"
+        )
+        observed.correlation_evidence = tuple(sorted({
+            item for _, _, evidence in matches for item in evidence
+        }))
+        for candidate, confidence, evidence in matches:
+            candidate.related_identifiers = tuple(sorted(
+                set(candidate.related_identifiers) | {observed.identifier}
+            ))
+            if confidence == "high" or not candidate.correlation_confidence:
+                candidate.correlation_confidence = confidence
+            candidate.correlation_evidence = tuple(sorted(
+                set(candidate.correlation_evidence) | set(evidence)
+            ))
+
+    def _observe_position(self, device: BluetoothDevice) -> None:
+        if self.location_store is None or self.fix_provider is None:
+            return
+        movement_m = self.movement_provider() if self.movement_provider else 20.0
+        max_accuracy_m = self.accuracy_provider() if self.accuracy_provider else 20.0
+        device.positions = self.location_store.observe(
+            "bluetooth",
+            device.identifier,
+            self.fix_provider(),
+            device.rssi,
+            mobile=True,
+            movement_m=movement_m,
+            max_accuracy_m=max_accuracy_m,
+        )
 
     def _signal_fields(self, identifier: str, rssi: int) -> dict[str, Any]:
         samples = self._rssi_history.setdefault(identifier, deque(maxlen=12))
@@ -568,6 +756,13 @@ def _profile_fingerprint(device: BluetoothDevice) -> str:
         modalias=device.modalias,
         hardware_product=device.hardware_product,
     )
+
+
+def _correlation_name(name: str) -> str:
+    normalized = "".join(character for character in name.casefold() if character.isalnum())
+    if normalized in {"", "unknown", "unnamed", "bluetoothdevice"}:
+        return ""
+    return normalized if len(normalized) >= 4 else ""
 
 
 def _is_private_identifier(identifier: str, address_type: str) -> bool:

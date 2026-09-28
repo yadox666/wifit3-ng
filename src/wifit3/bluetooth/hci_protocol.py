@@ -16,6 +16,18 @@ HCI_SET_EVENT_MASK = 0x0C01
 HCI_READ_LOCAL_VERSION = 0x1001
 HCI_INQUIRY = 0x0401
 HCI_INQUIRY_CANCEL = 0x0402
+HCI_CREATE_CONNECTION = 0x0405
+HCI_DISCONNECT = 0x0406
+HCI_CREATE_CONNECTION_CANCEL = 0x0408
+HCI_LINK_KEY_REQUEST_NEG_REPLY = 0x040C
+HCI_PIN_CODE_REQUEST_NEG_REPLY = 0x040E
+HCI_REMOTE_NAME_REQUEST = 0x0419
+HCI_REMOTE_NAME_REQUEST_CANCEL = 0x041A
+HCI_USER_CONFIRMATION_REQUEST_NEG_REPLY = 0x042D
+HCI_USER_PASSKEY_REQUEST_NEG_REPLY = 0x042F
+HCI_REMOTE_OOB_DATA_REQUEST_NEG_REPLY = 0x0433
+HCI_IO_CAPABILITY_REQUEST_NEG_REPLY = 0x0434
+HCI_READ_BUFFER_SIZE = 0x1005
 HCI_WRITE_INQUIRY_MODE = 0x0C45
 HCI_LE_SET_EVENT_MASK = 0x2001
 HCI_LE_SET_SCAN_PARAMETERS = 0x200B
@@ -23,6 +35,7 @@ HCI_LE_SET_SCAN_ENABLE = 0x200C
 
 EVENT_INQUIRY_COMPLETE = 0x01
 EVENT_INQUIRY_RESULT = 0x02
+EVENT_REMOTE_NAME_REQUEST_COMPLETE = 0x07
 EVENT_INQUIRY_RESULT_WITH_RSSI = 0x22
 EVENT_EXTENDED_INQUIRY_RESULT = 0x2F
 EVENT_COMMAND_COMPLETE = 0x0E
@@ -53,6 +66,8 @@ class DiscoveryObservation:
     protocol_type: str = ""
     protocol_source: str = ""
     protocol_confidence: str = ""
+    page_scan_repetition_mode: int = 0
+    clock_offset: int = 0
 
 
 def command_packet(opcode: int, parameters: bytes = b"") -> bytes:
@@ -94,6 +109,15 @@ def parse_discovery_event(event_code: int, parameters: bytes) -> list[DiscoveryO
         if parameters[0] == LE_EXTENDED_ADVERTISING_REPORT:
             return _parse_le_extended_reports(parameters[1:])
     return []
+
+
+def parse_remote_name_event(parameters: bytes) -> tuple[str, str] | None:
+    if len(parameters) < 7 or parameters[0] != 0:
+        return None
+    name = parameters[7:].split(b"\x00", 1)[0].decode("utf-8", errors="replace").strip()
+    if not name:
+        return None
+    return _address(parameters[1:7]), name
 
 
 def _address(raw: bytes) -> str:
@@ -199,45 +223,47 @@ def _parse_inquiry_results(parameters: bytes) -> list[DiscoveryObservation]:
     expected = 1 + count * 14
     if len(parameters) < expected:
         return []
-    addresses = parameters[1:1 + count * 6]
-    page_modes = 1 + count * 6
-    class_base = page_modes + count * 2
-    clock_base = class_base + count * 3
-    rssi_base = clock_base + count * 2
-    return [
-        DiscoveryObservation(
-            identifier=_address(addresses[index * 6:(index + 1) * 6]),
+    observations = []
+    for index in range(count):
+        base = 1 + index * 14
+        observations.append(DiscoveryObservation(
+            identifier=_address(parameters[base:base + 6]),
             radio_type=CLASSIC_RADIO,
-            rssi=_signed(parameters[rssi_base + index]),
+            rssi=_signed(parameters[base + 13]),
+            page_scan_repetition_mode=parameters[base + 6],
             class_of_device=int.from_bytes(
-                parameters[class_base + index * 3:class_base + (index + 1) * 3], "little"
+                parameters[base + 8:base + 11], "little"
             ),
-        )
-        for index in range(count)
-    ]
+            clock_offset=int.from_bytes(
+                parameters[base + 11:base + 13], "little"
+            ),
+        ))
+    return observations
 
 
 def _parse_inquiry_results_without_rssi(parameters: bytes) -> list[DiscoveryObservation]:
     if not parameters:
         return []
     count = parameters[0]
-    expected = 1 + count * 13
+    expected = 1 + count * 14
     if len(parameters) < expected:
         return []
-    addresses = parameters[1:1 + count * 6]
-    page_modes = 1 + count * 6
-    class_base = page_modes + count * 2
-    return [
-        DiscoveryObservation(
-            identifier=_address(addresses[index * 6:(index + 1) * 6]),
+    observations = []
+    for index in range(count):
+        base = 1 + index * 14
+        observations.append(DiscoveryObservation(
+            identifier=_address(parameters[base:base + 6]),
             radio_type=CLASSIC_RADIO,
             rssi=-100,
+            page_scan_repetition_mode=parameters[base + 6],
             class_of_device=int.from_bytes(
-                parameters[class_base + index * 3:class_base + (index + 1) * 3], "little"
+                parameters[base + 9:base + 12], "little"
             ),
-        )
-        for index in range(count)
-    ]
+            clock_offset=int.from_bytes(
+                parameters[base + 12:base + 14], "little"
+            ),
+        ))
+    return observations
 
 
 def _parse_extended_inquiry_result(parameters: bytes) -> list[DiscoveryObservation]:
@@ -249,6 +275,8 @@ def _parse_extended_inquiry_result(parameters: bytes) -> list[DiscoveryObservati
         identifier=_address(parameters[1:7]),
         radio_type=CLASSIC_RADIO,
         rssi=_signed(parameters[14]),
+        page_scan_repetition_mode=parameters[7],
+        clock_offset=int.from_bytes(parameters[12:14], "little"),
         **details,
     )]
 

@@ -8,12 +8,16 @@ from textual.widgets import DataTable, Input, Select
 from textual.widgets.data_table import ColumnKey
 
 from wifit3.models import BluetoothDevice
+from wifit3.bluetooth.connection import BluetoothConnectionError
 from wifit3.bluetooth.usb_hci import UsbBluetoothController
+from wifit3.persist.config import Config
 from wifit3.persist.targets import TargetStore
 from wifit3.ui.app import WifiteApp
 from wifit3.ui.screens.bluetooth_scanner import (
     _BluetoothSortReadout,
     BluetoothScannerView,
+    _connection_error_message,
+    _device_has_expired,
     _group_anonymous_apple_devices,
 )
 from wifit3.ui.screens.splash import SplashView
@@ -36,6 +40,25 @@ def _anonymous_apple(identifier: str, *, rssi: int = -70) -> BluetoothDevice:
         first_seen=now - 5,
         last_seen=now,
     )
+
+
+def test_timeout_error_has_actionable_ble_message():
+    try:
+        raise BluetoothConnectionError("TimeoutError") from TimeoutError()
+    except BluetoothConnectionError as exc:
+        assert _connection_error_message(exc) == (
+            "BLE GATT connection timed out. The device may currently accept "
+            "Bluetooth Classic only."
+        )
+
+
+def test_bluetooth_expiry_uses_shared_scanner_preference(monkeypatch):
+    monkeypatch.setattr(Config, "scanner_ap_expiry", 120.0)
+    assert _device_has_expired(119.9) is False
+    assert _device_has_expired(120.0) is True
+
+    monkeypatch.setattr(Config, "scanner_ap_expiry", -1.0)
+    assert _device_has_expired(100_000.0) is False
 
 
 @pytest.mark.asyncio
@@ -111,7 +134,7 @@ async def test_splash_shows_separate_dual_mode_button_when_controller_is_detecte
         splash = app.screen
         button = splash.query_one("#bluetooth-usb-btn")
         assert button.display
-        assert button.label.plain == "SCAN DUAL BT + BLE"
+        assert button.label.plain == "BT/BLE Scan"
 
         splash.action_start_usb_bluetooth()
         for _ in range(40):
@@ -509,4 +532,74 @@ async def test_connect_key_connects_selected_device_and_opens_focus(monkeypatch)
 
         app.bluetooth_manager.connect.assert_awaited_once_with(device)
         assert pushed == ["bluetooth-focus"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_connect_key_opens_read_only_focus_for_classic_device(monkeypatch):
+    app = WifiteApp()
+    device = replace(
+        _anonymous_apple("AA:BB:CC:DD:EE:FF"),
+        name="Classic Speaker",
+        manufacturer_ids=(),
+        radio_types=("BT",),
+        discovery_source="usb-hci",
+        class_of_device=0x240404,
+    )
+    app.bluetooth_manager.devices = lambda: [device]
+    app.bluetooth_manager._devices[device.identifier] = device
+    pushed = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner.refresh_table()
+        monkeypatch.setattr(app, "push_screen", pushed.append)
+
+        await pilot.press("enter")
+        await pilot.pause(0)
+
+        assert app.bluetooth_manager.classic_focus_device is device
+        assert pushed == ["bluetooth-classic-focus"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_ble_timeout_falls_back_to_classic_focus(monkeypatch):
+    app = WifiteApp()
+    device = replace(
+        _anonymous_apple("AA:BB:CC:DD:EE:FF"),
+        name="Stonmore 2",
+        manufacturer_ids=(),
+        radio_types=("BLE", "BT"),
+        discovery_source="system+usb-hci",
+    )
+    app.bluetooth_manager.devices = lambda: [device]
+    app.bluetooth_manager._devices[device.identifier] = device
+    app.bluetooth_manager.stop = AsyncMock()
+    app.bluetooth_manager.resume_scan = AsyncMock()
+
+    async def timeout_connect(_device):
+        raise BluetoothConnectionError("TimeoutError") from TimeoutError()
+
+    app.bluetooth_manager.connect = AsyncMock(side_effect=timeout_connect)
+    pushed = []
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner.refresh_table()
+        monkeypatch.setattr(app, "push_screen", pushed.append)
+
+        await pilot.press("enter")
+        for _ in range(40):
+            await pilot.pause(0)
+            if pushed:
+                break
+
+        app.bluetooth_manager.resume_scan.assert_awaited_once()
+        assert app.bluetooth_manager.classic_focus_device is device
+        assert pushed == ["bluetooth-classic-focus"]
 

@@ -13,11 +13,11 @@ import hashlib
 import logging
 import threading
 import time
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 from wifit3.chips.log_trace import TRACE   # registers Logger.trace + the level name
 from wifit3.models import (
-    AccessPoint, Client, EnterpriseSession, Handshake, HandshakeMessage, IdSource,
+    AccessPoint, Client, EnterpriseSession, Handshake, HandshakeMessage, IdSource, LocationFix,
     ProbeObservation,
 )
 from wifit3.dot11.mac import mac_to_str
@@ -36,6 +36,7 @@ from wifit3.persist.enterprise_sessions import (
     EnterpriseSessionStoreError,
 )
 from wifit3.persist.ap_history import ApHistoryStore, ApHistoryStoreError
+from wifit3.persist.locations import LocationStore
 from wifit3.wlan.packet_stats import PacketStats
 from wifit3.wlan.wep_store import WepCaptureStore
 
@@ -96,6 +97,10 @@ class WlanSink:
         wifi_profiles: WifiProfileStore | None = None,
         enterprise_sessions: EnterpriseSessionStore | None = None,
         ap_history: ApHistoryStore | None = None,
+        location_store: LocationStore | None = None,
+        fix_provider: Callable[[], LocationFix | None] | None = None,
+        movement_provider: Callable[[], float] | None = None,
+        accuracy_provider: Callable[[], float] | None = None,
     ):
         self.access_points: Dict[str, AccessPoint] = {}
         self.clients: Dict[str, Client] = {}
@@ -103,6 +108,10 @@ class WlanSink:
         self.wifi_profiles = wifi_profiles
         self.enterprise_sessions = enterprise_sessions
         self.ap_history = ap_history
+        self.location_store = location_store
+        self.fix_provider = fix_provider
+        self.movement_provider = movement_provider
+        self.accuracy_provider = accuracy_provider
         self.wep_store = WepCaptureStore()  # WEP IV tallying
         self.packet_stats = PacketStats()   # Packet dashboard source
         self.own_macs: Set[str] = set()     # MACs we transmit as; dropped at ingest, never a client
@@ -126,9 +135,38 @@ class WlanSink:
 
     def _record_ap_signal(self, ap: AccessPoint, card_id: str, rssi: int) -> None:
         ap.signal_by_card[card_id] = self._smooth(ap.signal_history, card_id, rssi)
+        self.observe_ap_position(ap, rssi)
 
     def _record_client_signal(self, client: Client, card_id: str, rssi: int) -> None:
         client.signal_by_card[card_id] = self._smooth(client.signal_history, card_id, rssi)
+        if self.location_store is not None and self.fix_provider is not None:
+            movement_m = self.movement_provider() if self.movement_provider else 20.0
+            max_accuracy_m = self.accuracy_provider() if self.accuracy_provider else 20.0
+            client.positions = self.location_store.observe(
+                "wifi_client",
+                client.mac,
+                self.fix_provider(),
+                rssi,
+                mobile=True,
+                movement_m=movement_m,
+                max_accuracy_m=max_accuracy_m,
+            )
+
+    def observe_ap_position(self, ap: AccessPoint, rssi: int | None = None) -> None:
+        if self.location_store is None or self.fix_provider is None:
+            return
+        kind = "test_ap" if ap.is_own_fake else "wifi_ap"
+        ap.positions = self.location_store.observe(
+            kind,
+            ap.bssid,
+            self.fix_provider(),
+            rssi,
+            mobile=False,
+            movement_m=0.0,
+            max_accuracy_m=(
+                self.accuracy_provider() if self.accuracy_provider else 20.0
+            ),
+        )
 
     # ----- ingest ------------------------------------------------------------
 

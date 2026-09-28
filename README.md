@@ -1,20 +1,20 @@
 # wifit3-ng
-> Version 0.3.4. A standalone USB Wi-Fi and Bluetooth/BLE auditor for Linux, Windows, and macOS.
+> Version 0.3.8. A standalone USB Wi-Fi and Bluetooth/BLE auditor for Linux, Windows, and macOS.
 
-**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.4 - yadox666`.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.8 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds the 0.3.4 reconnaissance, analysis, capture, target-tracking, and Bluetooth/BLE changes described below. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.8**, including the Enterprise EAP lab honeypot in current builds. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
 </p>
 
-> *At least* one of the [supported USB adapters](#supported-hardware) is **required** for Wi-Fi. Bluetooth/BLE uses the operating system's Bluetooth adapter through Bleak, not those USB Wi-Fi mini-drivers.
+> *At least* one of the [supported USB adapters](#supported-hardware) is **required** for Wi-Fi. BLE can use the operating system adapter through Bleak; supported dedicated Bluetooth USB controllers add direct Classic inquiry, remote-name resolution, and read-only SDP browsing.
 
 ## Why?
 * **Cross-platform:** The same terminal interface runs on Linux, macOS, and Windows.
 * **User-space wireless stack:** Built-in mini-drivers avoid kernel-driver version skew and Windows NDIS for supported USB cards.
-* **No external attack suite:** No `aircrack-ng` or `reaver`. Wi-Fi auditing is Python with PyUSB and Textual. Bluetooth observation uses Bleak.
+* **No external attack suite:** No `aircrack-ng` or `reaver`. Wi-Fi auditing is Python with PyUSB and Textual. Bluetooth uses Bleak for system BLE plus PyUSB HCI for supported dedicated controllers.
 
 <p align="center">
   <img src="assets/wifit3-demo.gif" alt="wifit3 in action: WPS PushButton PSK capture" width="700">
@@ -43,9 +43,9 @@ These capabilities come from the original [derv82/wifit3](https://github.com/der
   - **PIN brute force:** Resumable WPS PIN attempts with a known-PIN database and AP lock monitoring.
 - **WEP:** ARP replay, ChopChop, fake authentication, and PTW key recovery in Python.
 
-## Changes by yadox666 in 0.3.4
+## Fork additions (yadox666)
 
-The sections below are the additions in this fork. They sit on top of the original auditor.
+The sections below are the additions in this fork (0.3.4 through current). They sit on top of the original auditor.
 
 ### Navigation
 
@@ -55,10 +55,11 @@ The startup screen shows centered **START WI-FI** and **SCAN BLE** buttons on on
 |---|---|---|
 | `W` | Startup | Start Wi-Fi on the selected adapters |
 | `B` | Startup | Start the Bluetooth/BLE scanner |
+| `D` | Startup | Start direct Bluetooth Classic + BLE scanning with a supported dedicated USB controller |
 | `U` | Startup | Update the local OUI database |
 | `C` | Startup, before the first scan | Open `Clear-DB` |
 | `Ctrl+P` | Everywhere | Preferences. `A` opens About, `T` opens the target editor |
-| `Ctrl+D` | Everywhere | Active-adapter diagnostics |
+| `Ctrl+D` | Everywhere | Adapter and GPS diagnostics |
 | `Ctrl+Q` | Everywhere | Quit |
 | `Escape` | Scanners and focus | Wi-Fi and Bluetooth scanners return to device selection. Focus screens return to the scanner |
 | `T` | Wi-Fi scanner | Switch between the AP table and the client table |
@@ -69,7 +70,7 @@ The startup screen shows centered **START WI-FI** and **SCAN BLE** buttons on on
 | `X` | Wi-Fi scanner | Export the scan as CSV and JSON |
 | `X` | AP Focus | Start or stop a focused libpcap capture |
 | `E` | Enterprise AP Focus | Open the Enterprise assessment panel |
-| `X` | Bluetooth scanner | Export the scan as CSV, JSON, and JSONL |
+| `X` | Bluetooth scanner | Export CSV, JSON, JSONL, and captured direct-USB HCI traffic as btsnoop |
 | `V` | Wi-Fi AP/client tables and AP Focus | Open Vault |
 
 Vault is available only in Wi-Fi mode.
@@ -202,6 +203,9 @@ with **Enterprise** or `E`.
 
 #### Enterprise panel and infrastructure correlation
 
+- The scanner's upper encryption filter includes **Enterprise**, selecting APs
+  that advertise EAP/802.1X (including FT-EAP and Suite-B variants). Personal
+  PSK/SAE-only networks are excluded; mixed PSK+EAP APs remain included.
 - Shows each observed Enterprise system's methods, TLS evidence,
   certificates, sessions, findings, evidence coverage, and remaining unknowns.
 - Groups same-SSID Enterprise BSSIDs and systems sharing certificate
@@ -244,11 +248,45 @@ with **Enterprise** or `E`.
   not contain raw client identifiers, EAP identities, credentials, private
   keys, or packet payloads.
 
-PEAP/TTLS inner methods and client RADIUS-certificate validation remain
-encrypted unless a client completes authentication. Structural chain findings
-are evidence-based heuristics, not cryptographic trust validation. The suite
-does not automate a rogue RADIUS server, Enterprise Evil Twin, inner
-credential harvesting, or credential validation.
+#### Enterprise EAP lab honeypot (authorized testing only)
+
+For explicit lab or engagement scenarios where inner MS-CHAPv2 capture is in
+scope, AP Focus → **Enterprise** → **Start PEAP EAP lab honeypot** runs a
+separate confirmed active campaign (not the passive/active outer-EAP probe
+above):
+
+- Requires the normal active-action confirmation and a spoof-capable adapter.
+  The launch modal sets duration (5–60 minutes), optional **deauth + CSA + BTM**
+  eviction bursts toward the real AP (PMF-aware, on a fixed interval), and
+  whether **EAP-TLS** should request a client certificate.
+- Advertises a **locally administered twin BSSID** on the focused channel using a
+  **cloned target beacon** when one has been observed (rates, capabilities,
+  vendor IEs, HT/VHT, WMM, country, and similar tags preserved; RSN collapsed to
+  a single 802.1X AKM matching the AP's ciphers and PMF posture; SAE/RSNXE
+  stripped). Probe responses mirror the same profile. Outer **PEAP**,
+  **EAP-TTLS**, and **EAP-TLS** terminate on an ephemeral **lab TLS certificate**
+  (OpenSSL-generated under the private data directory; OpenSSL must be available
+  on `PATH`).
+- Captures inner **MS-CHAPv2** for PEAP/TTLS tunnels and saves paired Hashcat
+  material to Vault: `*_mschapv2.mschapv2` (**mode 5500**) and
+  `*_netntlmv2.netntlmv2` (**mode 5600** NetNTLMv2-SSP). Vault's Hashcat action
+  picks 22000, 5500, or 5600 from the file extension. PCAP saving follows the
+  same preferences as other captures when enabled.
+- **Client security assessment** (modal toggles): untrusted lab TLS, optional
+  **weak outer EAP first**, inner **PAP** probe before MS-CHAPv2, empty MS-CHAPv2
+  detection, **EAP-TLS Success** against the lab cert as a finding, and isolated
+  **lab DHCP Offer/ACK** on `10.99.0.0/24`. Completing a run with client evidence
+  writes **`*_eap_lab_report.json`** to Vault (pseudonymized client IDs). Correlate
+  with the **probe honeypot** DHCP stages on the same SSID for additional context.
+- For EAP-TLS with client certificates requested, only the client certificate
+  **SHA-256 fingerprint** is logged; private keys and certificate blobs are not
+  stored.
+
+PEAP/TTLS inner methods on production networks remain encrypted unless a client
+completes authentication against your infrastructure. Structural certificate
+findings are evidence-based heuristics, not trust validation. Use the EAP lab
+only on networks and clients you own or are explicitly authorized to test;
+eviction and twin beacons are visible to nearby devices.
 
 ### Packet capture and Vault
 
@@ -320,7 +358,26 @@ The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and 
 
 - The Bluetooth scanner has filters, stable columns, activity counters, signal
   colours, sorting, reverse sorting, and owner-private CSV, JSON, and JSONL
-  exports.
+  exports. Direct USB sessions additionally export bounded HCI command, event,
+  and ACL traffic as a Wireshark-readable `.btsnoop` file.
+- Supported dedicated USB controllers perform Bluetooth Classic inquiry,
+  resolve remote names, retain page-scan and clock-offset metadata, and browse
+  public SDP service records over a bounded ACL/L2CAP session. SDP Focus does
+  not pair, authenticate, retain link keys, open RFCOMM profiles, or write
+  remote data; unsolicited pairing requests are explicitly rejected.
+- A Classic-only row opens **Bluetooth Classic Focus** instead of BLE GATT
+  Focus. It shows address and resolved name, Class of Device, classification,
+  RSSI, inquiry metadata, public SDP service classes, probable BT/BLE
+  relations, and live HCI event/error counters while split Classic and system
+  BLE discovery continues in the background.
+- Classic and BLE identifiers remain separate. Exact normalized names,
+  compatible service/profile evidence, observation time, and RSSI proximity
+  can add a clearly labeled probable relation with medium or high confidence;
+  this never merges identifiers or claims certainty.
+- If BLE GATT times out for a row that also has Classic evidence, the scanner
+  resumes discovery and opens read-only Classic Focus. A BLE-only timeout
+  reports that the device may not currently accept BLE connections instead of
+  exposing a raw `TimeoutError`.
 - Device classification combines BLE GAP Appearance, Bluetooth Classic
   Class-of-Device major/minor values, standard Classic and LE service profiles,
   verified advertising protocols, and finally conservative name hints. Focus
@@ -371,7 +428,12 @@ The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and 
 - Bluetooth Focus shows identity, manufacturer, evidence-backed likely type,
   services, characteristics, values, notifications, traffic, and exposure
   findings.
-- Diagnostics report the active system adapter and scanner health.
+- Diagnostics report BLE and Classic Bluetooth separately, including per-radio
+  device counts, observation counts, last activity, backend, and scanner
+  health.
+- Bluetooth rows use the same configurable inactivity preference as Wi-Fi:
+  they dim after ten seconds and hide at the selected timeout; **Never** keeps
+  inactive rows visible.
 - A locked Bluetooth target reconnects within the configured reacquisition timeout.
 - Bleak does not provide raw BLE link-layer packets. Locked Bluetooth targets
   record advertisements and read-only GATT observations in bounded SQLite
@@ -432,6 +494,41 @@ requires typing exactly `DELETE NOW!`. The selected medium's observations,
 event history, and saved targets are deleted. PCAPs, keys, reports, and scan
 exports are retained.
 
+### GPS and location history
+
+- An optional NMEA USB GPS is detected automatically at startup on Linux,
+  macOS, and Windows through its serial port. Detection verifies NMEA traffic
+  rather than trusting a generic USB-to-serial VID/PID and tries common GNSS
+  baud rates automatically.
+- Preferences accepts a manual serial port (`COM3`, `/dev/ttyUSB0`,
+  `/dev/cu.usbserial-*`, and similar). Leaving the field blank enables
+  automatic port detection. Changing the port reconfigures GPS without
+  restarting the application.
+- A notification reports the detected port and baud rate. Invalid, stale,
+  no-fix, and observations worse than the configured GPS accuracy requirement
+  are not attached to wireless devices. The default maximum error radius is
+  20 metres.
+- Fixed infrastructure, including observed APs and locally created evil-twin
+  or probe-test APs, retains the valid receiver position observed with its
+  strongest RSSI. Synthetic APs have no meaningful received RSSI, so their
+  current valid GPS position is recorded when the test begins.
+- Portable Wi-Fi stations and Bluetooth/BT/BLE devices retain multiple
+  position clusters. A new cluster is created only after the device is
+  observed more than the configured movement distance from all prior clusters;
+  the default and minimum threshold is 20 metres. Within a cluster, a position
+  is replaced only by stronger RSSI, with GPS accuracy breaking equal-RSSI
+  ties.
+- Wi-Fi JSON/CSV and Bluetooth CSV/JSON/JSONL scan exports include the retained
+  position evidence. Coordinates represent the receiver location at the time
+  of the observation, not a guaranteed transmitter location. Rotating BLE
+  identifiers can produce separate histories.
+- `Ctrl+D` shows live GPS diagnostics beneath the wireless adapters: serial
+  port, baud, coordinates, satellites, estimated accuracy, fix age, and
+  `SEARCHING`, `NO FIX`, `LOW ACCURACY`, `FIX`, `STALE`, or `UNAVAILABLE`
+  state. When a position exists, **Open position in Google Maps** opens that
+  coordinate in the default browser; coordinates are sent to Google only
+  after this click.
+
 ### Preferences and diagnostics
 
 Preferences (`Ctrl+P`) include:
@@ -441,6 +538,9 @@ Preferences (`Ctrl+P`) include:
 - Inactive-AP display lifetime, including Never.
 - Active-action intensity.
 - Capture directory.
+- GPS serial port (blank for automatic detection).
+- Portable-device movement distance, with a 20-metre minimum.
+- Required GPS accuracy (maximum accepted error radius), default 20 metres.
 - Automatic update checks.
 - Confirmation for active wireless actions.
 - Automatic WPS PBC capture.
@@ -464,15 +564,18 @@ Automatic update checking is off until it is enabled. When it is on, startup sen
 | `enterprise_sessions.sqlite3` | Same user-data directory | Bounded Enterprise profiles, pseudonymized sessions, certificates, and probe history |
 | `ap_history.sqlite3` | Same user-data directory | Bounded AP identity, radio, security, AP/client associations, relationships, and AP/client network metadata |
 | `bluetooth_history.sqlite3` | Same user-data directory | Bluetooth/BT/BLE identity history and bounded advertisement/GATT event captures |
+| `location_history.sqlite3` | Same user-data directory | Strongest-RSSI AP positions and distance-clustered Wi-Fi station/Bluetooth positions |
 | `oui.txt` | OS user-cache directory for `wifit3` | IEEE manufacturer database |
-| `captures/` | Path set in Preferences, default `captures` | Handshakes, focused PCAP files, sanitized Enterprise reports, and other Vault artifacts |
-| `captures/scan_exports/` | Under the capture directory | Wi-Fi CSV/JSON and Bluetooth CSV/JSON/JSONL snapshots |
+| `captures/` | Path set in Preferences, default `captures` | Handshakes (`.hc22000`), EAP lab MS-CHAPv2/NetNTLMv2 Hashcat lines, focused PCAP files, sanitized Enterprise reports, and other Vault artifacts |
+| `captures/scan_exports/` | Under the capture directory | Wi-Fi CSV/JSON, Bluetooth CSV/JSON/JSONL snapshots, and direct-USB Bluetooth `.btsnoop` captures |
 
 Sensitive files are written with owner-only permissions (`0600`) and private
 directories use `0700` where the operating system supports POSIX modes. This
 includes credentials, Hashcat material, PCAP, Enterprise reports, scan
 exports, WPS state, Vault job state, and capture archives. These artifacts are
-excluded by `.gitignore`. Do not publish the capture directory.
+excluded by `.gitignore`. Location history is also sensitive because it can
+describe where the operator and observed portable devices were seen. Do not
+publish the capture directory or location database.
 
 ## Screenshots
 
@@ -516,17 +619,18 @@ Per-device capabilities and limitations: [Supported Hardware](docs/SUPPORTED-HAR
 
 ### Dedicated Bluetooth Classic + BLE adapter
 
-The normal **SCAN BLE** action continues to use the operating system's Bluetooth adapter through Bleak and does not require dedicated hardware. When a supported controller is detected, **SCAN DUAL BT + BLE** appears and uses that adapter directly for Bluetooth Classic inquiry and passive BLE discovery.
+The normal **SCAN BLE** action continues to use the operating system's Bluetooth adapter through Bleak and does not require dedicated hardware. When a supported controller is detected, **BT/BLE Scan** appears. Classic-only controllers run direct Classic HCI concurrently with system BLE; dual-mode controllers can perform direct Classic inquiry and passive BLE discovery.
 
 | Chipset | Modes | Supported USB IDs | Notes |
 |---|---|---|---|
-| Realtek RTL8761BU | Bluetooth Classic (BR/EDR) + BLE | `0bda:8771`, `0bda:a728`, `2357:0604`, `2357:0607`, `2c4e:0115`, `2550:8761`, `6655:8771`, `7392:c611`, `2b89:8761`, `2b89:6275` | Uses the bundled, hash-verified `rtl8761bu` firmware and config from `linux-firmware`. Direct USB mode is discovery-only; BLE GATT Focus remains available through **SCAN BLE**. |
+| CSR BlueCore4-ROM / Sena Parani-UD100 | Bluetooth Classic (BR/EDR); system BLE remains active | `0a12:0001` | Uses the adapter's legitimate CSR Bluetooth 2.0 ROM firmware; it does not support BLE HCI commands. Direct mode provides Classic inquiry, remote names, read-only SDP, Classic Focus, health telemetry, and btsnoop capture. |
+| Realtek RTL8761BU | Bluetooth Classic (BR/EDR) + BLE | `0bda:8771`, `0bda:a728`, `0b05:190e`, `2357:0604`, `2357:0607`, `2c4e:0115`, `2550:8761`, `6655:8771`, `7392:c611`, `2b89:8761`, `2b89:6275` | Uses the bundled, hash-verified `rtl8761bu` firmware and config from `linux-firmware`. Direct USB mode provides Classic inquiry, remote names, read-only SDP, passive BLE discovery, health telemetry, and btsnoop capture; BLE GATT Focus remains available through **SCAN BLE**. |
 
-Retail vendors may change chipsets without changing a product name, so support is determined by USB ID rather than branding. Use a dedicated adapter: direct mode temporarily claims it from the operating system, and Windows requires the adapter to be bound to WinUSB.
+Retail vendors may change chipsets without changing a product name, so support is determined by USB ID rather than branding. Use a dedicated adapter: direct mode temporarily claims it from the operating system, and Windows requires the adapter to be bound to WinUSB. If macOS or Linux has already claimed the Sena controller, the red alert asks you to unplug and re-plug it so wifit3 can reserve it.
 
 ## Installation and running
 
-Python 3.11 or newer is required to run from source. Release **0.3.4** binaries are published from this fork.
+Python 3.11 or newer is required to run from source. Release **0.3.8** binaries are published from this fork.
 
 ### Option 1: Download a prebuilt binary
 
@@ -586,7 +690,12 @@ wifit3 bypasses the operating system's native Wi-Fi stack. It ships lightweight 
 
 Register-level frame injection and monitor mode run in user space, so Windows NDIS restrictions and Linux kernel driver locking do not apply to those cards.
 
-Bluetooth/BLE does not use those mini-drivers. The scanner and read-only GATT inspection go through Bleak and the system Bluetooth adapter.
+Bluetooth does not use the Wi-Fi mini-drivers. System BLE scanning and
+read-only GATT inspection go through Bleak. Supported dedicated Bluetooth
+controllers use the cross-platform PyUSB HCI path for Classic inquiry,
+remote-name requests, public SDP, telemetry, and btsnoop capture; Linux may
+detach `btusb`, macOS may require a cold re-plug before reservation, and
+Windows requires WinUSB for the dedicated adapter.
 
 Architecture, driver porting, and USB trace replay are documented in [docs/porting/METHODOLOGY.md](docs/porting/METHODOLOGY.md).
 
@@ -595,7 +704,8 @@ Architecture, driver porting, and USB trace replay are documented in [docs/porti
 The project is covered by the upstream test suite plus tests for Bluetooth,
 targets, PCAP rotation, hidden SSID history, infrastructure grouping,
 Enterprise EAP/TLS/X.509 parsing, session persistence, infrastructure
-correlation, active outer-EAP probing, Vault reports, and private file modes.
+correlation, active outer-EAP probing, EAP lab honeypot MS-CHAPv2 persistence,
+Vault reports, Hashcat mode mapping, and private file modes.
 The current full suite contains more than 3,100 passing tests, in addition to
 explicit skips, deselections, and expected failures for unavailable or
 platform-specific facilities.

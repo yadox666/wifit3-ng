@@ -183,6 +183,107 @@ def parse_ack(
     return _lease_from_reply(body, options), False
 
 
+_LAB_DHCP_SERVER = "10.99.0.1"
+_LAB_DHCP_MASK = "255.255.255.0"
+_LAB_DHCP_LEASE_SECONDS = 120
+
+
+def lab_dhcp_client_ip(client_mac: bytes) -> str:
+    """Stable isolated lab address per client MAC (RFC1918 10.99.0.0/24)."""
+    host = 2 + ((client_mac[3] + client_mac[4] + client_mac[5]) % 200)
+    return f"10.99.0.{host}"
+
+
+def parse_client_dhcp(frame: bytes, client_mac: bytes) -> tuple[str, int] | None:
+    """Return ``(discover|request, xid)`` for a matching client DHCP message."""
+    kind = parse_client_message(frame, client_mac)
+    if kind is None:
+        return None
+    payload = _ipv4_payload(frame)
+    if payload is None or len(payload) < 28 or payload[9] != 17:
+        return None
+    header_len = (payload[0] & 0x0F) * 4
+    if header_len < 20 or len(payload) < header_len + 8:
+        return None
+    udp = payload[header_len:]
+    udp_len = struct.unpack("!HHH", udp[:6])[2]
+    body = udp[8:min(len(udp), udp_len)]
+    if len(body) < 8:
+        return None
+    xid = struct.unpack("!I", body[4:8])[0]
+    return kind, xid
+
+
+def build_lab_offer(
+    bssid: bytes,
+    client_mac: bytes,
+    xid: int,
+    *,
+    offered_ip: str | None = None,
+    server: str = _LAB_DHCP_SERVER,
+) -> bytes:
+    """DHCP Offer on the lab BSSID (isolated lease, no routing)."""
+    yiaddr = offered_ip or lab_dhcp_client_ip(client_mac)
+    body = _lab_dhcp_reply(
+        client_mac,
+        xid,
+        message_type=2,
+        yiaddr=yiaddr,
+        server=server,
+    )
+    return _ipv4_udp_frame(
+        bssid, client_mac, b"\xff" * 6,
+        server, "255.255.255.255", 67, 68, body, xid & 0xFFFF,
+    )
+
+
+def build_lab_ack(
+    bssid: bytes,
+    client_mac: bytes,
+    xid: int,
+    client_ip: str,
+    *,
+    server: str = _LAB_DHCP_SERVER,
+) -> bytes:
+    """DHCP ACK confirming the lab lease."""
+    body = _lab_dhcp_reply(
+        client_mac,
+        xid,
+        message_type=5,
+        yiaddr=client_ip,
+        server=server,
+    )
+    return _ipv4_udp_frame(
+        bssid, client_mac, b"\xff" * 6,
+        server, "255.255.255.255", 67, 68, body, xid & 0xFFFF,
+    )
+
+
+def _lab_dhcp_reply(
+    client_mac: bytes,
+    xid: int,
+    *,
+    message_type: int,
+    yiaddr: str,
+    server: str,
+) -> bytes:
+    bootp = bytearray(236)
+    bootp[0:4] = b"\x02\x01\x06\x00"
+    bootp[4:8] = struct.pack("!I", xid)
+    bootp[16:20] = ipaddress.IPv4Address(yiaddr).packed
+    bootp[28:34] = client_mac
+    options = (
+        bytes([0x35, 0x01, message_type])
+        + b"\x01\x04" + ipaddress.IPv4Address(_LAB_DHCP_MASK).packed
+        + b"\x03\x04" + ipaddress.IPv4Address(server).packed
+        + b"\x36\x04" + ipaddress.IPv4Address(server).packed
+        + b"\x33\x04" + struct.pack("!I", _LAB_DHCP_LEASE_SECONDS)
+        + b"\x3d\x07\x01" + client_mac
+        + b"\xff"
+    )
+    return (bytes(bootp) + DHCP_COOKIE + options).ljust(300, b"\x00")
+
+
 def parse_client_message(frame: bytes, client_mac: bytes) -> str | None:
     """Return ``discover`` or ``request`` for a matching client DHCP message."""
     if len(frame) < 24 or frame[1] & 0x03 != 0x01:  # station -> distribution system

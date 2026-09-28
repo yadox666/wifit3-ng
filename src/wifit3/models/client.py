@@ -5,10 +5,11 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TYPE_CHECKING, Dict, Optional, Set
+from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
 from .capabilities import AdvertisedCapabilities
 from .enterprise import EnterpriseProfile
+from .location import SignalPosition
 
 if TYPE_CHECKING:
     from wifit3.id import Fingerprint
@@ -45,6 +46,7 @@ class Client:
     # Smoothed RSSI per receiving card (card name -> dBm), written by WlanSink.
     signal_by_card: Dict[str, int] = field(default_factory=dict)
     signal_history: Dict[str, deque[int]] = field(default_factory=dict, repr=False)
+    positions: List[SignalPosition] = field(default_factory=list)
 
     @property
     def signal(self) -> int:

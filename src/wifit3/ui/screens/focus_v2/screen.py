@@ -48,6 +48,9 @@ from wifit3.campaigns.deauth import DeauthCampaign
 from wifit3.campaigns.pbc import WpsPbcCapture
 from wifit3.campaigns.probe import probe_ap
 from wifit3.campaigns.enterprise_probe import EnterpriseProbe, EnterpriseProbeResult
+from wifit3.campaigns.eap_lab_config import EapLabLaunchConfig, methods_for_ap
+from wifit3.campaigns.peap_honeypot import PeapHoneypotCampaign
+from wifit3.ui.screens.eap_lab_modal import EapLabModal
 from .campaign_controls import CampaignControls
 from wifit3.campaigns.wps.registrar import PinResult
 from wifit3.crack.handshake import handshake_uncrackable_label
@@ -285,6 +288,8 @@ class FocusViewV2(Screen):
         self._pbc_retry_after = 0.0   # monotonic time before which we won't re-arm a PBC retry
         self._probe_task: Optional[asyncio.Task] = None
         self._enterprise_probe_task: Optional[asyncio.Task] = None
+        self._eap_lab_campaign: PeapHoneypotCampaign | None = None
+        self._eap_lab_event_index = 0
         self._packet_capture: PcapWriter | None = None
         self._packet_capture_array = None
         self._packet_capture_bssid: str | None = None
@@ -374,11 +379,15 @@ class FocusViewV2(Screen):
     def _is_probing(self) -> bool:
         return self._is_wps_probing() or self._is_enterprise_probing()
 
+    def _is_eap_lab_active(self) -> bool:
+        return self._eap_lab_campaign is not None and not self._eap_lab_campaign.done
+
     def _any_campaign_active(self) -> bool:
         return (
             Campaign.active is not None
             or self._controls.current is not None
             or self._is_probing()
+            or self._is_eap_lab_active()
         )
 
     def _stop_probe(self) -> None:
@@ -750,6 +759,7 @@ class FocusViewV2(Screen):
     def _tick(self) -> None:
         if self._target_ap is None or not self.is_current:
             return
+        self._poll_eap_lab_campaign()
         ap = self._target_ap
         locked = getattr(self.app, "locked_target", None)
         if (
@@ -1225,6 +1235,129 @@ class FocusViewV2(Screen):
             self._cancel_enterprise_probe()
         elif action == "save_report":
             self._save_enterprise_report()
+        elif action == "eap_lab":
+            self._request_eap_lab_honeypot()
+
+    def _request_eap_lab_honeypot(self) -> None:
+        ap = self._target_ap
+        if ap is None or not is_enterprise_ap(ap):
+            return
+        if self._is_eap_lab_active():
+            self.notify("PEAP EAP lab is already running", severity="warning")
+            return
+        if self._any_campaign_active():
+            self.notify("Another active operation owns the radio", severity="warning")
+            return
+        self.app.push_screen(
+            EapLabModal(
+                ap.ssid or "<hidden>",
+                ap.channel,
+                default_methods=methods_for_ap(ap),
+            ),
+            self._start_eap_lab_honeypot,
+        )
+
+    def _start_eap_lab_honeypot(self, launch: EapLabLaunchConfig | None) -> None:
+        if launch is None:
+            return
+        ap = self._target_ap
+        array = self.app.array
+        if ap is None or array is None:
+            return
+        try:
+            campaign = PeapHoneypotCampaign(array, ap, launch=launch)
+        except RuntimeError as exc:
+            self.notify(str(exc), title="EAP lab unavailable", severity="error")
+            return
+        if campaign.iface is None:
+            self.notify(
+                f"No spoofable interface can host channel {ap.channel}",
+                severity="error",
+            )
+            return
+        if not campaign.run():
+            self.notify("The radio is busy with another campaign", severity="warning")
+            return
+        self._eap_lab_campaign = campaign
+        self._eap_lab_event_index = 0
+        self._write_log(treelog.header("PEAP EAP lab honeypot"))
+        self.notify(
+            f"EAP lab active on {ap.ssid} · CH {ap.channel} · twin {campaign.bssid_text}",
+            title="EAP lab",
+        )
+
+    def _poll_eap_lab_campaign(self) -> None:
+        campaign = self._eap_lab_campaign
+        if campaign is None:
+            return
+        events = campaign.stats.events
+        for message in events[self._eap_lab_event_index:]:
+            self._write_log(treelog.branch(escape(message)))
+        self._eap_lab_event_index = len(events)
+        ap = self._target_ap
+        while campaign.pending_captures and ap is not None:
+            capture = campaign.pending_captures.pop(0)
+            try:
+                saved = self.app.vault.save_mschapv2(
+                    ap,
+                    capture,
+                    lab_bssid=campaign.bssid_text,
+                )
+            except Exception as exc:
+                logger.exception("Could not save MS-CHAPv2 capture")
+                self.notify(str(exc), title="Vault save failed", severity="error")
+                break
+            if saved is not None:
+                self._write_log(treelog.branch(
+                    f"MS-CHAPv2 saved to Vault · {escape(capture.username)} · "
+                    f"{escape(saved.mschapv2.path.name)} + "
+                    f"{escape(saved.netntlmv2.path.name)} (Hashcat 5500/5600)"
+                ))
+        if not campaign.done:
+            return
+        result = {
+            "captured": "[bold green]MS-CHAPv2 CAPTURED[/bold green] · saved to Vault",
+            "misconfigured": "[bold yellow]CLIENT MISCONFIGURATION[/bold yellow] · see Vault report",
+            "timeout": "[dim]TIMEOUT[/dim] · no MS-CHAPv2 response",
+            "stopped": "[dim]STOPPED[/dim]",
+            "no-interface": "[red]FAILED[/red] · no compatible interface",
+        }.get(campaign.result, escape(campaign.result))
+        self._write_log(treelog.leaf(result))
+        if ap is not None and campaign.client_assessments:
+            try:
+                saved = self.app.vault.save_eap_lab_report(
+                    ap,
+                    lab_bssid=campaign.bssid_text,
+                    launch=campaign.launch,
+                    clients=campaign.client_assessments,
+                    campaign_result=campaign.result,
+                )
+            except Exception as exc:
+                logger.exception("Could not save EAP lab assessment report")
+                self.notify(str(exc), title="Vault save failed", severity="error")
+                saved = None
+            if saved is not None:
+                self._write_log(treelog.branch(
+                    f"EAP lab assessment saved to Vault · {escape(saved.path.name)}"
+                ))
+        severity = (
+            "warning"
+            if campaign.result in ("misconfigured", "timeout", "stopped")
+            else "information"
+        )
+        self.notify(
+            "MS-CHAPv2 hash saved to Vault"
+            if campaign.result == "captured"
+            else f"EAP lab finished: {campaign.result}",
+            title="EAP lab",
+            severity=severity,
+        )
+        self._eap_lab_campaign = None
+
+    async def stop_eap_lab_honeypot(self) -> None:
+        campaign = self._eap_lab_campaign
+        if campaign is not None and not campaign.done:
+            await campaign.stop()
 
     def _save_enterprise_report(self) -> None:
         ap = self._target_ap

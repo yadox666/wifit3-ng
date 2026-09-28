@@ -1,3 +1,4 @@
+import logging
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -19,7 +20,7 @@ from wifit3.models import BluetoothDevice
 from wifit3.persist.config import Config
 from wifit3.persist.targets import SavedTarget, TargetStoreError
 from wifit3.targeting import TargetCandidate, bluetooth_candidate
-from wifit3.ui.bluetooth_export import export_bluetooth_bundle
+from wifit3.ui.bluetooth_export import export_bluetooth_bundle, export_btsnoop
 from wifit3.ui.signal_bar import dbm_style
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
 from wifit3.ui.screens.new_target import NewTargetModal, NewTargetResult
@@ -27,13 +28,39 @@ from wifit3.ui.screens.new_target import NewTargetModal, NewTargetResult
 if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
 
+logger = logging.getLogger(__name__)
+
 
 STALE_DURATION_S = 10.0
-EVICT_DURATION_S = 30.0
 
 
 def _clip(value: str, limit: int) -> str:
     return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
+
+
+def _is_timeout_error(error: BaseException) -> bool:
+    current: BaseException | None = error
+    visited = set()
+    while current is not None and id(current) not in visited:
+        if isinstance(current, TimeoutError):
+            return True
+        visited.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _connection_error_message(error: BaseException) -> str:
+    if _is_timeout_error(error):
+        return (
+            "BLE GATT connection timed out. The device may currently accept "
+            "Bluetooth Classic only."
+        )
+    return str(error) or type(error).__name__
+
+
+def _device_has_expired(age: float) -> bool:
+    expiry = Config.scanner_ap_expiry
+    return expiry >= 0 and age >= expiry
 
 
 def _short_identifier(identifier: str) -> str:
@@ -107,13 +134,13 @@ class _BluetoothScannerHeader(Header):
 
 
 class BluetoothScannerView(Screen):
-    """Nearby Bluetooth Low Energy devices observed through the system adapter."""
+    """Nearby BLE and Classic devices observed through system and USB adapters."""
 
     app: "WifiteApp"
 
     BINDINGS = [
         Binding("escape", "back_to_wifi", "Wi-Fi"),
-        Binding("enter", "connect", "Connect", show=False, priority=True),
+        Binding("enter", "connect", "Focus", show=False, priority=True),
         Binding("a", "toggle_apple_group", "random dev-Ids"),
         Binding("s", "cycle_sort", "Sort Col"),
         Binding("o", "toggle_sort_dir", "Sort Asc/Desc"),
@@ -223,7 +250,8 @@ class BluetoothScannerView(Screen):
         now = time.time()
         discovered = [
             device for device in self.app.bluetooth_manager.devices()
-            if now - device.last_seen < EVICT_DURATION_S and self._matches_filter(device)
+            if not _device_has_expired(now - device.last_seen)
+            and self._matches_filter(device)
         ]
         displayed = discovered if self._apple_expanded else _group_anonymous_apple_devices(discovered)
         visible = {device.identifier: device for device in displayed}
@@ -556,6 +584,10 @@ class BluetoothScannerView(Screen):
         )
         if device.class_of_device is not None:
             log.write(f"Classic class of device: [bold]0x{device.class_of_device:06x}[/bold]")
+            log.write(
+                f"Classic inquiry: page scan repetition {device.page_scan_repetition_mode}, "
+                f"clock offset {device.clock_offset}"
+            )
         if device.appearance is not None:
             log.write(f"BLE Appearance: [bold]0x{device.appearance:04x}[/bold]")
         log.write(f"Advertised services: {service_details}")
@@ -569,7 +601,13 @@ class BluetoothScannerView(Screen):
         else:
             log.write(
                 "[dim]This Classic-only observation has no BLE GATT endpoint. "
-                "Select the matching system BLE row for GATT Focus.[/dim]"
+                "Press Enter for Classic identity, HCI health, and read-only SDP Focus.[/dim]"
+            )
+        if device.related_identifiers:
+            log.write(
+                f"[yellow]Probable BT/BLE relation ({device.correlation_confidence}):[/yellow] "
+                f"{', '.join(device.related_identifiers)} · "
+                f"{', '.join(device.correlation_evidence)}"
             )
 
     def action_toggle_selected_group(self) -> None:
@@ -615,12 +653,8 @@ class BluetoothScannerView(Screen):
             self.notify("Expand the Apple group and select one identifier first.", severity="warning")
             return
         if not device.is_connectable_with_bleak:
-            self.notify(
-                "Classic-only observations have no BLE GATT endpoint. "
-                "Select the matching BLE row.",
-                title="Bluetooth USB",
-                severity="warning",
-            )
+            self.app.bluetooth_manager.select_classic_focus(device.identifier)
+            self.app.push_screen("bluetooth-classic-focus")
             return
         self.connect_device(device)
 
@@ -695,12 +729,8 @@ class BluetoothScannerView(Screen):
         try:
             self.app.target_store.update_missing(target, candidate.details)
             if not device.is_connectable_with_bleak:
-                self.notify(
-                    "Target saved. Classic discovery has no BLE GATT endpoint; "
-                    "select the matching BLE row for Focus.",
-                    title="Bluetooth USB",
-                    severity="information",
-                )
+                self.app.bluetooth_manager.select_classic_focus(device.identifier)
+                self.app.push_screen("bluetooth-classic-focus")
                 return
             if not self.app.mark_target_locked(target):
                 return
@@ -715,8 +745,11 @@ class BluetoothScannerView(Screen):
                 await self.app.bluetooth_manager.connect(device)
             except Exception as exc:
                 self.app.stop_bluetooth_target_capture()
-                log.write(f"[bold red]Connection failed:[/bold red] {escape(str(exc))}")
-                self.notify(str(exc), title="Bluetooth connection failed", severity="error")
+                if await self._open_classic_timeout_fallback(device, exc, log):
+                    return
+                message = _connection_error_message(exc)
+                log.write(f"[bold red]Connection failed:[/bold red] {escape(message)}")
+                self.notify(message, title="Bluetooth connection failed", severity="error")
                 try:
                     await self.app.bluetooth_manager.resume_scan()
                 except Exception:
@@ -737,14 +770,51 @@ class BluetoothScannerView(Screen):
         try:
             await self.app.bluetooth_manager.connect(device)
         except Exception as exc:
-            log.write(f"[bold red]Connection failed:[/bold red] {escape(str(exc))}")
-            self.notify(str(exc), title="Bluetooth connection failed", severity="error")
+            if await self._open_classic_timeout_fallback(device, exc, log):
+                return
+            message = _connection_error_message(exc)
+            log.write(f"[bold red]Connection failed:[/bold red] {escape(message)}")
+            self.notify(message, title="Bluetooth connection failed", severity="error")
             try:
                 await self.app.bluetooth_manager.resume_scan()
             except Exception:
                 pass
             return
         self.app.push_screen("bluetooth-focus")
+
+    async def _open_classic_timeout_fallback(
+        self,
+        device: BluetoothDevice,
+        error: BaseException,
+        log: RichLog,
+    ) -> bool:
+        if not _is_timeout_error(error):
+            return False
+        classic = self.app.bluetooth_manager.classic_focus_fallback(device)
+        if classic is None:
+            return False
+        try:
+            await self.app.bluetooth_manager.resume_scan()
+        except Exception as exc:
+            logger.debug("Could not resume Classic scan after BLE timeout", exc_info=True)
+            self.notify(
+                str(exc) or type(exc).__name__,
+                title="Bluetooth scan failed",
+                severity="error",
+            )
+            return False
+        self.app.bluetooth_manager.select_classic_focus(classic.identifier)
+        log.write(
+            "[bold yellow]BLE GATT timed out; opening read-only "
+            "Bluetooth Classic Focus.[/bold yellow]"
+        )
+        self.notify(
+            "BLE GATT timed out. Opened Bluetooth Classic Focus instead.",
+            title="Bluetooth Classic",
+            severity="warning",
+        )
+        self.app.push_screen("bluetooth-classic-focus")
+        return True
 
     def action_toggle_log(self) -> None:
         log = self.query_one("#bluetooth-log", RichLog)
@@ -756,7 +826,10 @@ class BluetoothScannerView(Screen):
             self.notify("No Bluetooth devices to export", severity="warning")
             return
         try:
-            paths = export_bluetooth_bundle(devices)
+            paths = list(export_bluetooth_bundle(devices))
+            records = self.app.bluetooth_manager.hci_capture_records
+            if records:
+                paths.append(export_btsnoop(records))
         except OSError as exc:
             self.notify(str(exc), title="Export failed", severity="error")
             return

@@ -1,7 +1,9 @@
 """Bluetooth discovery data shared by the scanner backend and UI."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from .location import SignalPosition
 
 
 BLE_RADIO = "BLE"
@@ -31,6 +33,8 @@ class BluetoothDevice:
     radio_types: tuple[str, ...] = (BLE_RADIO,)
     discovery_source: str = "system"
     class_of_device: int | None = None
+    page_scan_repetition_mode: int | None = None
+    clock_offset: int | None = None
     appearance: int | None = None
     address_type: str = "unknown"
     payload_fingerprint: str = ""
@@ -50,6 +54,10 @@ class BluetoothDevice:
     hardware_vendor: str = ""
     hardware_product: str = ""
     hardware_source: str = ""
+    related_identifiers: tuple[str, ...] = ()
+    correlation_confidence: str = ""
+    correlation_evidence: tuple[str, ...] = ()
+    positions: list[SignalPosition] = field(default_factory=list)
 
     @property
     def radio_label(self) -> str:

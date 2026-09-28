@@ -3,7 +3,15 @@ import struct
 
 import pytest
 
-from wifit3.dot11.ap import auth_resp, assoc_resp, open_assoc_resp, eapol_m1, beacon_clone
+from wifit3.dot11.ap import (
+    auth_resp,
+    assoc_resp,
+    open_assoc_resp,
+    eapol_m1,
+    beacon_clone,
+    beacon_clone_enterprise,
+    probe_resp_from_beacon,
+)
 from wifit3.dot11.eapol import (
     data_header, eapol_key, set_mic, LLC_SNAP_EAPOL, MIC_OFFSET, MIC_LEN, NONCE_LEN,
 )
@@ -23,6 +31,8 @@ _ANONCE = bytes(range(32))
 
 # A transition-mode RSN IE: CCMP group+pairwise, AKMs = PSK(2) + SAE(8), MFPC set.
 _RSN_PSK_SAE = bytes.fromhex("30180100000fac040100000fac040200000fac02000fac088000")
+# Enterprise RSN: CCMP, AKMs = 802.1X(1) + PSK(2).
+_RSN_EAP_PSK = bytes.fromhex("30180100000fac040100000fac040200000fac01000fac020000")
 _RSNXE = bytes.fromhex("f40120")   # SAE hash-to-element advert
 
 
@@ -114,6 +124,27 @@ def test_beacon_clone_strips_sae_keeps_psk():
 def test_beacon_clone_rejects_short_beacon():
     with pytest.raises(ValueError):
         beacon_clone(bytes(20), 1)
+
+
+def test_beacon_clone_enterprise_strips_sae_keeps_eap():
+    beacon = bytes(36) + ssid_ie("Corp") + rates_ie() + ds_param_ie(36) + _RSN_EAP_PSK + _RSNXE
+    out = beacon_clone_enterprise(beacon, 36, narrow_to_20mhz=False)
+    assert b"\x00\x0f\xac\x08" not in out
+    assert b"\x01\x00\x00\x0f\xac\x01" in out
+    assert _RSNXE not in out
+    assert ds_param_ie(36) in out
+
+
+def test_probe_resp_from_beacon_matches_tags():
+    beacon = beacon_clone_enterprise(
+        bytes(36) + ssid_ie("Corp") + rates_ie() + ds_param_ie(11) + _RSN_EAP_PSK,
+        11,
+        bytes.fromhex("112233445566"),
+    )
+    probe = probe_resp_from_beacon(beacon)
+    assert probe[0:2] == b"\x50\x00"
+    assert probe[10:16] == beacon[10:16]
+    assert probe[36:] == beacon[36:]
 
 
 def test_data_header_direction():

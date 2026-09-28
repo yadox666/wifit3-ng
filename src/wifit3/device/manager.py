@@ -24,6 +24,7 @@ import usb.core
 from wifit3.device.zerocd import ZeroCdEjector
 from wifit3.errors import BringUpError, BringUpPermissionsError, WifiteFatalError, is_device_gone
 from wifit3.models.device_id import DeviceID
+from wifit3.persist.config import Config
 from wifit3.setup.base import Setup, SetupResult
 from wifit3.wlan.array import WlanArray
 from wifit3.wlan.sink import WlanSink
@@ -461,6 +462,12 @@ class DeviceManager:
                         self.app, "enterprise_session_store", None,
                     ),
                     ap_history=getattr(self.app, "ap_history_store", None),
+                    location_store=getattr(self.app, "location_store", None),
+                    fix_provider=lambda: getattr(
+                        getattr(self.app, "gps_manager", None), "latest_fix", None,
+                    ),
+                    movement_provider=lambda: Config.gps_movement_threshold_m,
+                    accuracy_provider=lambda: Config.gps_max_accuracy_m,
                 ),
             )
             array.register_disconnect_callback(self.app.notify_device_lost)

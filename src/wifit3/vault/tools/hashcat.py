@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from wifit3.models import PersistedCapture, ToolCapability, ToolResult, ToolStatus
+from wifit3.persist.hashcat_modes import hashcat_mode_for_path
 from wifit3.vault.tools.base import VaultTool
 
 
@@ -17,7 +18,7 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 class HashcatTool(VaultTool):
     name = "hashcat"
-    description = "Advanced password recovery (WPA/WPA2/PMKID)"
+    description = "Advanced password recovery (WPA/PMKID/MS-CHAPv2)"
     # ADOPTABLE: hashcat is left running when wifit3 exits and re-attached on the next launch, so a
     # long crack survives closing the app. KILLABLE is the user's explicit Kill, not shutdown.
     capabilities = ToolCapability.KILLABLE | ToolCapability.SINGLETON | ToolCapability.ADOPTABLE
@@ -26,7 +27,12 @@ class HashcatTool(VaultTool):
         self._procs: Dict[int, subprocess.Popen] = {}
 
     def can_crack(self, capture: PersistedCapture) -> bool:
-        return capture.path.endswith(".hc22000")
+        lowered = capture.path.lower()
+        return (
+            lowered.endswith(".hc22000")
+            or lowered.endswith(".mschapv2")
+            or lowered.endswith(".netntlmv2")
+        )
 
     def launch(self, capture: PersistedCapture, config: Dict[str, Any]) -> Dict[str, Any]:
         hashcat_exe = config.get("hashcat_exe")
@@ -53,9 +59,10 @@ class HashcatTool(VaultTool):
             except OSError:
                 logger.warning(f"Could not remove old potfile {potfile}", exc_info=True)
 
+        mode = hashcat_mode_for_path(abs_capture)
         cmd = [
             hashcat_exe,
-            "-m", "22000",
+            "-m", mode,
             abs_capture,
             abs_wordlist,
             "--potfile-path", potfile,

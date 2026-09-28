@@ -263,10 +263,15 @@ class WlanFrameParser:
                     if eap_code in (1, 2) and eap_length >= 5 and available >= 5
                     else None
                 )
-                tls_types = {13, 21, 25, 43, 55}
                 eap_data = (
                     bytes(frame[eap_start + 5: eap_start + min(eap_length, available)])
-                    if eap_type in tls_types else b""
+                    if (
+                        eap_code in (1, 2)
+                        and eap_type is not None
+                        and eap_type != 1
+                        and eap_length >= 5
+                    )
+                    else b""
                 )
                 eap_nak_types = (
                     tuple(frame[eap_start + 5: eap_start + min(eap_length, available)])

@@ -106,8 +106,14 @@ def _parse_file(path: Path, bssid: str) -> List[PersistedCapture]:
     ext = m.group("ext")
     ssid = m.group("ssid")
 
-    if kind == "enterprise_report" and ext == "json":
+    if kind in ("enterprise_report", "eap_lab_report") and ext == "json":
         return [PersistedCapture(type=CaptureType.ENTERPRISE, timestamp=epoch, path=str(path),
+                                 bssid=bssid, ssid=ssid)]
+    if kind == "mschapv2" and ext == "mschapv2":
+        return [PersistedCapture(type=CaptureType.MSCHAPV2, timestamp=epoch, path=str(path),
+                                 bssid=bssid, ssid=ssid)]
+    if kind == "netntlmv2" and ext == "netntlmv2":
+        return [PersistedCapture(type=CaptureType.NETNTLMV2, timestamp=epoch, path=str(path),
                                  bssid=bssid, ssid=ssid)]
     if kind == "wep_key" and ext == "txt":
         key = _read_wep_key(path)

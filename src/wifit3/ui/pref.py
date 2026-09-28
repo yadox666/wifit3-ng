@@ -91,7 +91,7 @@ class ApExpirySetting(VerticalGroup):
     ]
 
     def compose(self) -> ComposeResult:
-        self.border_title = "Hide inactive access points"
+        self.border_title = "Hide inactive Wi-Fi and Bluetooth devices"
         current = Config.scanner_ap_expiry
         values = [value for _, value in self.OPTIONS]
         value = current if current in values else 30.0
@@ -129,6 +129,29 @@ class CapturesDirSetting(VerticalGroup):
     def compose(self) -> ComposeResult:
         self.border_title = "Save directory"
         yield Input(Config.captures_dir, id="captures_dir")
+
+
+class GpsSetting(VerticalGroup):
+    DEFAULT_CSS = """
+    GpsSetting { border: round $primary }
+    """
+
+    def compose(self) -> ComposeResult:
+        self.border_title = "GPS"
+        yield Label("USB serial port (blank = auto-detect)")
+        yield Input(Config.gps_port, placeholder="COM3 or /dev/ttyUSB0", id="gps_port")
+        yield Label("Portable-device movement distance (metres)")
+        yield Input(
+            str(Config.gps_movement_threshold_m),
+            type="number",
+            id="gps_movement_threshold_m",
+        )
+        yield Label("Required accuracy: maximum error radius (metres)")
+        yield Input(
+            str(Config.gps_max_accuracy_m),
+            type="number",
+            id="gps_max_accuracy_m",
+        )
 
 
 class TargetCaptureSetting(VerticalGroup):
@@ -213,6 +236,7 @@ class PreferencesModal(ModalScreen):
             yield ApExpirySetting()
             yield ActiveIntensitySetting()
             yield CapturesDirSetting()
+            yield GpsSetting()
             yield TargetCaptureSetting()
             yield Checkbox(
                 "Automatically check for updates",
@@ -247,6 +271,26 @@ class PreferencesModal(ModalScreen):
     def save_pressed(self, event: Event):
         Config.theme = self.app.theme
         Config.captures_dir = self.query_one("#captures_dir", Input).value
+        old_gps_port = Config.gps_port
+        Config.gps_port = self.query_one("#gps_port", Input).value.strip()
+        try:
+            Config.gps_movement_threshold_m = max(
+                20.0,
+                float(self.query_one("#gps_movement_threshold_m", Input).value),
+            )
+        except ValueError:
+            self.notify("Movement distance must be a number", title="GPS", severity="error")
+            return
+        try:
+            Config.gps_max_accuracy_m = max(
+                1.0,
+                float(self.query_one("#gps_max_accuracy_m", Input).value),
+            )
+        except ValueError:
+            self.notify("GPS accuracy must be a number", title="GPS", severity="error")
+            return
+        if Config.gps_port != old_gps_port:
+            self.app.reconfigure_gps(Config.gps_port)
         self.app.vault.refresh()
         Config.save_pcap = self.query_one("#save_pcap", Checkbox).value
         Config.auto_check_updates = self.query_one("#auto_check_updates", Checkbox).value

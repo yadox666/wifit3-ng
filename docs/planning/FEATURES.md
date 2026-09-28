@@ -47,20 +47,43 @@ correct), not just unit assertions.
 
 ------------
 
-### EAP-MSCHAPv2 / PEAP via Evil Twin
+### EAP-MSCHAPv2 / PEAP via Evil Twin — DONE (PEAP lab honeypot; no deauth twin)
 
-Most enterprise Wi-Fi is PEAP-MSCHAPv2, which cracks with hashcat `-m 5500` (DES half near-
-instant via crack.sh): recovering the *domain* credential is a far higher value than a PSK,
-PEAP wraps MSCHAPv2 in TLS, so it **can't be captured passively**. Stand up an Evil Twin 
-so the client auths to *you*.
+**Shipped.** From AP Focus → **Enterprise** → **Start PEAP EAP lab honeypot**: a spoofable
+radio advertises a locally administered twin BSSID with the target ESSID and cloned 802.1X
+RSN, runs outer **PEAP** with an ephemeral lab TLS certificate (OpenSSL-generated under the
+private data dir), and captures inner **MS-CHAPv2** responses. Hash lines are written to
+Vault as `*_mschapv2.mschapv2` (Hashcat **`-m 5500`**). Vault Hashcat launch picks the mode
+from the file extension (22000 vs 5500).
 
-Some things we'll need:
-- target-ESSID beacons,
-- RADIUS/EAP state machine
-- cert handling.
+**Also shipped:** optional **deauth + CSA + BTM** eviction bursts (respecting PMF) toward
+the lab twin; outer **PEAP**, **EAP-TTLS**, and **EAP-TLS** (client-certificate request);
+Vault writes paired **`5500`** (`*.mschapv2`) and **`5600` NetNTLMv2-SSP** (`*.netntlmv2`)
+files. Hashcat mode **4800** is iSCSI CHAP in current Hashcat, not NetNTLMv2.
 
-When a second hashcat mode lands (`-m 4800`/`5500`), the save layer needs a per-attack
-(mode + line-format) map instead of the hardcoded `-m 22000`.
+Beacons/probes **clone the observed target AP** when a live beacon is available (RSN
+rewritten to a single 802.1X AKM; SAE/RSNXE stripped).
+
+------------
+
+### Enterprise client misconfiguration assessment — DONE
+
+**Shipped** as part of the EAP lab honeypot (`EapLabLaunchConfig` + modal toggles):
+
+- **Untrusted TLS** (lab cert) with per-client outcomes and `MISCONFIG` timeline lines.
+- **Outer downgrade probe:** optional **weak outer EAP first** (reversed method order).
+- **Inner PAP probe** before MS-CHAPv2 (inner NAK falls through to MS-CHAPv2).
+- **Empty MS-CHAPv2** flagged when NT-Response is all zeros.
+- **EAP-TLS Success** against the lab cert recorded as misconfiguration.
+- **Lab DHCP Offer/ACK** on `10.99.0.0/24` (isolated; no routing).
+- **`_eap_lab_report.json`** in Vault (pseudonymized client IDs, findings, outcomes)
+  saved automatically when the lab ends with client evidence.
+
+**Manual correlation:** probe honeypot still **observes** DHCP on OPEN/WPA2 fakes;
+compare pseudonymized lab report entries with honeypot client MACs offline.
+
+**SECURITY NOTES:** Authorized testing only; lab DHCP is isolated; findings are
+observed client behavior, not org-wide policy proof.
 
 ------------
 

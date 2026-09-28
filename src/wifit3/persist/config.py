@@ -32,6 +32,9 @@ class Config:
     target_capture_max_mb: int = 100
     target_capture_max_parts: int = 10
     active_action_intensity: str = "normal"
+    gps_port: str = ""
+    gps_movement_threshold_m: float = 20.0
+    gps_max_accuracy_m: float = 20.0
     silenced_bssids: list[str] = []
 
     @classmethod
@@ -92,6 +95,23 @@ class Config:
             cls.scanner_ap_expiry = float(raw_expiry)
         except (ValueError, TypeError):
             pass
+        cls.gps_port = str(data.get("gps_port", cls.gps_port)).strip()
+        try:
+            cls.gps_movement_threshold_m = max(
+                20.0,
+                float(data.get(
+                    "gps_movement_threshold_m", cls.gps_movement_threshold_m,
+                )),
+            )
+        except (ValueError, TypeError):
+            pass
+        try:
+            cls.gps_max_accuracy_m = max(
+                1.0,
+                float(data.get("gps_max_accuracy_m", cls.gps_max_accuracy_m)),
+            )
+        except (ValueError, TypeError):
+            pass
         raw = data.get("silenced_bssids", cls.silenced_bssids)
         cls.silenced_bssids = [str(x).lower() for x in raw] if isinstance(raw, list) else cls.silenced_bssids
 
@@ -114,6 +134,9 @@ class Config:
             f"target_capture_max_mb = {_fmt(cls.target_capture_max_mb)}\n"
             f"target_capture_max_parts = {_fmt(cls.target_capture_max_parts)}\n"
             f"active_action_intensity = {_fmt(cls.active_action_intensity)}\n"
+            f"gps_port = {_fmt(cls.gps_port)}\n"
+            f"gps_movement_threshold_m = {_fmt(cls.gps_movement_threshold_m)}\n"
+            f"gps_max_accuracy_m = {_fmt(cls.gps_max_accuracy_m)}\n"
             f"silenced_bssids = {_fmt(cls.silenced_bssids)}\n"
         )
         try:

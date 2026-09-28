@@ -12,8 +12,8 @@ LEGACY_CAPTURE_RE = re.compile(
     r"^(?P<ssid>.+)_"
     r"(?P<bssid>[0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})_"
     r"(?P<epoch>\d+)_"
-    r"(?P<kind>enterprise_report|handshake|pmkid|packet_capture|wep_key|wps_pin|wps_pbc|wpa_psk)"
-    r"\.(?P<ext>json|pcap|hc22000|txt)$"
+    r"(?P<kind>enterprise_report|eap_lab_report|handshake|pmkid|mschapv2|netntlmv2|packet_capture|wep_key|wps_pin|wps_pbc|wpa_psk)"
+    r"\.(?P<ext>json|pcap|hc22000|mschapv2|netntlmv2|txt)$"
 )
 
 AGGREGATED_HC22000_RE = re.compile(

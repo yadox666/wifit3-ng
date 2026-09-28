@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import struct
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -12,9 +13,11 @@ from wifit3.models import BluetoothDevice
 from wifit3.persist.config import Config
 from wifit3.persist.private_files import (
     ensure_private_directory,
+    open_private_binary,
     open_private_text_write,
     write_private_text,
 )
+from wifit3.bluetooth.usb_hci import HciCaptureRecord
 
 
 def _iso_time(timestamp: float) -> str:
@@ -64,6 +67,8 @@ def _record(device: BluetoothDevice) -> dict:
             f"0x{device.class_of_device:06x}"
             if device.class_of_device is not None else ""
         ),
+        "page_scan_repetition_mode": device.page_scan_repetition_mode,
+        "clock_offset": device.clock_offset,
         "appearance": (
             f"0x{device.appearance:04x}" if device.appearance is not None else ""
         ),
@@ -79,18 +84,37 @@ def _record(device: BluetoothDevice) -> dict:
         "service_data_bytes": device.service_data_bytes,
         "payload_fingerprint": device.payload_fingerprint,
         "profile_fingerprint": device.profile_fingerprint,
+        "related_identifiers": list(device.related_identifiers),
+        "correlation_confidence": device.correlation_confidence,
+        "correlation_evidence": list(device.correlation_evidence),
         "advertised_services": list(dict.fromkeys(
             service_label(uuid) for uuid in all_services
         )),
         "service_uuids": list(device.service_uuids),
         "service_data_uuids": list(device.service_data_uuids),
+        "positions": [
+            {
+                "latitude": position.latitude,
+                "longitude": position.longitude,
+                "altitude_m": position.altitude_m,
+                "accuracy_m": position.accuracy_m,
+                "observed_at": _iso_time(position.observed_at),
+                "source": position.source,
+                "signal_dbm": position.rssi,
+            }
+            for position in device.positions
+        ],
     }
 
 
 def _csv_record(record: dict) -> dict:
     converted = dict(record)
-    for key in ("advertised_services", "service_uuids", "service_data_uuids"):
+    for key in (
+        "advertised_services", "service_uuids", "service_data_uuids",
+        "related_identifiers", "correlation_evidence",
+    ):
         converted[key] = "; ".join(record[key])
+    converted["positions"] = json.dumps(record["positions"], separators=(",", ":"))
     for key, value in converted.items():
         if value is None:
             converted[key] = ""
@@ -141,6 +165,28 @@ def export_bluetooth_bundle(
     return csv_path, json_path, jsonl_path
 
 
+def export_btsnoop(records: Iterable[HciCaptureRecord]) -> Path:
+    """Write bounded USB HCI traffic in Wireshark-readable btsnoop format."""
+    exported_at = datetime.now(timezone.utc)
+    directory = Path(Config.captures_dir) / "scan_exports"
+    ensure_private_directory(directory)
+    path = directory / f"bluetooth_hci_{exported_at.strftime('%Y%m%d_%H%M%S_%f')}.btsnoop"
+    epoch_delta_us = 0x00DC_DDB3_0F2F_8000
+    with open_private_binary(path) as stream:
+        stream.write(b"btsnoop\x00" + struct.pack(">II", 1, 1002))
+        for record in records:
+            packet = bytes((record.packet_type,)) + record.payload
+            flags = (1 if record.incoming else 0) | (
+                2 if record.packet_type in {0x01, 0x04} else 0
+            )
+            timestamp = int(record.timestamp * 1_000_000) + epoch_delta_us
+            stream.write(struct.pack(
+                ">IIIIQ", len(packet), len(packet), flags, 0, timestamp,
+            ))
+            stream.write(packet)
+    return path
+
+
 def _record_fields() -> tuple[str, ...]:
     return (
         "name", "identifier", "radio", "discovery_source", "address_type",
@@ -151,9 +197,12 @@ def _record_fields() -> tuple[str, ...]:
         "hardware_vendor", "hardware_product", "hardware_identity_source",
         "signal_dbm", "signal_average_dbm", "signal_min_dbm", "signal_max_dbm",
         "signal_samples", "signal_trend", "class_of_device", "appearance",
+        "page_scan_repetition_mode", "clock_offset",
         "tx_power_dbm",
         "advertisements", "latest_interval_ms", "first_seen", "last_seen",
         "manufacturer_data_bytes", "service_data_bytes", "payload_fingerprint",
         "profile_fingerprint", "advertised_services", "service_uuids",
-        "service_data_uuids",
+        "service_data_uuids", "related_identifiers", "correlation_confidence",
+        "correlation_evidence",
+        "positions",
     )

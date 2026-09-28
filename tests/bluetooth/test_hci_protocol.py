@@ -1,9 +1,11 @@
 from wifit3.bluetooth.hci_protocol import (
     EVENT_EXTENDED_INQUIRY_RESULT,
+    EVENT_INQUIRY_RESULT_WITH_RSSI,
     EVENT_LE_META,
     LE_ADVERTISING_REPORT,
     command_packet,
     parse_discovery_event,
+    parse_remote_name_event,
 )
 
 
@@ -38,9 +40,44 @@ def test_extended_inquiry_result_is_marked_classic():
     assert observed[0].radio_type == "BT"
     assert observed[0].name == "Blue"
     assert observed[0].rssi == -42
+    assert observed[0].page_scan_repetition_mode == 1
+    assert observed[0].clock_offset == 0
     assert observed[0].class_of_device == 0x04020C
     assert observed[0].service_uuids == ("180f",)
     assert observed[0].manufacturer_ids == (0x004C,)
+
+
+def test_remote_name_complete_decodes_address_and_utf8_name():
+    parameters = (
+        b"\x00"
+        + bytes.fromhex("FFEEDDCCBBAA")
+        + "Living Room Speaker".encode()
+        + b"\x00"
+    )
+
+    assert parse_remote_name_event(parameters) == (
+        "AA:BB:CC:DD:EE:FF",
+        "Living Room Speaker",
+    )
+
+
+def test_multiple_inquiry_results_are_parsed_as_packed_records():
+    parameters = (
+        b"\x02"
+        + bytes.fromhex("FFEEDDCCBBAA01000C02043412D6")
+        + bytes.fromhex("66554433221102000425027856C4")
+    )
+
+    observed = parse_discovery_event(EVENT_INQUIRY_RESULT_WITH_RSSI, parameters)
+
+    assert [item.identifier for item in observed] == [
+        "AA:BB:CC:DD:EE:FF",
+        "11:22:33:44:55:66",
+    ]
+    assert [item.page_scan_repetition_mode for item in observed] == [1, 2]
+    assert [item.class_of_device for item in observed] == [0x04020C, 0x022504]
+    assert [item.clock_offset for item in observed] == [0x1234, 0x5678]
+    assert [item.rssi for item in observed] == [-42, -60]
 
 
 def test_le_advertising_report_is_marked_ble():
