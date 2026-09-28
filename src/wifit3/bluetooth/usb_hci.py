@@ -134,6 +134,10 @@ class UsbHciScanner:
         self._running = True
         self._scan_task = asyncio.create_task(self._scan_loop())
 
+    def reserve(self) -> None:
+        if self._device is None:
+            self._open()
+
     async def stop(self) -> None:
         self._running = False
         if self._scan_task is not None:
@@ -141,8 +145,19 @@ class UsbHciScanner:
             self._scan_task = None
         await asyncio.to_thread(self._stop_and_close)
 
+    async def pause(self) -> None:
+        self._running = False
+        if self._scan_task is not None:
+            await self._scan_task
+            self._scan_task = None
+        await asyncio.to_thread(self._stop_and_close, False)
+
+    def release(self) -> None:
+        self._close()
+
     def _open_and_start(self) -> None:
-        self._open()
+        if self._device is None:
+            self._open()
         self._command(HCI_RESET)
         version = self._command(HCI_READ_LOCAL_VERSION)
         self._load_realtek_firmware(version)
@@ -311,7 +326,7 @@ class UsbHciScanner:
                     logger.debug("Could not restart Bluetooth inquiry", exc_info=True)
                     self._running = False
 
-    def _stop_and_close(self) -> None:
+    def _stop_and_close(self, close: bool = True) -> None:
         if self._device is not None:
             if self.controller.supports_classic:
                 try:
@@ -323,7 +338,8 @@ class UsbHciScanner:
                     self._command(HCI_LE_SET_SCAN_ENABLE, b"\x00\x00")
                 except Exception:
                     pass
-        self._close()
+        if close:
+            self._close()
 
     def _close(self) -> None:
         device, self._device = self._device, None

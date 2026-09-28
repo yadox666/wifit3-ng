@@ -402,6 +402,44 @@ async def test_classic_only_usb_scanner_runs_with_system_ble():
     await manager.stop()
 
 
+def test_macos_reserves_classic_controller_during_discovery(monkeypatch):
+    controller = UsbBluetoothController(
+        0x0A12, 0x0001, "BlueCore4-ROM", "Sena", "Parani-UD100", 1, 2,
+        supports_classic=True, supports_le=False,
+    )
+    present = [controller]
+    scanners = []
+
+    class ReservableScanner:
+        def __init__(self, selected, callback):
+            self.controller = selected
+            self.callback = callback
+            self.reserved = False
+            self.released = False
+            scanners.append(self)
+
+        def reserve(self):
+            self.reserved = True
+
+        def release(self):
+            self.released = True
+
+    monkeypatch.setattr("wifit3.bluetooth.manager.sys.platform", "darwin")
+    manager = BluetoothManager(
+        usb_controller_finder=lambda: list(present),
+        usb_scanner_factory=ReservableScanner,
+    )
+
+    assert manager.available_usb_controllers() == [controller]
+    assert scanners[0].reserved
+    manager.available_usb_controllers()
+    assert len(scanners) == 1
+
+    present.clear()
+    manager.available_usb_controllers()
+    assert scanners[0].released
+
+
 def test_usb_and_ble_observations_merge_as_dual_mode():
     manager = BluetoothManager()
     platform_device = SimpleNamespace(address="AA:BB:CC:DD:EE:FF", name=None)

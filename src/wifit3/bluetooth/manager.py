@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+import threading
 import time
 from collections import deque
 from dataclasses import replace
@@ -57,6 +59,8 @@ class BluetoothManager:
         self.history = history
         self._scanner = None
         self._usb_scanner = None
+        self._usb_reservations: dict[tuple, Any] = {}
+        self._usb_reservation_lock = threading.Lock()
         self._resume_usb_controller: UsbBluetoothController | None = None
         self._devices: dict[str, BluetoothDevice] = {}
         self._platform_devices: dict[str, Any] = {}
@@ -111,10 +115,13 @@ class BluetoothManager:
 
     def available_usb_controllers(self) -> list[UsbBluetoothController]:
         try:
-            return self._usb_controller_finder()
+            controllers = self._usb_controller_finder()
         except Exception:
             logger.debug("Bluetooth USB controller scan failed", exc_info=True)
             return []
+        if sys.platform == "darwin":
+            self._reserve_macos_classic_controllers(controllers)
+        return controllers
 
     def register_advertisement_callback(
         self, callback: Callable[[BluetoothDevice], None],
@@ -159,7 +166,10 @@ class BluetoothManager:
         system_scanner = None
         if not controller.supports_le:
             system_scanner = self._scanner_factory(detection_callback=self._on_advertisement)
-        usb_scanner = self._usb_scanner_factory(controller, self._on_usb_observation)
+        with self._usb_reservation_lock:
+            usb_scanner = self._usb_reservations.pop(controller.instance_key, None)
+        if usb_scanner is None:
+            usb_scanner = self._usb_scanner_factory(controller, self._on_usb_observation)
         try:
             await usb_scanner.start()
             if system_scanner is not None:
@@ -192,13 +202,27 @@ class BluetoothManager:
     async def stop(self) -> None:
         scanner, self._scanner = self._scanner, None
         usb_scanner, self._usb_scanner = self._usb_scanner, None
-        for active in (scanner, usb_scanner):
-            if active is None:
-                continue
+        if scanner is not None:
             try:
-                await active.stop()
+                await scanner.stop()
             except Exception:
                 logger.debug("Bluetooth scanner stop failed", exc_info=True)
+        if usb_scanner is None:
+            return
+        keep_reserved = (
+            sys.platform == "darwin"
+            and not usb_scanner.controller.supports_le
+            and hasattr(usb_scanner, "pause")
+        )
+        try:
+            if keep_reserved:
+                await usb_scanner.pause()
+                with self._usb_reservation_lock:
+                    self._usb_reservations[usb_scanner.controller.instance_key] = usb_scanner
+            else:
+                await usb_scanner.stop()
+        except Exception:
+            logger.debug("Bluetooth USB scanner stop failed", exc_info=True)
 
     async def connect(self, device: BluetoothDevice, update_callback=None) -> BluetoothConnection:
         if not getattr(device, "is_connectable_with_bleak", True):
@@ -497,6 +521,37 @@ class BluetoothManager:
             "rssi_samples": count,
             "rssi_trend": trend,
         }
+
+    def _reserve_macos_classic_controllers(
+        self, controllers: list[UsbBluetoothController],
+    ) -> None:
+        present = {controller.instance_key for controller in controllers}
+        with self._usb_reservation_lock:
+            stale = [
+                key for key in self._usb_reservations
+                if key not in present
+            ]
+            for key in stale:
+                scanner = self._usb_reservations.pop(key)
+                try:
+                    scanner.release()
+                except Exception:
+                    pass
+            for controller in controllers:
+                if controller.supports_le or controller.instance_key in self._usb_reservations:
+                    continue
+                scanner = self._usb_scanner_factory(controller, self._on_usb_observation)
+                if not hasattr(scanner, "reserve"):
+                    continue
+                try:
+                    scanner.reserve()
+                except Exception:
+                    logger.debug(
+                        "Could not reserve macOS Bluetooth USB controller",
+                        exc_info=True,
+                    )
+                    continue
+                self._usb_reservations[controller.instance_key] = scanner
 
 
 def _profile_fingerprint(device: BluetoothDevice) -> str:
