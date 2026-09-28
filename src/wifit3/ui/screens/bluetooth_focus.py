@@ -636,7 +636,7 @@ class BluetoothFocusView(Screen):
         await self.app.bluetooth_manager.disconnect()
         self.app.stop_bluetooth_target_capture()
         try:
-            await self.app.bluetooth_manager.start()
+            await self.app.bluetooth_manager.resume_scan()
         except Exception as exc:
             self.notify(str(exc), title="Bluetooth scan failed", severity="error")
         self.app.pop_screen()

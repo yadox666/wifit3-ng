@@ -57,6 +57,7 @@ class BluetoothManager:
         self.history = history
         self._scanner = None
         self._usb_scanner = None
+        self._resume_usb_controller: UsbBluetoothController | None = None
         self._devices: dict[str, BluetoothDevice] = {}
         self._platform_devices: dict[str, Any] = {}
         self._similar_identifiers: dict[tuple, set[str]] = {}
@@ -149,6 +150,7 @@ class BluetoothManager:
                 pass
             raise BluetoothScanError(str(exc) or type(exc).__name__) from exc
         self._scanner = scanner
+        self._resume_usb_controller = None
         self.scan_started_at = time.time()
 
     async def start_usb(self, controller: UsbBluetoothController) -> None:
@@ -178,7 +180,14 @@ class BluetoothManager:
             raise BluetoothScanError(str(exc) or type(exc).__name__) from exc
         self._scanner = system_scanner
         self._usb_scanner = usb_scanner
+        self._resume_usb_controller = controller
         self.scan_started_at = time.time()
+
+    async def resume_scan(self) -> None:
+        if self._resume_usb_controller is not None:
+            await self.start_usb(self._resume_usb_controller)
+        else:
+            await self.start()
 
     async def stop(self) -> None:
         scanner, self._scanner = self._scanner, None

@@ -717,7 +717,7 @@ class BluetoothScannerView(Screen):
                 log.write(f"[bold red]Connection failed:[/bold red] {escape(str(exc))}")
                 self.notify(str(exc), title="Bluetooth connection failed", severity="error")
                 try:
-                    await self.app.bluetooth_manager.start()
+                    await self.app.bluetooth_manager.resume_scan()
                 except Exception:
                     pass
                 return
@@ -739,7 +739,7 @@ class BluetoothScannerView(Screen):
             log.write(f"[bold red]Connection failed:[/bold red] {escape(str(exc))}")
             self.notify(str(exc), title="Bluetooth connection failed", severity="error")
             try:
-                await self.app.bluetooth_manager.start()
+                await self.app.bluetooth_manager.resume_scan()
             except Exception:
                 pass
             return

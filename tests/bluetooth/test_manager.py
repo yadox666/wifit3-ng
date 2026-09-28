@@ -384,13 +384,22 @@ async def test_classic_only_usb_scanner_runs_with_system_ble():
     )
     await manager.start_usb(controller)
 
-    assert system_scanner.started
-    assert usb_scanner.started
+    first_system_scanner = system_scanner
+    first_usb_scanner = usb_scanner
+    assert first_system_scanner.started
+    assert first_usb_scanner.started
     assert manager.backend_name == "BlueCore4-ROM + OS BLE"
 
     await manager.stop()
-    assert system_scanner.stopped
-    assert usb_scanner.stopped
+    assert first_system_scanner.stopped
+    assert first_usb_scanner.stopped
+
+    await manager.resume_scan()
+    assert system_scanner is not first_system_scanner
+    assert usb_scanner is not first_usb_scanner
+    assert system_scanner.started
+    assert usb_scanner.started
+    await manager.stop()
 
 
 def test_usb_and_ble_observations_merge_as_dual_mode():
