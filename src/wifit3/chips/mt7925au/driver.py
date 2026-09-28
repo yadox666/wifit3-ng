@@ -14,6 +14,7 @@ from .constants import *
 from wifit3.chips.driver import DeviceID, Driver, FakeMacSupport, ProgressCallback
 from wifit3.dot11.parser import WlanFrameParser
 from wifit3.errors import BringUpError
+from wifit3.wlan.channels import ChannelSpec
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +27,12 @@ class MT7925AUDriver(Driver):
     RX decode and TX are in progress.
     """
 
-    # Dual-band Wi-Fi 7 radio, 20 MHz primary. 2.4 GHz (1-14) + the 5 GHz 20 MHz
-    # channels the capture sweeps (main.log: 36..165).
+    # Dual-band Wi-Fi 7 radio. 2.4 GHz (1-14) + the 5 GHz primary channels the
+    # capture sweeps (main.log: 36..165).
     SUPPORTED_CHANNELS = list(range(1, 15)) + [
         36, 40, 44, 48, 149, 153, 157, 161, 165,
     ]
+    SUPPORTED_CHANNEL_WIDTHS = (20, 40)
     FAKE_MAC = FakeMacSupport.SPOOFABLE
     LINUX_REPLUG_AFTER_MODPROBE = True
 
@@ -148,6 +150,18 @@ class MT7925AUDriver(Driver):
         cmd, payload = mcu.config_sniffer(channel)
         await self.transport.send_mcu_command(cmd, payload, wait_resp=False)
         self._channel = channel
+        return True
+
+    async def set_channel_spec(self, spec: ChannelSpec, scan: bool = False) -> bool:
+        """Tune the monitor receiver to an advertised 20/40 MHz operating channel."""
+        cmd, payload = mcu.config_sniffer(
+            spec.primary,
+            width_mhz=spec.width_mhz,
+            secondary_offset=spec.secondary_offset,
+            center_channel=spec.center_channel,
+        )
+        await self.transport.send_mcu_command(cmd, payload, wait_resp=False)
+        self._channel = spec.primary
         return True
 
     async def _inject_frame(self, frame_bytes: bytes) -> bool:

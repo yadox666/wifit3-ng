@@ -420,7 +420,7 @@ class WlanSink:
         """Register/refresh the client STA behind a frame (assoc, probed SSIDs, decloak)."""
         frame_type = pkt.type
         if frame_type not in (
-            "probe_req", "assoc_req", "reassoc_req", "data", "wep_data", "eapol",
+            "probe_req", "assoc_req", "reassoc_req", "data", "null_data", "wep_data", "eapol",
             "deauth", "disassoc", "assoc_resp",
         ):
             return False
@@ -456,7 +456,7 @@ class WlanSink:
             client.akm_selected = pkt.assoc_akm
 
         association_frames = (
-            "assoc_req", "reassoc_req", "assoc_resp", "data", "wep_data", "eapol",
+            "assoc_req", "reassoc_req", "assoc_resp", "data", "null_data", "wep_data", "eapol",
         )
         if frame_type in association_frames and bssid:
             client.bssid = bssid

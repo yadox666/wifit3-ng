@@ -7,7 +7,7 @@ from rich.text import Text
 from textual.widgets import DataTable, Input, Select
 from textual.widgets.data_table import ColumnKey
 
-from wifit3.models import BluetoothDevice
+from wifit3.models import BluetoothDevice, SignalPosition
 from wifit3.bluetooth.connection import BluetoothConnectionError
 from wifit3.bluetooth.usb_hci import UsbBluetoothController
 from wifit3.persist.config import Config
@@ -86,15 +86,17 @@ async def test_splash_can_start_bluetooth_without_wifi_device(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
-async def test_splash_wifi_and_bluetooth_buttons_share_a_row():
+async def test_splash_primary_buttons_share_a_centered_row():
     app = WifiteApp()
     async with app.run_test(size=(100, 36)) as pilot:
         await pilot.pause(0)
         wifi = app.screen.query_one("#start-btn").region
         bluetooth = app.screen.query_one("#bluetooth-btn").region
-        assert wifi.y == bluetooth.y
+        offline = app.screen.query_one("#offline-btn").region
+        assert wifi.y == bluetooth.y == offline.y
         assert bluetooth.x >= wifi.right + 2
-        assert abs((wifi.x + bluetooth.right) - 100) <= 1
+        assert offline.x >= bluetooth.right + 2
+        assert abs((wifi.x + offline.right) - 100) <= 1
 
 
 @pytest.mark.asyncio
@@ -105,16 +107,20 @@ async def test_splash_wifi_and_bluetooth_buttons_have_hotkeys():
         splash = app.screen
         wifi = splash.query_one("#start-btn")
         bluetooth = splash.query_one("#bluetooth-btn")
+        offline = splash.query_one("#offline-btn")
         assert wifi.label.plain == "START WI-FI"
         assert bluetooth.label.plain == "SCAN BLE"
+        assert offline.label.plain == "OFFLINE DB"
         assert any("yellow" in str(span.style) for span in wifi.label.spans)
         assert any("yellow" in str(span.style) for span in bluetooth.label.spans)
+        assert any("yellow" in str(span.style) for span in offline.label.spans)
 
         called = []
         splash.action_start = lambda: called.append("wifi")
         splash.action_start_bluetooth = lambda: called.append("bluetooth")
-        await pilot.press("w", "b")
-        assert called == ["wifi", "bluetooth"]
+        splash.action_offline = lambda: called.append("offline")
+        await pilot.press("w", "b", "o")
+        assert called == ["wifi", "bluetooth", "offline"]
 
 
 @pytest.mark.asyncio
@@ -165,6 +171,9 @@ async def test_bluetooth_scanner_renders_discovered_device():
         advertisement_interval=0.25,
         first_seen=now,
         last_seen=now,
+        positions=[
+            SignalPosition(51.503, -0.144, None, 5.0, now, "gps", -42),
+        ],
     )
     app.bluetooth_manager.devices = lambda: [device]
 
@@ -194,6 +203,7 @@ async def test_bluetooth_scanner_renders_discovered_device():
         assert row[7].plain == "Apple, Inc. (004C)"
         assert row[8].plain == "Battery Service"
         assert row[9].plain == "AA:BB:CC:DD:EE:FF"
+        assert row[10].plain == "51.50300, -0.14400 ±5m"
 
         device = replace(
             device,

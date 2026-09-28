@@ -26,6 +26,7 @@ from wifit3.ui.signal_bar import dbm_style
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
 from wifit3.wlan.enterprise_risk import enterprise_findings
 from wifit3.wlan.network_metadata import PassiveNetworkAnalyzer
+from wifit3.wlan.channels import channel_spec_for_ap
 
 if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
@@ -64,6 +65,9 @@ class ClientFocusView(Screen):
         self._network_bssid: str | None = None
         self._network_store: NetworkMetadataStore | None = None
         self._network_analyzer: PassiveNetworkAnalyzer | None = None
+        self._network_observer_registered = False
+        self._last_network_packet = None
+        self._last_network_touched: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -95,9 +99,14 @@ class ClientFocusView(Screen):
             self._refresh()
             return
         await array.stop_hopping()
-        await array.set_channel(ap.channel, scan=False)
+        await array.set_channel_spec(channel_spec_for_ap(ap), scan=False)
+        self._start_network_analysis(client, ap)
         self._start_capture(client, ap)
         self._refresh()
+
+    def on_unmount(self) -> None:
+        self.stop_capture(notify=False)
+        self._stop_network_analysis()
 
     def _refresh(self) -> None:
         client = self.app.target_client
@@ -206,7 +215,7 @@ class ClientFocusView(Screen):
         panel = self.query_one("#client-network-metadata", NetworkMetadataPanel)
         panel.set_metadata(
             self._network_store.metadata if self._network_store is not None else None,
-            live=self._writer is not None and self._network_analyzer is not None,
+            live=self._network_analyzer is not None,
             client_mac=client.mac,
         )
 
@@ -235,18 +244,6 @@ class ClientFocusView(Screen):
         self._array = self.app.array
         self._client_mac = client.mac
         self._network_bssid = ap.bssid.casefold()
-        if self._is_open_ap(ap):
-            self._network_store = NetworkMetadataStore(
-                self.app.ap_history_store, ap.bssid, ap.ssid,
-            )
-            self._network_analyzer = PassiveNetworkAnalyzer(
-                self._network_store.metadata,
-            )
-            self.query_one("#client-network-metadata").display = True
-        else:
-            self._network_store = None
-            self._network_analyzer = None
-            self.query_one("#client-network-metadata").display = False
         self._array.register_packet_callback(self._capture_packet)
 
     def _capture_packet(self, packet) -> None:
@@ -254,9 +251,11 @@ class ClientFocusView(Screen):
         if writer is None or self._client_mac is None:
             return
         packet_client = getattr(packet, "client_mac", None)
-        touched = set()
+        already_observed = packet is self._last_network_packet
+        touched = self._last_network_touched if already_observed else set()
         if (
-            self._network_analyzer is not None
+            not already_observed
+            and self._network_analyzer is not None
             and (getattr(packet, "bssid", "") or "").casefold() == self._network_bssid
         ):
             touched = self._network_analyzer.observe(packet)
@@ -274,9 +273,6 @@ class ClientFocusView(Screen):
             return
         if self._array is not None:
             self._array.unregister_packet_callback(self._capture_packet)
-        self._array = None
-        self._client_mac = None
-        self._network_bssid = None
         writer.close()
         if self._network_store is not None:
             try:
@@ -285,7 +281,6 @@ class ClientFocusView(Screen):
                 logger.warning("%s", exc)
                 if notify:
                     self.notify(str(exc), title="Metadata save failed", severity="warning")
-        self._network_analyzer = None
         self.app.vault.refresh()
         if notify:
             self.notify(
@@ -306,8 +301,53 @@ class ClientFocusView(Screen):
 
     async def action_go_back(self) -> None:
         self.stop_capture()
+        self._stop_network_analysis()
         self.app.pop_screen()
 
     @staticmethod
     def _is_open_ap(ap) -> bool:
         return (ap.encryption or "").casefold() == "open" and not ap.akm_suites
+
+    def _start_network_analysis(self, client, ap) -> None:
+        """Observe open-network metadata until Client Focus closes, with or without a PCAP."""
+        self._array = self.app.array
+        self._client_mac = client.mac
+        self._network_bssid = ap.bssid.casefold()
+        if not self._is_open_ap(ap) or self._array is None:
+            self._network_store = None
+            self._network_analyzer = None
+            self.query_one("#client-network-metadata").display = False
+            return
+        self._network_store = NetworkMetadataStore(
+            self.app.ap_history_store, ap.bssid, ap.ssid,
+        )
+        self._network_analyzer = PassiveNetworkAnalyzer(self._network_store.metadata)
+        self._array.register_packet_callback(self._observe_network_packet)
+        self._network_observer_registered = True
+        self.query_one("#client-network-metadata").display = True
+
+    def _observe_network_packet(self, packet) -> None:
+        self._last_network_packet = packet
+        self._last_network_touched = set()
+        if (
+            self._network_analyzer is not None
+            and (getattr(packet, "bssid", "") or "").casefold() == self._network_bssid
+        ):
+            self._last_network_touched = self._network_analyzer.observe(packet)
+
+    def _stop_network_analysis(self) -> None:
+        if self._network_observer_registered and self._array is not None:
+            self._array.unregister_packet_callback(self._observe_network_packet)
+        self._network_observer_registered = False
+        if self._network_store is not None:
+            try:
+                self._network_store.save()
+            except NetworkMetadataStoreError as exc:
+                logger.warning("%s", exc)
+        self._network_store = None
+        self._network_analyzer = None
+        self._network_bssid = None
+        self._client_mac = None
+        self._array = None
+        self._last_network_packet = None
+        self._last_network_touched = set()

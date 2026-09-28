@@ -26,6 +26,7 @@ def test_fixed_entity_keeps_strongest_signal_position(tmp_path):
     assert len(positions) == 1
     assert positions[0].latitude == 51.2
     assert positions[0].rssi == -40
+    assert store.positions_for_kind("wifi_ap")["aa"][0].longitude == 0.2
 
 
 def test_mobile_entity_adds_position_after_movement_threshold(tmp_path):

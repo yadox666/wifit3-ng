@@ -4,10 +4,11 @@ from unittest.mock import Mock
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
-from textual.widgets import Label
+from textual.widgets import Input, Label, Static
 
 from wifit3.ui.screens.focus_v2.clients_list import ClientsList, ClientWidget, FingerprintModal
 from wifit3.id import Fingerprint
+from wifit3.wlan.network_metadata import NetworkMetadata
 
 _MAC = "18:7f:88:aa:bb:cc"
 _RING = Fingerprint("🔔", "Ring device")
@@ -159,6 +160,54 @@ async def test_sync_adds_updates_in_place_and_drops_by_mac():
         cl.sync([_client(b_mac, power=-60, packets=2)])
         await pilot.pause()
         assert set(cl._rows) == {b_mac}
+
+
+@pytest.mark.asyncio
+async def test_open_ap_splits_clients_and_websites_with_shared_search():
+    other_mac = "aa:aa:aa:00:00:01"
+    app = _DemoApp([_client(), _client(other_mac)])
+    metadata = NetworkMetadata("00:11:22:33:44:55", "Open")
+    metadata.observe_website(
+        "http://example.test/news",
+        hostname="example.test",
+        source="http_request",
+        now=10,
+        client_mac=_MAC,
+    )
+    metadata.observe_website(
+        "https://updates.test",
+        hostname="updates.test",
+        source="tls_sni",
+        now=20,
+        client_mac=other_mac,
+    )
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        clients = app.query_one("#clients", ClientsList)
+        clients.set_open_network_metadata(metadata, enabled=True)
+        await pilot.pause()
+
+        assert clients.query_one("#client-web-search", Input).display is True
+        assert clients.query_one("#website-pane").display is True
+        assert abs(
+            clients.query_one("#client-pane").region.height
+            - clients.query_one("#website-pane").region.height
+        ) <= 1
+        websites = clients.query_one("#website-content", Static)
+        assert "example.test" in websites.content.plain
+        assert "updates.test" in websites.content.plain
+
+        clients.query_one("#client-web-search", Input).value = "example"
+        await pilot.pause()
+        assert not any(row.display for row in clients._rows.values())
+        assert "example.test" in websites.content.plain
+        assert "updates.test" not in websites.content.plain
+
+        clients.query_one("#client-web-search", Input).value = "ring"
+        await pilot.pause()
+        assert clients._rows[_MAC].display is True
+        assert clients._rows[other_mac].display is False
+        assert "No matching websites" in websites.content.plain
 
 
 # ----- detail popup ---------------------------------------------------------

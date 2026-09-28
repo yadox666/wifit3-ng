@@ -141,6 +141,26 @@ class LocationStore:
                 connection, (entity_kind, entity_id.casefold()),
             ))
 
+    def positions_for_kind(
+        self, entity_kind: str,
+    ) -> dict[str, list[SignalPosition]]:
+        with self._lock:
+            connection = self._connection
+            if connection is None:
+                return {}
+            rows = connection.execute(
+                """
+                SELECT * FROM positions
+                WHERE entity_kind = ?
+                ORDER BY entity_id, cluster_id
+                """,
+                (entity_kind,),
+            ).fetchall()
+            grouped: dict[str, list[SignalPosition]] = {}
+            for row in rows:
+                grouped.setdefault(str(row["entity_id"]), []).append(_position(row))
+            return grouped
+
     def _load_positions(
         self,
         connection: sqlite3.Connection,

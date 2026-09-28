@@ -506,7 +506,7 @@ async def buttons_screen():
 
 _BTN_IDS = (
     "btn-gen-ivs", "btn-chop", "btn-deauth", "btn-pmkid", "btn-fake-connect",
-    "btn-wps-pin", "btn-eviltwin",
+    "btn-wps-info", "btn-wps-pin", "btn-eviltwin",
 )
 
 
@@ -561,8 +561,13 @@ async def test_buttons_deauth_hidden_for_sae_open_wep_and_pmf(buttons_screen):
 @pytest.mark.asyncio(loop_scope="module")
 async def test_buttons_wpa2_wps_unlocked_pin_enabled(buttons_screen):
     b = _buttons(buttons_screen, _rsn_ap(wps=True, wps_locked=False))
+    assert _bs(b["btn-wps-info"]) == (True, False, "WPS Info", "primary")
     assert _bs(b["btn-wps-pin"]) == (True, False, "WPS PIN", "primary")
     assert b["btn-pmkid"].display is True and b["btn-pmkid"].disabled is False
+    action_ids = [
+        button.id for button in buttons_screen.query("#actions Button")
+    ]
+    assert action_ids.index("btn-wps-info") + 1 == action_ids.index("btn-wps-pin")
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -763,3 +768,33 @@ def test_headline_silenced_outranks_listening(monkeypatch):
     ap = _wpa_ap()
     monkeypatch.setattr(Config, "silenced_bssids", [ap.bssid])
     assert "Silenced" in _headline(ap)[0]
+
+
+def _twin_array(*aps):
+    return types.SimpleNamespace(access_points={ap.bssid: ap for ap in aps})
+
+
+def test_band_twins_finds_cross_band_counterpart():
+    guest_24 = build_ap(bssid="4a:ed:e6:1e:c4:41", ssid="DIGIFIBRA-guest1",
+                        encryption="OPEN", channel=9)
+    guest_5 = build_ap(bssid="4a:ed:e6:9e:c4:41", ssid="DIGIFIBRA-guest1",
+                       encryption="OPEN", channel=44)
+    unrelated = build_ap(bssid="00:11:22:33:44:55", ssid="Other", encryption="OPEN", channel=36)
+    twins = fm.band_twins(guest_24, _twin_array(guest_24, guest_5, unrelated))
+    assert [t.bssid for t in twins] == ["4a:ed:e6:9e:c4:41"]
+
+
+def test_band_twins_matches_hidden_5g_twin_by_same_radio_bssid():
+    # 5 GHz twin whose SSID we never captured: matched purely by same-OUI/near BSSID.
+    guest_24 = build_ap(bssid="4a:ed:e6:1e:c4:41", ssid="DIGIFIBRA-guest1",
+                        encryption="OPEN", channel=9)
+    twin_5 = build_ap(bssid="4a:ed:e6:9e:c4:41", ssid="", encryption="OPEN", channel=44)
+    twins = fm.band_twins(guest_24, _twin_array(guest_24, twin_5))
+    assert [t.bssid for t in twins] == ["4a:ed:e6:9e:c4:41"]
+
+
+def test_band_twins_ignores_same_band_and_missing_array():
+    ap = build_ap(bssid="4a:ed:e6:1e:c4:41", ssid="G", encryption="OPEN", channel=9)
+    same_band = build_ap(bssid="4a:ed:e6:1f:c4:41", ssid="G2", encryption="OPEN", channel=6)
+    assert fm.band_twins(ap, _twin_array(ap, same_band)) == []
+    assert fm.band_twins(ap, None) == []

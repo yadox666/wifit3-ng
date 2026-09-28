@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterable
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
+from wifit3.wlan.quic import extract_quic_sni
+
 if TYPE_CHECKING:
     from wifit3.dot11.dhcp import DhcpOffer
 
@@ -25,8 +27,16 @@ MAX_FACTS_PER_KIND = 32
 MAX_CLIENTS = 256
 MAX_URI_BYTES = 2048
 
+# TCP ClientHello reassembly bounds (a large TLS 1.3 ClientHello -- ECH, big key shares --
+# routinely spans 2-3 TCP segments, so single-segment SNI parsing misses it).
+_TLS_FLOW_TTL = 15.0
+_MAX_TLS_FLOWS = 64
+_MAX_TLS_ASSEMBLY = 8192
+_MAX_TLS_STASH = 8
+
 _CONFIDENCE_RANK = {"inferred": 0, "advertised": 1, "observed": 2}
-_WEBSITE_SOURCE_RANK = {"dns_query": 0, "tls_sni": 1, "http_request": 2}
+# ``quic_sni`` (HTTP/3 ClientHello SNI) is equivalent evidence to a TLS-over-TCP SNI.
+_WEBSITE_SOURCE_RANK = {"dns_query": 0, "tls_sni": 1, "quic_sni": 1, "http_request": 2}
 _SENSITIVE_QUERY_KEY = re.compile(
     r"(?:auth|bearer|code|cookie|credential|email|key|name|pass|phone|"
     r"session|signature|token)",
@@ -493,31 +503,101 @@ def _valid_mac(value: Any) -> bool:
         return False
 
 
+class _TlsFlow:
+    __slots__ = ("base_seq", "buf", "stash", "deadline")
+
+    def __init__(self, base_seq: int, now: float):
+        self.base_seq = base_seq
+        self.buf = bytearray()
+        self.stash: dict[int, bytes] = {}
+        self.deadline = now + _TLS_FLOW_TTL
+
+
+class _TlsReassembler:
+    """Bounded, best-effort reassembly of the start of a client->server TCP stream so a TLS
+    ClientHello that spans multiple segments can be parsed. Ordered by TCP sequence; caps on
+    flow count, per-flow bytes, and out-of-order stash keep memory and CPU bounded. Never
+    retains anything beyond the first ``_MAX_TLS_ASSEMBLY`` bytes of the handshake."""
+
+    __slots__ = ("_flows",)
+
+    def __init__(self) -> None:
+        self._flows: dict[tuple, _TlsFlow] = {}
+
+    def push(self, key: tuple, seq: int, data: bytes, now: float) -> bytes | None:
+        if not data:
+            return None
+        flow = self._flows.get(key)
+        if flow is None:
+            if len(self._flows) >= _MAX_TLS_FLOWS:
+                self._evict(now)
+            flow = _TlsFlow(seq, now)
+            self._flows[key] = flow
+        flow.deadline = now + _TLS_FLOW_TTL
+        offset = (seq - flow.base_seq) & 0xFFFFFFFF
+        if offset > _MAX_TLS_ASSEMBLY:
+            return bytes(flow.buf)                     # wrapped / unrelated: ignore this segment
+        self._insert(flow, offset, data)
+        assembled = bytes(flow.buf)
+        if assembled[:1] not in (b"", b"\x16"):        # not a TLS handshake stream: stop tracking
+            self._flows.pop(key, None)
+        return assembled
+
+    def drop(self, key: tuple) -> None:
+        self._flows.pop(key, None)
+
+    @staticmethod
+    def _insert(flow: _TlsFlow, offset: int, data: bytes) -> None:
+        buf = flow.buf
+        if offset == len(buf):
+            buf += data
+            while True:                                # drain any contiguous stashed segments
+                nxt = flow.stash.pop(len(buf), None)
+                if nxt is None:
+                    break
+                buf += nxt
+        elif offset < len(buf):
+            if offset + len(data) > len(buf):
+                buf += data[len(buf) - offset:]
+        elif len(flow.stash) < _MAX_TLS_STASH and offset < _MAX_TLS_ASSEMBLY:
+            flow.stash[offset] = data
+        if len(buf) > _MAX_TLS_ASSEMBLY:
+            del buf[_MAX_TLS_ASSEMBLY:]
+
+    def _evict(self, now: float) -> None:
+        for key in [k for k, flow in self._flows.items() if flow.deadline <= now]:
+            self._flows.pop(key, None)
+        if len(self._flows) >= _MAX_TLS_FLOWS:
+            oldest = min(self._flows, key=lambda k: self._flows[k].deadline)
+            self._flows.pop(oldest, None)
+
+
 class PassiveNetworkAnalyzer:
     """Decode infrastructure metadata from clear-text data frames during capture."""
 
     def __init__(self, metadata: NetworkMetadata):
         self.metadata = metadata
+        self._tls_flows = _TlsReassembler()
 
     def observe(self, packet: Any, now: float | None = None) -> set[str]:
         """Observe one parsed packet; return client MACs whose metadata changed."""
         now = time.time() if now is None else now
-        decoded = _data_payload(getattr(packet, "raw", b""))
-        if decoded is None:
+        decoded = _data_payloads(getattr(packet, "raw", b""))
+        if not decoded:
             return set()
-        ethertype, payload = decoded
         before = self.metadata.revision
         touched: set[str] = set()
         client_mac = getattr(packet, "client_mac", None)
         if client_mac:
             client_mac = client_mac.casefold()
         try:
-            if ethertype == 0x0806:
-                touched |= self._arp(payload, client_mac, now)
-            elif ethertype == 0x0800:
-                touched |= self._ipv4(payload, packet, client_mac, now)
-            elif ethertype == 0x86DD:
-                touched |= self._ipv6(payload, packet, client_mac, now)
+            for ethertype, payload in decoded:
+                if ethertype == 0x0806:
+                    touched |= self._arp(payload, client_mac, now)
+                elif ethertype == 0x0800:
+                    touched |= self._ipv4(payload, packet, client_mac, now)
+                elif ethertype == 0x86DD:
+                    touched |= self._ipv6(payload, packet, client_mac, now)
         except (ValueError, struct.error, ipaddress.AddressValueError):
             return set()
         if self.metadata.revision != before and client_mac:
@@ -601,7 +681,30 @@ class PassiveNetworkAnalyzer:
                 ):
                     touched.add(client_mac)
             return touched
+        if client_mac and dest_port == 443:
+            return self._quic(body, client_mac, now)
         return set()
+
+    def _quic(self, payload: bytes, client_mac: str, now: float) -> set[str]:
+        """Extract the ClientHello SNI from a QUIC (HTTP/3) Initial packet on UDP/443."""
+        raw = extract_quic_sni(payload)
+        if not raw:
+            return set()
+        host = _safe_hostname(raw)
+        if not host:
+            return set()
+        touched: set[str] = set()
+        if self.metadata.observe_website(
+            f"https://{host}", hostname=host, source="quic_sni", now=now,
+            client_mac=client_mac,
+        ):
+            touched.add(client_mac)
+        if _looks_like_portal_host(host) and self.metadata.add(
+            "captive_portals", f"https://{host}", source="quic_sni_portal_hint",
+            confidence="inferred", now=now, client_mac=client_mac,
+        ):
+            touched.add(client_mac)
+        return touched
 
     def _dhcp(self, payload: bytes, source_ip: str, now: float) -> set[str]:
         if len(payload) < 240 or payload[236:240] != b"\x63\x82\x53\x63":
@@ -706,6 +809,17 @@ class PassiveNetworkAnalyzer:
         touched = set()
         if to_ds and dest_port == 443:
             host = _tls_sni(body)
+            if host is None:
+                # ClientHello may span TCP segments: reassemble the stream start and retry.
+                seq = struct.unpack("!I", payload[4:8])[0]
+                flow_key = (client_mac, source_port, dest_port)
+                assembled = self._tls_flows.push(
+                    flow_key, seq, payload[header_len:header_len + 2048], now,
+                )
+                if assembled is not None and len(assembled) > len(body):
+                    host = _tls_sni(assembled)
+                if host is not None:
+                    self._tls_flows.drop(flow_key)
             if host and self.metadata.observe_website(
                 f"https://{host}", hostname=host, source="tls_sni", now=now,
                 client_mac=client_mac,
@@ -836,25 +950,62 @@ class PassiveNetworkAnalyzer:
         return touched
 
 
-def _data_payload(frame: bytes) -> tuple[int, bytes] | None:
+def _data_payloads(frame: bytes) -> list[tuple[int, bytes]]:
     if len(frame) < 32 or ((frame[0] & 0x0C) >> 2) != 2 or frame[1] & 0x40:
-        return None
+        return []
     subtype = frame[0] >> 4
     header_len = 24
     if frame[1] & 0x03 == 0x03:
         header_len += 6
+    is_amsdu = False
     if subtype & 0x08:
         if len(frame) < header_len + 2:
-            return None
-        if frame[header_len] & 0x80:  # A-MSDU needs subframe parsing; do not guess.
-            return None
+            return []
+        is_amsdu = bool(frame[header_len] & 0x80)
         header_len += 2
     if frame[1] & 0x80:
         header_len += 4
-    start = frame.find(b"\xaa\xaa\x03\x00\x00\x00", header_len, header_len + 16)
-    if start < 0 or len(frame) < start + 8:
+    if is_amsdu:
+        return _amsdu_payloads(frame[header_len:])
+    decoded = _llc_payload(
+        frame, header_len, min(len(frame), header_len + 16), len(frame),
+    )
+    return [decoded] if decoded is not None else []
+
+
+def _amsdu_payloads(data: bytes) -> list[tuple[int, bytes]]:
+    """Decode bounded LLC/SNAP payloads from one QoS A-MSDU.
+
+    Each subframe is ``DA | SA | length | MSDU`` and all but the final subframe
+    are padded to a four-byte boundary. Invalid/truncated tails are ignored.
+    """
+    result: list[tuple[int, bytes]] = []
+    offset = 0
+    while offset + 14 <= len(data) and len(result) < 64:
+        length = struct.unpack("!H", data[offset + 12:offset + 14])[0]
+        body_start = offset + 14
+        body_end = body_start + length
+        if length < 8 or body_end > len(data):
+            break
+        decoded = _llc_payload(
+            data, body_start, min(body_end, body_start + 16), body_end,
+        )
+        if decoded is not None:
+            result.append(decoded)
+        offset = (body_end + 3) & ~3
+    return result
+
+
+def _llc_payload(
+    data: bytes, search_start: int, search_end: int, payload_end: int,
+) -> tuple[int, bytes] | None:
+    start = data.find(b"\xaa\xaa\x03\x00\x00\x00", search_start, search_end)
+    if start < 0 or payload_end > len(data) or payload_end < start + 8:
         return None
-    return struct.unpack("!H", frame[start + 6:start + 8])[0], frame[start + 8:]
+    return (
+        struct.unpack("!H", data[start + 6:start + 8])[0],
+        data[start + 8:payload_end],
+    )
 
 
 def _dhcp_options(payload: bytes) -> dict[int, list[bytes]]:

@@ -43,6 +43,7 @@ from .screens.bluetooth_scanner import BluetoothScannerView
 from .screens.bluetooth_focus import BluetoothFocusView
 from .screens.bluetooth_classic_focus import BluetoothClassicFocusView
 from .screens.client_focus import ClientFocusView
+from .screens.offline import OfflineDatabaseView
 from .screens.about import AboutModal, UpdateAvailableModal
 from .screens.diagnostics import AdapterDiagnosticsModal
 from .screens.focus_v2 import FocusViewV2
@@ -95,7 +96,7 @@ class WifiteApp(App):
         align: center middle;
         margin-top: 1;
     }
-    #bluetooth-btn {
+    #bluetooth-btn, #offline-btn {
         margin-left: 2;
     }
     #primary-actions Button, #uninstall-btn {
@@ -274,6 +275,7 @@ class WifiteApp(App):
         self.install_screen(BluetoothClassicFocusView(), name="bluetooth-classic-focus")
         self.install_screen(ClientFocusView(), name="client-focus")
         self.install_screen(FocusViewV2(), name="focus")
+        self.install_screen(OfflineDatabaseView(), name="offline")
         
         self.push_screen("splash")
         self._device_timer = self.set_interval(0.5, self.device_watch.poll)

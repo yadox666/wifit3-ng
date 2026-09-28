@@ -97,6 +97,10 @@ async def test_client_connector_is_overlaid_only_while_clients_exist():
         assert all(piece.display is False for piece in (horizontal, vertical, junction))
 
 
+async def test_router_has_no_inline_wps_probe_button(layout_host):
+    assert not list(layout_host.query("#ap-probe"))
+
+
 def test_dashboard_rows_and_rate_vs_count():
     # WPA family: beacon + data + eapol + inject + deauth.
     rows = fm.dashboard_rows(types.SimpleNamespace(encryption="WPA2"))
@@ -107,7 +111,7 @@ def test_dashboard_rows_and_rate_vs_count():
     assert all(as_rate[k] for k in ("beacon", "data", "inject", "deauth"))
 
 
-def test_wps_info_hotkey_is_shown_only_when_probe_is_available():
+def test_wps_info_hotkey_is_available_without_footer_duplication():
     screen = FocusViewV2()
     ap = AccessPoint(bssid="00:11:22:33:44:55", wps=True)
     screen._target_ap = ap
@@ -115,10 +119,11 @@ def test_wps_info_hotkey_is_shown_only_when_probe_is_available():
     assert screen.check_action("wps_info", ()) is True
     ap.wps = False
     assert screen.check_action("wps_info", ()) is None
-    assert any(
-        binding.key == "i" and binding.description == "WPS Info"
-        for binding in FocusViewV2.BINDINGS
+    binding = next(
+        binding for binding in FocusViewV2.BINDINGS
+        if binding.key == "i" and binding.description == "WPS Info"
     )
+    assert binding.show is False
     assert WpsCampaign.hotkey == ("n", "WPS PIN")
 
 

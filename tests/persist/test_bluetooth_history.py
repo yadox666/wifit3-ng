@@ -126,6 +126,30 @@ def test_remember_and_enrich_only_a_live_device(tmp_path):
     assert store.count() == 1
 
 
+def test_history_rejects_rotating_synthetic_and_empty_observations(tmp_path):
+    store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
+
+    private = _device(identifier="40:11:22:33:44:55")
+    private.address_type = "resolvable-private"
+    assert not store.remember(private, force=True)
+
+    opaque = _device(identifier="11111111-1111-1111-1111-111111111111")
+    opaque.address_type = "platform-opaque"
+    assert not store.remember(opaque, force=True)
+
+    empty = _device(identifier="00:11:22:33:44:55", name="<Unknown>")
+    empty.service_uuids = ()
+    empty.service_data_uuids = ()
+    empty.manufacturer_ids = ()
+    empty.class_of_device = None
+    assert not store.remember(empty, force=True)
+
+    stable = _device(identifier="00:11:22:33:44:66")
+    stable.address_type = "public"
+    assert store.remember(stable, force=True)
+    assert store.count() == 1
+
+
 def test_live_name_and_radio_values_win_while_sets_are_merged(tmp_path):
     store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
     store.remember(_device(), force=True)
@@ -169,7 +193,7 @@ def test_remember_persists_classification_signal_and_activity_analysis(tmp_path)
     store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
     device = _device()
     device.appearance = 0x0943
-    device.address_type = "resolvable-private"
+    device.address_type = "public"
     device.payload_fingerprint = "payload"
     device.profile_fingerprint = "profile"
     device.baseline_status = "changed"
@@ -217,6 +241,26 @@ def test_protocol_classification_evidence_round_trips(tmp_path):
     assert observed.protocol_type == "Apple Proximity Pairing audio"
     assert observed.protocol_source == "Manufacturer protocol"
     assert observed.protocol_confidence == "high"
+
+
+def test_offline_devices_include_all_json_fields_and_capture_summaries(tmp_path):
+    store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
+    device = _device()
+    device.address_type = "public"
+    device.protocol_type = "Example protocol"
+    store.remember(device, force=True)
+    capture_id = store.start_event_capture(
+        device.identifier, "Headphones", max_bytes=1024,
+    )
+    store.append_event(capture_id, "advertisement", {"sample": True})
+    store.finish_event_capture(capture_id)
+
+    records = store.offline_devices()
+
+    assert records[0]["service_uuids"] == ["180f"]
+    assert records[0]["analysis"]["activity"]["advertisement_count"] == 1
+    assert records[0]["protocol"]["type"] == "Example protocol"
+    assert records[0]["event_captures"][0]["event_count"] == 1
 
 
 def test_clear_and_cross_thread_writes(tmp_path):

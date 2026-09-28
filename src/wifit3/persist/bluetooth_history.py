@@ -12,6 +12,7 @@ from pathlib import Path
 from platformdirs import user_data_dir
 
 from wifit3.models import BluetoothDevice
+from wifit3.models.bluetooth_device import has_coherent_persistent_identity
 from wifit3.persist.private_files import ensure_private_directory
 
 
@@ -263,7 +264,7 @@ class BluetoothHistoryStore:
         from wifit3.bluetooth.classification import device_classification
 
         connection = self._connection
-        if connection is None:
+        if connection is None or not has_coherent_persistent_identity(device):
             return False
         identifier = device.identifier.casefold()
         classification = device_classification(device)
@@ -664,6 +665,38 @@ class BluetoothHistoryStore:
         return int(connection.execute("SELECT COUNT(*) FROM devices").fetchone()[0])
 
     @_locked
+    def offline_devices(self) -> list[dict]:
+        connection = self._connection
+        if connection is None:
+            return []
+        records: list[dict] = []
+        for row in connection.execute(
+            "SELECT * FROM devices ORDER BY last_seen DESC, identifier",
+        ):
+            identifier = str(row["identifier"])
+            record = dict(row)
+            for field in (
+                "service_uuids_json", "service_data_uuids_json",
+                "manufacturer_ids_json", "radio_types_json",
+                "analysis_json", "protocol_json",
+            ):
+                record[field.removesuffix("_json")] = _json_value(record.pop(field))
+            record["event_captures"] = [
+                dict(item) for item in connection.execute(
+                    """
+                    SELECT capture_id, alias, started_at, ended_at, max_bytes,
+                           total_bytes, event_count, dropped
+                    FROM event_captures
+                    WHERE identifier = ?
+                    ORDER BY started_at DESC
+                    """,
+                    (identifier,),
+                )
+            ]
+            records.append(record)
+        return records
+
+    @_locked
     def analysis(self, identifier: str) -> dict:
         connection = self._connection
         if connection is None:
@@ -721,6 +754,15 @@ def _merge_tuple(
         return False
     setattr(device, field, merged)
     return True
+
+
+def _json_value(value: object):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
 
 
 def _profile_changed(device: BluetoothDevice, row: sqlite3.Row) -> bool:

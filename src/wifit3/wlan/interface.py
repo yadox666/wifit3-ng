@@ -13,7 +13,7 @@ from wifit3.chips.driver import Driver, FakeMacSupport
 from wifit3.errors import (
     BringUpError, BringUpPermissionsError, is_device_gone, is_permission_error,
 )
-from wifit3.wlan.channels import scan_hop_order
+from wifit3.wlan.channels import ChannelSpec, scan_hop_order
 from wifit3.dot11.packet import Packet
 from wifit3.dot11.deauth import build_deauth, deauth_nav_bytes
 from wifit3.dot11.mac import str_to_mac, mac_to_str, random_client_mac
@@ -59,6 +59,7 @@ class WlanInterface:
         self.bus = bus
         self.address = address
         self.current_channel = 1
+        self.current_channel_spec = ChannelSpec(1)
         self.connected_at: float | None = None
         self.last_frame_at: float | None = None
         self.received_frames = 0
@@ -118,7 +119,28 @@ class WlanInterface:
             raise
         if success:
             self.current_channel = channel
+            self.current_channel_spec = ChannelSpec(channel)
             self.visited_channels.add(channel)
+        else:
+            self.tune_failures += 1
+        return success
+
+    async def set_channel_spec(self, spec: ChannelSpec, scan: bool = False) -> bool:
+        """Tune an operating channel; unsupported widths safely degrade to 20 MHz."""
+        requested = (
+            spec
+            if spec.width_mhz in self.driver.SUPPORTED_CHANNEL_WIDTHS
+            else ChannelSpec(spec.primary)
+        )
+        try:
+            success = await self.driver.set_channel_spec(requested, scan=scan)
+        except Exception:
+            self.tune_failures += 1
+            raise
+        if success:
+            self.current_channel = requested.primary
+            self.current_channel_spec = requested
+            self.visited_channels.add(requested.primary)
         else:
             self.tune_failures += 1
         return success

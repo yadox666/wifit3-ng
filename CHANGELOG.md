@@ -6,6 +6,44 @@ build compared with the original
 
 ## Unreleased
 
+## 0.3.9 - 2026-09-28
+
+### Added
+
+- Passive website discovery now recovers **QUIC / HTTP-3** destinations. A
+  self-contained, dependency-free QUIC decoder (`wlan/quic.py`) derives the
+  client-Initial keys from the public Destination Connection ID, decrypts v1 and
+  v2 Initial packets (AES-128-GCM payload, AES-ECB header protection, HKDF-SHA256
+  key schedule), reassembles CRYPTO frames, and extracts the TLS ClientHello SNI.
+  Hosts are recorded with source `quic_sni`. All crypto is validated against
+  FIPS-197, McGrew GCM, and RFC 5869 test vectors.
+- Passive TLS SNI parsing now performs bounded, in-order **TCP reassembly**, so a
+  ClientHello split across multiple TCP segments still yields its hostname.
+- Passive open-network metadata and website discovery now run for the lifetime
+  of AP Focus or Client Focus, independently of optional PCAP file recording.
+- MT7921AU and MT7925U Focus tuning now follows an AP's advertised 20/40 MHz
+  operating channel, including the secondary-above/below and center-channel
+  fields. Legacy cards continue to tune the primary 20 MHz channel.
+- AP Focus now warns about a network's **cross-band (2.4/5 GHz) twin** when one is
+  visible, matching by SSID or by same-OUI / near-identical BSSID (for hidden
+  twins). The informational notice explicitly states that the current capture
+  remains on its selected channel.
+
+### Fixed
+
+- Passive website discovery now decodes bounded QoS **A-MSDU aggregates**
+  instead of counting their outer data frame while discarding every contained
+  DNS, TLS, HTTP, and QUIC payload.
+- Power-save **Null / QoS-Null / CF** frames (no-payload data subtypes) are no
+  longer counted as payload "data" on the packet-rate dashboard. They are now
+  tagged `null_data`, still registering client presence and association but no
+  longer inflating the data line, which previously made an idle, power-saving
+  client look like it was actively transferring traffic.
+- RTL8814AU monitor mode now reapplies its accept-all RCR and RX filter maps
+  after a final channel lock. This prevents channel hopping from leaving the
+  adapter receiving management/Null frames while silently omitting payload data
+  from focused PCAP captures.
+
 ## 0.3.8 - 2026-09-28
 
 ### Added
@@ -98,6 +136,9 @@ build compared with the original
   bundled patched identity, rejecting unknown controller revisions, and
   confirming that the expected firmware identity is active after upload.
 - Added the upstream ASUS RTL8761BU USB ID `0b05:190e`.
+- Expanded the README compatibility table with documented RTL8761BU/BUV
+  adapters from ASUS, TP-Link, UGREEN, EDUP, Edimax, Delock, and Sandberg,
+  while retaining USB-ID and runtime-identity checks for revision changes.
 - BLE GATT timeouts now show an actionable explanation. When the selected row
   also has Classic evidence, scanning resumes and the app opens read-only
   Classic Focus automatically instead of displaying a raw `TimeoutError`.

@@ -4,7 +4,7 @@ from textual.widgets import Button, DataTable, Select
 
 from wifit3.dot11.ie import GENERIC_RSN_IE
 from wifit3.dot11.probe import wpa2_beacon
-from wifit3.models import AccessPoint, Client, ProbeObservation
+from wifit3.models import AccessPoint, Client, ProbeObservation, SignalPosition
 from wifit3.persist.targets import TargetStore
 from wifit3.persist.vault import Vault
 from wifit3.ui.screens.filter import ScanFilter
@@ -73,11 +73,17 @@ def _footer_descriptions(scanner):
 async def test_scanner_switches_between_ap_and_client_tables():
     ap = AccessPoint(bssid="00:03:93:11:22:33", ssid="Office", channel=6)
     ap.signal_by_card = {"card0": -40}
+    ap.positions = [
+        SignalPosition(51.501, -0.142, None, 4.0, 10, "gps", -40),
+    ]
     connected = Client(
         mac="18:7f:88:aa:bb:cc", bssid=ap.bssid, packets=14,
         probed_ssids={"CoffeeShop", "Home"},
     )
     connected.signal_by_card = {"card0": -48}
+    connected.positions = [
+        SignalPosition(51.502, -0.143, None, 6.0, 11, "gps", -48),
+    ]
     roaming = Client(
         mac="02:00:00:00:00:01", packets=3, probed_ssids={"Airport"},
     )
@@ -93,6 +99,9 @@ async def test_scanner_switches_between_ap_and_client_tables():
         assert "Probe Honeypot" not in _footer_descriptions(scanner)
         assert table.row_count == 1
         assert _plain(table.get_cell(ap.bssid, "last_seen")) == "now / 30s"
+        assert _plain(table.get_cell(ap.bssid, "location")) == (
+            "51.50100, -0.14200 ±4m"
+        )
 
         scanner.action_toggle_pause()
         ap.signal_by_card["card0"] = -20
@@ -111,13 +120,17 @@ async def test_scanner_switches_between_ap_and_client_tables():
         assert "Vault" in _footer_descriptions(scanner)
         assert "Infrastructure" not in _footer_descriptions(scanner)
         assert [key.value for key in table.columns] == [
-            "ssid", "client", "signal", "packets", "last_seen", "manufacturer", "probes",
+            "ssid", "client", "signal", "packets", "last_seen", "manufacturer",
+            "probes", "location",
         ]
         assert table.row_count == 2
         assert _plain(table.get_cell(connected.mac, "manufacturer")) == "Ring"
         assert _plain(table.get_cell(connected.mac, "ssid")) == f"Office  ·  {ap.bssid}"
         assert _plain(table.get_cell(connected.mac, "probes")) == "CoffeeShop  ·  Home"
         assert _plain(table.get_cell(connected.mac, "last_seen")) == "now"
+        assert _plain(table.get_cell(connected.mac, "location")) == (
+            "51.50200, -0.14300 ±6m"
+        )
         assert _plain(table.get_cell(roaming.mac, "ssid")) == "‹unassociated›"
         assert _plain(table.get_cell(roaming.mac, "client")).startswith("~ ")
 

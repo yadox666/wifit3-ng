@@ -777,6 +777,91 @@ class ApHistoryStore:
         return int(connection.execute("SELECT COUNT(*) FROM access_points").fetchone()[0])
 
     @_locked
+    def offline_access_points(self) -> list[dict[str, Any]]:
+        connection = self._connection
+        if connection is None:
+            return []
+        records: list[dict[str, Any]] = []
+        for row in connection.execute(
+            "SELECT * FROM access_points ORDER BY last_seen DESC, bssid",
+        ):
+            bssid = str(row["bssid"])
+            record = dict(row)
+            for field in (
+                "security_json", "capabilities_json", "wps_json",
+                "enterprise_json", "network_json",
+            ):
+                record[field.removesuffix("_json")] = _json_value(record.pop(field))
+            record["identity_evidence"] = [
+                dict(item) for item in connection.execute(
+                    """
+                    SELECT field, source, value, first_seen, last_seen
+                    FROM identity_evidence
+                    WHERE bssid = ?
+                    ORDER BY field, source
+                    """,
+                    (bssid,),
+                )
+            ]
+            record["relationships"] = [
+                dict(item) for item in connection.execute(
+                    """
+                    SELECT related_bssid, kind, first_seen, last_seen
+                    FROM ap_relationships
+                    WHERE bssid = ?
+                    ORDER BY kind, related_bssid
+                    """,
+                    (bssid,),
+                )
+            ]
+            record["clients"] = [
+                dict(item) for item in connection.execute(
+                    """
+                    SELECT client_mac, first_seen, last_seen
+                    FROM client_associations
+                    WHERE bssid = ?
+                    ORDER BY last_seen DESC, client_mac
+                    """,
+                    (bssid,),
+                )
+            ]
+            records.append(record)
+        return records
+
+    @_locked
+    def offline_clients(self) -> list[dict[str, Any]]:
+        connection = self._connection
+        if connection is None:
+            return []
+        records: list[dict[str, Any]] = []
+        clients = connection.execute(
+            """
+            SELECT client_mac, MIN(first_seen) AS first_seen,
+                   MAX(last_seen) AS last_seen, COUNT(*) AS access_point_count
+            FROM client_associations
+            GROUP BY client_mac
+            ORDER BY last_seen DESC, client_mac
+            """
+        )
+        for client in clients:
+            record = dict(client)
+            record["access_points"] = [
+                dict(item) for item in connection.execute(
+                    """
+                    SELECT association.bssid, ap.ssid, ap.channel, ap.encryption,
+                           association.first_seen, association.last_seen
+                    FROM client_associations AS association
+                    JOIN access_points AS ap ON ap.bssid = association.bssid
+                    WHERE association.client_mac = ?
+                    ORDER BY association.last_seen DESC, association.bssid
+                    """,
+                    (client["client_mac"],),
+                )
+            ]
+            records.append(record)
+        return records
+
+    @_locked
     def close(self) -> None:
         if self._connection is not None:
             self._connection.close()
@@ -972,6 +1057,15 @@ def _json_object(value: object) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _json_value(value: object) -> Any:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
 
 
 def _dump(value: object) -> str:

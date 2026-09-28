@@ -35,6 +35,33 @@ def _frame(payload, ethertype=0x0800, *, client=CLIENT, from_ds=True):
     )
 
 
+def _amsdu_frame(payloads, *, client=CLIENT, from_ds=False):
+    if from_ds:
+        header = (
+            b"\x88\x02\x00\x00" + _mac(client) + _mac(BSSID)
+            + b"\x00\x01\x02\x03\x04\x05" + b"\x00\x00"
+        )
+    else:
+        header = (
+            b"\x88\x01\x00\x00" + _mac(BSSID) + _mac(client)
+            + b"\x00\x01\x02\x03\x04\x05" + b"\x00\x00"
+        )
+    aggregate = bytearray()
+    for index, (ethertype, payload) in enumerate(payloads):
+        msdu = b"\xaa\xaa\x03\x00\x00\x00" + struct.pack("!H", ethertype) + payload
+        aggregate += _mac("00:01:02:03:04:05") + _mac(client)
+        aggregate += struct.pack("!H", len(msdu)) + msdu
+        if index < len(payloads) - 1:
+            aggregate += b"\x00" * (-len(aggregate) % 4)
+    return SimpleNamespace(
+        raw=header + b"\x80\x00" + aggregate,
+        bssid=BSSID,
+        client_mac=client,
+        to_ds=not from_ds,
+        from_ds=from_ds,
+    )
+
+
 def _ipv4(payload, protocol, source, dest):
     total = 20 + len(payload)
     return (
@@ -302,3 +329,82 @@ def test_ipv6_router_advertisement_records_prefix_router_dns_and_portal():
     assert [fact.value for fact in metadata.facts["captive_portals"]] == [
         "https://portal-v6.example",
     ]
+
+
+def _quic_client_hello(host):
+    encoded = host.encode("ascii")
+    sni = b"\x00" + struct.pack("!H", len(encoded)) + encoded
+    sni_list = struct.pack("!H", len(sni)) + sni
+    ext = struct.pack("!HH", 0, len(sni_list)) + sni_list
+    exts = struct.pack("!H", len(ext)) + ext
+    body = (
+        b"\x03\x03" + b"\x00" * 32 + b"\x00"
+        + b"\x00\x02\x13\x01" + b"\x01\x00"
+        + exts
+    )
+    return b"\x01" + len(body).to_bytes(3, "big") + body
+
+
+def _quic_initial_frame(host):
+    from wifit3.wlan import quic
+
+    pkt = quic._seal_client_initial(
+        bytes.fromhex("0001020304050607"), _quic_client_hello(host), pad_to=1200,
+    )
+    udp = struct.pack("!HHHH", 49152, 443, 8 + len(pkt), 0) + pkt
+    return _frame(_ipv4(udp, 17, "192.168.50.42", "93.184.216.34"), from_ds=False)
+
+
+def _tcp_segment(body, dest_port, seq, *, from_ds=False):
+    tcp = (
+        struct.pack("!HHII", 49152, dest_port, seq, 1)
+        + b"\x50\x18\x10\x00\x00\x00\x00\x00"
+        + body
+    )
+    return _frame(_ipv4(tcp, 6, "192.168.50.42", "93.184.216.34"), from_ds=from_ds)
+
+
+def test_quic_initial_sni_recorded_as_website():
+    metadata = NetworkMetadata(BSSID, "Cafe")
+    touched = PassiveNetworkAnalyzer(metadata).observe(
+        _quic_initial_frame("video.example.com"), now=500,
+    )
+    assert touched == {CLIENT}
+    assert [fact.value for fact in metadata.facts["websites"]] == [
+        "https://video.example.com",
+    ]
+    assert metadata.facts["websites"][0].source == "quic_sni"
+
+
+def test_tls_client_hello_split_across_tcp_segments_is_reassembled():
+    metadata = NetworkMetadata(BSSID, "Cafe")
+    analyzer = PassiveNetworkAnalyzer(metadata)
+    record = _tls_client_hello("split.example.com")
+    part1, part2 = record[:20], record[20:]
+
+    analyzer.observe(_tcp_segment(part1, 443, seq=1000), now=1)
+    assert "websites" not in metadata.facts          # incomplete ClientHello: nothing yet
+    touched = analyzer.observe(_tcp_segment(part2, 443, seq=1000 + len(part1)), now=2)
+
+    assert CLIENT in touched
+    assert [fact.value for fact in metadata.facts["websites"]] == [
+        "https://split.example.com",
+    ]
+    assert metadata.facts["websites"][0].source == "tls_sni"
+
+
+def test_qos_amsdu_subframes_are_analyzed_for_websites():
+    dns_ip = _dns_query("dns-in-aggregate.example").raw[32:]
+    tls_ip = _tcp_packet(
+        _tls_client_hello("tls-in-aggregate.example"), 443,
+    ).raw[32:]
+    packet = _amsdu_frame([(0x0800, dns_ip), (0x0800, tls_ip)])
+    metadata = NetworkMetadata(BSSID, "Cafe")
+
+    touched = PassiveNetworkAnalyzer(metadata).observe(packet, now=600)
+
+    assert touched == {CLIENT}
+    assert {fact.value for fact in metadata.clients[CLIENT].facts["websites"]} == {
+        "dns-in-aggregate.example",
+        "https://tls-in-aggregate.example",
+    }

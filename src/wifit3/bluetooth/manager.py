@@ -29,7 +29,12 @@ from wifit3.bluetooth.usb_hci import (
     find_usb_bluetooth_controllers,
 )
 from wifit3.models import BluetoothDevice, LocationFix
-from wifit3.models.bluetooth_device import BLE_RADIO, CLASSIC_RADIO
+from wifit3.models.bluetooth_device import (
+    BLE_RADIO,
+    CLASSIC_RADIO,
+    has_coherent_persistent_identity,
+    has_stable_persistent_identifier,
+)
 from wifit3.persist.bluetooth_history import BluetoothHistoryStore
 from wifit3.persist.locations import LocationStore
 
@@ -499,11 +504,13 @@ class BluetoothManager:
         )
         observed.profile_fingerprint = _profile_fingerprint(observed)
         self._correlate_radios(observed)
-        self._observe_position(observed)
-        if self.history is not None:
+        if self.history is not None and has_stable_persistent_identifier(observed):
             self.history.enrich(observed, classify=previous is None)
             observed.profile_fingerprint = _profile_fingerprint(observed)
-            self.history.remember(observed)
+        if has_coherent_persistent_identity(observed):
+            self._observe_position(observed)
+            if self.history is not None:
+                self.history.remember(observed)
         self._devices[identifier] = observed
         for callback in list(self._advertisement_callbacks):
             try:
@@ -613,11 +620,13 @@ class BluetoothManager:
         )
         observed.profile_fingerprint = _profile_fingerprint(observed)
         self._correlate_radios(observed)
-        self._observe_position(observed)
-        if self.history is not None:
+        if self.history is not None and has_stable_persistent_identifier(observed):
             self.history.enrich(observed, classify=previous is None)
             observed.profile_fingerprint = _profile_fingerprint(observed)
-            self.history.remember(observed)
+        if has_coherent_persistent_identity(observed):
+            self._observe_position(observed)
+            if self.history is not None:
+                self.history.remember(observed)
         self._devices[observation.identifier] = observed
         for callback in list(self._advertisement_callbacks):
             try:

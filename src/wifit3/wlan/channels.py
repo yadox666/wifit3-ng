@@ -1,6 +1,47 @@
 """802.11 channel helpers: scan-hop ordering and per-band label/range compression."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelSpec:
+    """Primary channel plus the operating bandwidth advertised by an AP."""
+
+    primary: int
+    width_mhz: int = 20
+    center_channel: int | None = None
+    secondary_offset: int = 0
+
+    def __post_init__(self) -> None:
+        if self.width_mhz not in (20, 40):
+            raise ValueError(f"unsupported channel width: {self.width_mhz} MHz")
+        if self.width_mhz == 20:
+            object.__setattr__(self, "center_channel", self.primary)
+            object.__setattr__(self, "secondary_offset", 0)
+        elif self.width_mhz == 40:
+            if self.secondary_offset not in (-1, 1):
+                raise ValueError("40 MHz requires a secondary channel above or below")
+            expected = self.primary + 2 * self.secondary_offset
+            if self.center_channel is None:
+                object.__setattr__(self, "center_channel", expected)
+            elif self.center_channel != expected:
+                raise ValueError("40 MHz center channel conflicts with secondary offset")
+
+
+def channel_spec_for_ap(ap) -> ChannelSpec:
+    """Build a safe tune request from an AP's decoded Operation IEs."""
+    caps = ap.capabilities
+    width = caps.operating_width_mhz
+    if width == 40 and caps.secondary_channel_offset in (-1, 1):
+        return ChannelSpec(
+            ap.channel,
+            40,
+            caps.center_channel_0,
+            caps.secondary_channel_offset,
+        )
+    return ChannelSpec(ap.channel)
+
 
 # The non-overlapping 2.4 GHz trio nearly every router parks on (FCC 1/6/11); visiting
 # these first front-loads most 2.4 GHz targets into the first three hops.

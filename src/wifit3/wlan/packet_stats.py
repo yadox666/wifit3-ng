@@ -23,7 +23,9 @@ PACKET_CLASSES = (
 
 # Parser frame-type → dashboard class. ``qos_data`` maps to DATA (almost all modern data
 # frames are QoS). Unlisted types (probe/assoc/mgmt/ctrl) are intentionally uncounted to keep
-# the panel to six lines.
+# the panel to six lines. ``null_data`` (Null / QoS-Null power-save keepalives) is deliberately
+# absent: it carries no payload, so counting it would make an idle, power-saving client look
+# like it is generating data traffic.
 _RX_CLASS = {
     "beacon": CLASS_BEACON,
     "data": CLASS_DATA,

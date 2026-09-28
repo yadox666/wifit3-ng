@@ -21,6 +21,7 @@ from wifit3.persist.config import Config
 from wifit3.persist.targets import SavedTarget, TargetStoreError
 from wifit3.targeting import TargetCandidate, bluetooth_candidate
 from wifit3.ui.bluetooth_export import export_bluetooth_bundle, export_btsnoop
+from wifit3.ui.location_format import format_position
 from wifit3.ui.signal_bar import dbm_style
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
 from wifit3.ui.screens.new_target import NewTargetModal, NewTargetResult
@@ -168,6 +169,7 @@ class BluetoothScannerView(Screen):
         ("manufacturer", "MANUFACTURER"),
         ("services", "ADVERTISED SERVICES"),
         ("identifier", "ADDRESS / ID"),
+        ("location", "GPS"),
     ]
     _COLUMN_WIDTHS = {
         "name": 22,
@@ -180,6 +182,7 @@ class BluetoothScannerView(Screen):
         "manufacturer": 20,
         "services": 23,
         "identifier": 17,
+        "location": 25,
     }
 
     def __init__(self) -> None:
@@ -454,6 +457,11 @@ class BluetoothScannerView(Screen):
             manufacturer_cell,
             services_cell,
             identifier_cell,
+            Text(
+                format_position(device.positions),
+                style="" if device.positions else "dim",
+                no_wrap=True,
+            ),
         ]
         if is_stale:
             for cell in cells:

@@ -17,6 +17,7 @@ from wifit3.models import AccessPoint, Client
 from wifit3.wlan.dedupe import StreamMerger
 from wifit3.wlan.interface import WlanInterface
 from wifit3.wlan.packet_stats import PacketStats
+from wifit3.wlan.channels import ChannelSpec
 from wifit3.wlan.sink import WlanSink
 from wifit3.wlan.lease import Lease
 from wifit3.wlan.wep_store import WepCaptureStore
@@ -383,6 +384,32 @@ class WlanArray:
                     tuned_any = True
             except Exception:
                 logger.exception("%s failed to tune to channel %d", m.name, channel)
+        return tuned_any
+
+    async def set_channel_spec(self, spec: ChannelSpec, scan: bool = False) -> bool:
+        """Stack capable members on one primary/width operating channel."""
+        tuned_any = False
+        tasks = []
+        for member in self._members:
+            if spec.primary not in member.supported_channels:
+                continue
+            current = getattr(member, "current_channel_spec", None)
+            if current == spec:
+                tuned_any = True
+                continue
+            tasks.append((
+                member,
+                asyncio.create_task(member.set_channel_spec(spec, scan=scan)),
+            ))
+        for member, task in tasks:
+            try:
+                if await task:
+                    tuned_any = True
+            except Exception:
+                logger.exception(
+                    "%s failed to tune to channel %d/%d MHz",
+                    member.name, spec.primary, spec.width_mhz,
+                )
         return tuned_any
 
     def _partition(self, channels: List[int], members: Optional[List[WlanInterface]] = None) -> dict:

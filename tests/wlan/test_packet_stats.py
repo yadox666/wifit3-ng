@@ -1,9 +1,32 @@
 """Tests for the Focus live-packet-dashboard counters (pure PacketStats tally). The RX/TX wiring
 now lives in WlanSink (see test_sink.py: update() records RX, record_tx() classifies TX)."""
 
+from wifit3.dot11.parser import WlanFrameParser
 from wifit3.wlan.packet_stats import PACKET_CLASSES, PacketStats
 
 BSSID = "00:11:22:33:44:55"
+
+
+def _mac(value):
+    return bytes.fromhex(value.replace(":", ""))
+
+
+def test_null_and_qos_null_frames_are_tagged_null_data():
+    # No-payload data subtypes: 4 (Null) and 12 (QoS-Null), type=data, to_ds.
+    for fc0 in (0x48, 0xC8):
+        frame = (
+            bytes([fc0, 0x01, 0, 0])
+            + _mac("02:11:22:33:44:55") + _mac(BSSID) + _mac("00:01:02:03:04:05")
+            + b"\x00\x00"
+        )
+        pkt = WlanFrameParser.parse_80211_frame(frame, -50)
+        assert pkt is not None and pkt.type == "null_data"
+
+
+def test_null_data_is_not_counted_as_dashboard_data():
+    s = PacketStats()
+    s.record_rx(BSSID, "null_data")   # power-save keepalive: must not inflate the data line
+    assert s.snapshot(BSSID)["data"] == 0
 
 
 def test_rx_class_mapping():

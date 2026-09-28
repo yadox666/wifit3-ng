@@ -318,15 +318,27 @@ def _ch_band(channel):
     return CH_BAND_2GHZ if channel <= 14 else CH_BAND_5GHZ
 
 
-def config_sniffer(channel, band_idx=0):
-    """mt7925_mcu_config_sniffer — MCU_UNI_CMD(SNIFFER) config TLV (tag 1), 20 MHz.
-    hdr{band_idx, pad[3]} + tlv{tag=CONFIG, len=16, aid, ch_band, bw=0, control_ch,
-    sco=0, center_ch, center_ch2=0, drop_err=1, pad[3]}. control_ch==center_ch for 20 MHz."""
+def config_sniffer(
+    channel, band_idx=0, *, width_mhz=20, secondary_offset=0, center_channel=None,
+):
+    """Build the UNI SNIFFER channel config for a 20 or 40 MHz monitor tune."""
+    if width_mhz == 20:
+        bw, sco, center = 0, 0, channel
+    elif width_mhz == 40:
+        if secondary_offset not in (-1, 1):
+            raise ValueError("40 MHz requires a secondary channel above or below")
+        bw = 0  # mt76's sniffer ABI shares bw=0 for 20/40; SCO + center select 40.
+        sco = 1 if secondary_offset == 1 else 3
+        center = channel + 2 * secondary_offset
+        if center_channel is not None and center_channel != center:
+            raise ValueError("40 MHz center channel conflicts with secondary offset")
+    else:
+        raise ValueError(f"unsupported MT7925AU channel width: {width_mhz} MHz")
     hdr = struct.pack("<B3x", band_idx)
     tlv = struct.pack("<HHHBBBBBBB3x",
                       UNI_SNIFFER_CONFIG, 16, 0,        # tag, len, aid
-                      _ch_band(channel), 0,             # ch_band, bw
-                      channel, 0, channel,              # control_ch, sco, center_ch
+                      _ch_band(channel), bw,
+                      channel, sco, center,
                       0, 1)                             # center_ch2, drop_err
     return MCU_UNI_CMD(MCU_UNI_CMD_SNIFFER), hdr + tlv
 

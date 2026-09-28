@@ -3,7 +3,8 @@ import pytest
 from wifit3.ui.app import WifiteApp
 from wifit3.ui.screens.splash import SplashView
 from wifit3.ui.screens.scanner import ScannerView
-from textual.widgets import RichLog, DataTable
+from wifit3.ui.screens.offline import OfflineDatabaseView
+from textual.widgets import Button, RichLog, DataTable
 
 
 
@@ -24,6 +25,41 @@ async def test_app_layout_and_boot():
         assert ascii_art is not None
         device_list = pilot.app.screen.query_one("#device-list")
         assert device_list is not None
+        offline_button = pilot.app.screen.query_one("#offline-btn", Button)
+        assert not offline_button.disabled
+        assert "offline" in pilot.app._installed_screens
+
+        pilot.app.screen.action_offline()
+        await pilot.pause(0)
+        assert isinstance(pilot.app.screen, OfflineDatabaseView)
+        assert pilot.app.array is None
+        offline = pilot.app.screen
+        offline._records["aps"] = [
+            {
+                "bssid": "00:11:22:33:44:55", "ssid": "First",
+                "last_seen": 2, "clients": [{"client_mac": "aa:bb:cc:dd:ee:ff"}],
+            },
+            {
+                "bssid": "00:11:22:33:44:66", "ssid": "Second",
+                "last_seen": 1, "clients": [],
+            },
+        ]
+        offline._render_table("aps")
+        offline._toggle_record("aps", "aps:00:11:22:33:44:55")
+        first_row_count = offline.query_one("#offline-aps", DataTable).row_count
+        assert first_row_count > 2
+
+        offline._toggle_record("aps", "aps:00:11:22:33:44:66")
+        table = offline.query_one("#offline-aps", DataTable)
+        assert offline._expanded == ("aps", "00:11:22:33:44:66")
+        assert all(
+            "00:11:22:33:44:55" not in str(row_key.value)
+            for row_key in table.rows
+            if str(row_key.value).startswith("detail:")
+        )
+
+        pilot.app.screen.action_back()
+        await pilot.pause(0)
         
         # Manually transition to Scanner View
         pilot.app.push_screen("scanner")

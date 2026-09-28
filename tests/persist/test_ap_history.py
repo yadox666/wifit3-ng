@@ -142,6 +142,32 @@ def test_client_associations_are_bidirectional_and_survive_reopen(tmp_path):
     ]
 
 
+def test_offline_records_include_full_ap_and_client_relationships(tmp_path):
+    store = ApHistoryStore(tmp_path / "history.sqlite3")
+    ap = AccessPoint(
+        bssid=BSSID, ssid="Remembered", channel=6, encryption="WPA2",
+    )
+    ap.akms = ["PSK"]
+    ap.siblings = ["aa:bb:cc:dd:ee:00"]
+    ap.identity.set(IdSource.OUI, IdKey.MANUFACTURER, "Example")
+    store.remember(ap, force=True)
+    store.remember_client_association(
+        BSSID, "12:34:56:78:9a:bc", observed_at=100, force=True,
+    )
+
+    access_points = store.offline_access_points()
+    clients = store.offline_clients()
+
+    assert access_points[0]["security"]["akms"] == ["PSK"]
+    assert access_points[0]["identity_evidence"][0]["value"] == "Example"
+    assert access_points[0]["relationships"][0]["related_bssid"] == (
+        "aa:bb:cc:dd:ee:00"
+    )
+    assert access_points[0]["clients"][0]["client_mac"] == "12:34:56:78:9a:bc"
+    assert clients[0]["client_mac"] == "12:34:56:78:9a:bc"
+    assert clients[0]["access_points"][0]["ssid"] == "Remembered"
+
+
 def test_imports_legacy_json_once_and_moves_network_metadata_into_database(tmp_path):
     hidden = tmp_path / "hidden.json"
     profiles = tmp_path / "profiles.json"

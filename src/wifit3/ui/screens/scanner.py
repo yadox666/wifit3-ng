@@ -40,6 +40,7 @@ from wifit3.targeting import TargetCandidate, ap_candidate, client_candidate
 from wifit3.wlan.enterprise_risk import enterprise_findings
 from wifit3.crack.handshake import pmkid_crackable
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
+from wifit3.ui.location_format import format_position
 from wifit3.ui.signal_bar import dbm_style
 from wifit3.ui.scan_export import export_scan_snapshot
 from wifit3.ui.screens.confirm_active import ConfirmActiveActionModal
@@ -118,6 +119,7 @@ class _APRowState:
     channel: int = 0
     encryption: str = ""
     stations: str = ""
+    location: str = ""
     is_target: bool = False
     infrastructure_signature: tuple = ()
 
@@ -131,6 +133,7 @@ class _ClientRowState:
     packets: int
     last_seen: int
     probes: str
+    location: str
     historical_aps: tuple[tuple[str, str], ...] = ()
     is_target: bool = False
 
@@ -353,6 +356,7 @@ class ScannerView(Screen):
         ("wps", "WPS"),
         ("identity", "VENDOR/ID"),
         ("stations", "CLIENT MFR"),
+        ("location", "GPS"),
     ]
 
     _CLIENT_COLUMNS = [
@@ -363,6 +367,7 @@ class ScannerView(Screen):
         ("last_seen", "SEEN"),
         ("manufacturer", "MANUFACTURER"),
         ("probes", "PROBE REQUESTS"),
+        ("location", "GPS"),
     ]
 
     # Columns whose values are right-aligned in display.
@@ -620,6 +625,7 @@ class ScannerView(Screen):
                     channel=ap.channel,
                     encryption=enc_markup,
                     stations=stations,
+                    location=format_position(ap.positions),
                     is_target=is_target,
                     infrastructure_signature=infrastructure_signature,
                 )
@@ -665,6 +671,7 @@ class ScannerView(Screen):
                     prev_state.stations = stations
                     prev_state.channel = ap.channel
                     prev_state.encryption = enc_markup
+                    prev_state.location = format_position(ap.positions)
                     for col_k, _ in self._COLUMNS:
                         cell = self._render_target_cell(
                             ap, col_k, is_stale, n_cli=n_cli,
@@ -725,6 +732,14 @@ class ScannerView(Screen):
                     if prev_state.stations != stations:
                         prev_state.stations = stations
                         table.update_cell(ap.bssid, "stations", self._render_target_cell(ap, "stations", is_stale))
+
+                    location = format_position(ap.positions)
+                    if prev_state.location != location:
+                        prev_state.location = location
+                        table.update_cell(
+                            ap.bssid, "location",
+                            self._render_target_cell(ap, "location", is_stale),
+                        )
 
         if self._should_sort():
             self._apply_sort(scroll_to_cursor=False)
@@ -849,6 +864,7 @@ class ScannerView(Screen):
                 packets=client.packets,
                 last_seen=int(age),
                 probes=probes,
+                location=format_position(client.positions),
                 historical_aps=historical_aps,
                 is_target=self._is_saved_target("client", client.mac),
             )
@@ -951,6 +967,7 @@ class ScannerView(Screen):
             Text(_format_age(state.last_seen), justify="right", style="dim"),
             manufacturer,
             probes,
+            Text(state.location, style=fg if state.location != "·" else "dim"),
         ]
         if state.last_seen > STALE_DURATION_S:
             for cell in cells:
@@ -1101,6 +1118,13 @@ class ScannerView(Screen):
         if col_key == "stations":
             label = self._station_labels.get(ap.bssid, "")
             return Text(_clip(label, _CLIENT_MFR_MAX), style=f"{dim}{fg}")
+        if col_key == "location":
+            location = format_position(ap.positions)
+            return Text(
+                location,
+                style=f"{dim}{fg}" if location != "·" else f"{dim}dim",
+                no_wrap=True,
+            )
         return Text("")
 
     def _encryption_markup(self, ap: AccessPoint) -> str:

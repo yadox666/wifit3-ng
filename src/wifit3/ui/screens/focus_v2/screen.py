@@ -70,6 +70,7 @@ from wifit3.ui.recording_indicator import pcap_progress, recording_indicator
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
 from wifit3.wlan.enterprise_risk import enterprise_findings, is_enterprise_ap
 from wifit3.wlan.network_metadata import PassiveNetworkAnalyzer
+from wifit3.wlan.channels import channel_spec_for_ap
 
 from ... import focus_model as fm
 from ...capture_events import (
@@ -114,7 +115,8 @@ _ATTACK_BUTTONS = [
     ("btn-enterprise", "Enterprise"),
     ("btn-gen-ivs", "ARP Replay"), ("btn-chop", "ChopChop"), ("btn-deauth", "AutoDeauth"),
     ("btn-pmkid", "PMKID"), ("btn-fake-connect", "Fake-Connect"),
-    ("btn-wps-pin", "WPS PIN"), ("btn-eviltwin", "EvilTwin"),
+    ("btn-wps-info", "WPS Info"), ("btn-wps-pin", "WPS PIN"),
+    ("btn-eviltwin", "EvilTwin"),
     ("btn-stop-pbc", "Stop PBC"),
 ]
 
@@ -129,6 +131,8 @@ _BUTTON_TIPS = {
     "PMKID": "Associate to extract PMKID\n(some APs not applicable)",
     "Fake-Connect": "Associate a fake client; OPEN networks also test Internet access",
     "Disconnect": "Send a client-leaving frame and end the temporary association",
+    "WPS Info": "Probe the registrar for WPS manufacturer and model details",
+    "Stop Info": "Stop the active WPS information probe",
     "WPS PIN": "PIN attacks: PixieDust, default vendor PINs, then brute-force",
     "EvilTwin": "Punt clients onto a WPA2 twin to capture a crackable handshake",
     "Stop EvilTwin": "Tear down the twin and return clients to the AP",
@@ -190,7 +194,7 @@ class FocusViewV2(Screen):
         *[Binding(cls.hotkey[0], f"campaign('{cls.key}')", cls.hotkey[1], show=True)
           for cls in fm.BUTTON_CAMPAIGNS if cls.hotkey],
         Binding("c", "campaign('chop')", "ChopChop", show=True),
-        Binding("i", "wps_info", "WPS Info", show=True),
+        Binding("i", "wps_info", "WPS Info", show=False),
         Binding("x", "capture_packets", "Capture PCAP", show=True),
         Binding("s", "silence", "Silence", show=True),
         Binding("s", "unsilence", "unSilence", show=True),
@@ -224,12 +228,6 @@ class FocusViewV2(Screen):
     }
     #ap-identity.identity-known { text-style: underline bold; color: $accent; }
     #ap-identity:focus { text-style: bold reverse; }
-    #ap-probe {
-        width: 4; height: 1; min-width: 0; border: none; margin: 0; padding: 0;
-        background: transparent;
-    }
-    #ap-probe:hover { background: $surface-lighten-1; }
-    #ap-probe:focus { text-style: bold reverse; }
 
     #bottom { height: 1fr; }
     #client-connector-horizontal,
@@ -295,6 +293,8 @@ class FocusViewV2(Screen):
         self._packet_capture_bssid: str | None = None
         self._network_store: NetworkMetadataStore | None = None
         self._network_analyzer: PassiveNetworkAnalyzer | None = None
+        self._network_observation_array = None
+        self._network_bssid: str | None = None
         self._prev_stats = None
         self._campaign_toggles = {
             "wep": self._toggle_generate_ivs, "pmkid": self._toggle_pmkid,
@@ -345,6 +345,10 @@ class FocusViewV2(Screen):
         self._distribute()
         await self._enter_target()
 
+    def on_unmount(self) -> None:
+        self.stop_packet_capture(notify=False)
+        self._stop_network_analysis()
+
     async def on_screen_resume(self) -> None:
         # Full re-acquire only on a target change; a same-target return keeps the live view.
         target = getattr(self.app, "target_ap", None)
@@ -354,7 +358,9 @@ class FocusViewV2(Screen):
             # Re-pin the pool to the target's channel on re-entry (STACK across channel-capable cards).
             array = self.app.array
             if array is not None:
-                ok = await array.set_channel(target.channel, scan=False)
+                ok = await array.set_channel_spec(
+                    channel_spec_for_ap(target), scan=False,
+                )
                 logger.info("[FOCUS] re-pin: bssid=%s ch=%s -> %s",
                             target.bssid, target.channel, ok)
 
@@ -411,7 +417,6 @@ class FocusViewV2(Screen):
                         power_dbm=-100, signal=None,
                         uptime_us=None, country_code=None,
                         ssid_note="",
-                        wps=False, has_m1=False, probing=False, probe_disabled=False,
                         identity="", identity_details=None)
         display_ssid, ssid_source = fm.display_ssid(ap, self.app.array)
         essid = fm.truncate_ssid(display_ssid) if display_ssid else "‹hidden›"
@@ -424,10 +429,6 @@ class FocusViewV2(Screen):
                         "history" if ssid_source == "history"
                         else "guess" if ssid_source == "sibling" else ""
                     ),
-                    wps=bool(ap.wps),
-                    has_m1=ap.identity.has_source(IdSource.WSC_M1),
-                    probing=self._is_wps_probing(),
-                    probe_disabled=self._any_campaign_active(),
                     identity=ap.identity.summary,
                     identity_details=fm.router_advertised_details(ap))
 
@@ -593,6 +594,7 @@ class FocusViewV2(Screen):
         enterprise.disabled = False
         enterprise.tooltip = _BUTTON_TIPS["Enterprise"]
         self._refresh_chop_button(ap, active, probing)
+        self._refresh_wps_info_button(ap)
         self._refresh_stop_pbc_button(probing)
 
     def _refresh_chop_button(self, ap, active, probing: bool) -> None:
@@ -618,19 +620,36 @@ class FocusViewV2(Screen):
         else:
             stop_pbc.display = False
 
+    def _refresh_wps_info_button(self, ap: AccessPoint) -> None:
+        button = self.query_one("#btn-wps-info", Button)
+        probing = self._is_wps_probing()
+        identity = getattr(ap, "identity", None)
+        has_m1_identity = (
+            identity is not None and identity.has_source(IdSource.WSC_M1)
+        )
+        button.display = bool(ap.wps and (
+            probing or not has_m1_identity
+        ))
+        button.label = "Stop Info" if probing else "WPS Info"
+        button.variant = "error" if probing else "primary"
+        button.disabled = (
+            self._is_enterprise_probing()
+            or (not probing and self._any_campaign_active())
+        )
+        button.tooltip = _BUTTON_TIPS[str(button.label)]
+
     # ----- target (re)acquisition --------------------------------------------
 
     async def _enter_target(self) -> None:
         """Bind to ``app.target_ap``: stop campaigns, reset state, update panels/radio/log."""
         self.stop_packet_capture(notify=False)
+        self._stop_network_analysis()
         self._controls.stop()
         self._stop_probe()
 
         ap = getattr(self.app, "target_ap", None)
         self._target_ap = ap
         self._refresh_client_connector()
-        self._network_store = None
-        self._network_analyzer = None
         if ap is None:
             return
         array = self.app.array
@@ -642,6 +661,7 @@ class FocusViewV2(Screen):
         self._prev_stats = None        # drop the old target's counters
         self.query_one("#log", LogBand).clear()
         self._load_network_metadata(ap)
+        self._start_network_analysis(ap, array)
 
         status = self._status()
         self._last_status = status
@@ -677,7 +697,9 @@ class FocusViewV2(Screen):
         self._log(treelog.branch(f"[dim]BSSID:[/dim] {ap.bssid}"))
         if array:
             try:
-                ok = await array.set_channel(ap.channel, scan=False)
+                ok = await array.set_channel_spec(
+                    channel_spec_for_ap(ap), scan=False,
+                )
             except Exception:
                 logger.exception("Focus v2 channel tune failed")
                 ok = False
@@ -694,6 +716,7 @@ class FocusViewV2(Screen):
                       "AP requires [bold]Protected Management Frames[/]")
             self._log(treelog.leaf("[italic]Deauth[/] attacks have been disabled"))
 
+        self._log_band_twins(ap)
         self._log_persisted_history(ap)
 
         locked = self.app.locked_target
@@ -718,6 +741,25 @@ class FocusViewV2(Screen):
             self._log("[bold italic]Passively listening[/bold italic] for")
             self._log(treelog.branch("Crackable 4-Way [bold]Handshakes[/bold]"))
             self._log(treelog.leaf("Crackable [bold]PMKIDs[/bold]"))
+
+    def _log_band_twins(self, ap) -> None:
+        """Note if the focused network also exists on another band.
+
+        A band-steered client can keep this link in power-save (Null/keepalive frames only)
+        while its real traffic rides the other-band radio, so a data/website capture may need
+        the twin BSSID instead of this one."""
+        twins = fm.band_twins(ap, self.app.array)
+        if not twins:
+            return
+        for twin in twins[:2]:
+            band = "5 GHz" if twin.channel > 14 else "2.4 GHz"
+            label = escape(twin.ssid or ap.ssid or "<same SSID>")
+            self._log(treelog.branch(
+                f"[yellow]Alternate {band} BSSID detected[/yellow]: [cyan]{label}[/cyan] "
+                f"[dim]ch {twin.channel} · {twin.bssid}[/dim]"))
+        self._log(treelog.leaf(
+            f"[dim]current capture remains on ch {ap.channel}; switch targets only if the "
+            "client is confirmed on the alternate BSSID[/dim]"))
 
     def _log_persisted_history(self, ap) -> None:
         """On focus init, print captures/ artifacts for this AP to the log."""
@@ -1032,6 +1074,8 @@ class FocusViewV2(Screen):
             self._request_campaign("pmkid")
         elif bid == "btn-fake-connect":
             self._request_campaign("fake_connect")
+        elif bid == "btn-wps-info":
+            self.action_wps_info()
         elif bid == "btn-wps-pin":
             self._request_campaign("wps")
         elif bid == "btn-eviltwin":
@@ -1064,9 +1108,6 @@ class FocusViewV2(Screen):
     def on_router_endpoint_identity_requested(self, event: RouterEndpoint.IdentityRequested) -> None:
         self._log_identity_details_text(event.details)
 
-    def on_router_endpoint_probe_requested(self, event: RouterEndpoint.ProbeRequested) -> None:
-        self._start_wps_probe()
-
     def _start_wps_probe(self) -> None:
         ap = self._target_ap
         if ap is None or not ap.wps:
@@ -1077,12 +1118,6 @@ class FocusViewV2(Screen):
             self._log(treelog.leaf_fail("cannot probe while attacks are active"))
             return
         self._probe_task = asyncio.create_task(self._run_probe(ap))
-        self.refresh_buttons()
-        self._sync_bindings()
-        self.query_one("#router", RouterEndpoint).update(**self._router_values())
-
-    def on_router_endpoint_probe_cancel_requested(self, event: RouterEndpoint.ProbeCancelRequested) -> None:
-        self._stop_probe()
         self.refresh_buttons()
         self._sync_bindings()
         self.query_one("#router", RouterEndpoint).update(**self._router_values())
@@ -1582,13 +1617,6 @@ class FocusViewV2(Screen):
         self._packet_capture = writer
         self._packet_capture_array = array
         self._packet_capture_bssid = ap.bssid.lower()
-        if self._is_open_ap(ap):
-            if self._network_store is None:
-                self._load_network_metadata(ap)
-            if self._network_store is not None:
-                self._network_analyzer = PassiveNetworkAnalyzer(
-                    self._network_store.metadata,
-                )
         array.register_packet_callback(self._capture_packet)
         self._log(
             f"[bold cyan]PCAP capture started[/bold cyan] for [bold]{escape(ap.bssid)}[/bold]"
@@ -1600,8 +1628,6 @@ class FocusViewV2(Screen):
         target = self._packet_capture_bssid
         if writer is None or target is None or (packet.bssid or "").lower() != target:
             return
-        if self._network_analyzer is not None:
-            self._network_analyzer.observe(packet)
         writer.write(packet.raw, time.time())
 
     def stop_packet_capture(self, *, notify: bool = True) -> None:
@@ -1619,7 +1645,6 @@ class FocusViewV2(Screen):
                 logger.warning("%s", exc)
                 if notify:
                     self.notify(str(exc), title="Metadata save failed", severity="warning")
-        self._network_analyzer = None
         self.app.vault.refresh()
         self._packet_capture = None
         self._packet_capture_array = None
@@ -1640,8 +1665,10 @@ class FocusViewV2(Screen):
 
     def _load_network_metadata(self, ap) -> None:
         panel = self.query_one("#network-metadata", NetworkMetadataPanel)
+        clients = self.query_one("#clients", ClientsList)
         if not self._is_open_ap(ap):
             panel.display = False
+            clients.set_open_network_metadata(None, enabled=False)
             self._network_store = None
             self._network_analyzer = None
             return
@@ -1649,15 +1676,55 @@ class FocusViewV2(Screen):
             self.app.ap_history_store, ap.bssid, ap.ssid,
         )
         panel.display = True
+        clients.set_open_network_metadata(
+            self._network_store.metadata,
+            enabled=True,
+        )
         for error in self._network_store.errors:
             logger.warning("%s", error)
+
+    def _start_network_analysis(self, ap, array) -> None:
+        """Observe open-AP metadata for the Focus lifetime, independently of PCAP recording."""
+        if not self._is_open_ap(ap) or self._network_store is None or array is None:
+            return
+        self._network_analyzer = PassiveNetworkAnalyzer(self._network_store.metadata)
+        self._network_observation_array = array
+        self._network_bssid = ap.bssid.casefold()
+        array.register_packet_callback(self._observe_network_packet)
+
+    def _observe_network_packet(self, packet) -> None:
+        analyzer = self._network_analyzer
+        target = self._network_bssid
+        if (
+            analyzer is not None
+            and target is not None
+            and (getattr(packet, "bssid", "") or "").casefold() == target
+        ):
+            analyzer.observe(packet)
+
+    def _stop_network_analysis(self) -> None:
+        array, self._network_observation_array = self._network_observation_array, None
+        if array is not None:
+            array.unregister_packet_callback(self._observe_network_packet)
+        if self._network_store is not None:
+            try:
+                self._network_store.save()
+            except NetworkMetadataStoreError as exc:
+                logger.warning("%s", exc)
+        self._network_analyzer = None
+        self._network_bssid = None
+        self._network_store = None
 
     def _refresh_network_metadata(self) -> None:
         panel = self.query_one("#network-metadata", NetworkMetadataPanel)
         store = self._network_store
         panel.set_metadata(
             store.metadata if store is not None else None,
-            live=self._packet_capture is not None and self._network_analyzer is not None,
+            live=self._network_analyzer is not None,
+        )
+        self.query_one("#clients", ClientsList).set_open_network_metadata(
+            store.metadata if store is not None else None,
+            enabled=store is not None,
         )
 
     def _request_campaign(self, camp_key: str) -> None:
@@ -2195,6 +2262,7 @@ class FocusViewV2(Screen):
     async def action_go_back(self) -> None:
         # Tear down any running attack: Scanner doesn't own the AP's channel, and a forged daemon would keep injecting.
         self.stop_packet_capture(notify=False)
+        self._stop_network_analysis()
         self._controls.stop()
         self._stop_probe()
         ap = self._target_ap

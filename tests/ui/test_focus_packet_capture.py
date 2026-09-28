@@ -21,8 +21,19 @@ def test_focus_packet_capture_keeps_only_target_bssid(tmp_path):
     writer.close()
 
     assert writer.count == 1
-    screen._network_analyzer.observe.assert_called_once()
+    screen._network_analyzer.observe.assert_not_called()
     assert any(
         binding.key == "x" and binding.description == "Capture PCAP"
         for binding in FocusViewV2.BINDINGS
     )
+
+
+def test_focus_network_analysis_runs_without_packet_capture():
+    screen = FocusViewV2()
+    screen._network_bssid = "aa:bb:cc:dd:ee:ff"
+    screen._network_analyzer = Mock()
+    packet = SimpleNamespace(bssid="AA:BB:CC:DD:EE:FF")
+
+    screen._observe_network_packet(packet)
+
+    screen._network_analyzer.observe.assert_called_once_with(packet)

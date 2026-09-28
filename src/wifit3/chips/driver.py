@@ -13,6 +13,7 @@ from wifit3.models.device_id import DeviceID
 
 if TYPE_CHECKING:
     from wifit3.dot11.packet import Packet
+    from wifit3.wlan.channels import ChannelSpec
 
 
 class ProgressCallback(Protocol):
@@ -33,6 +34,9 @@ class Driver(ABC):
 
     SUPPORTED_CHANNELS: ClassVar[List[int]]
     """Every channel this driver can tune to (2.4 GHz 1..14, 5 GHz 36..165)."""
+
+    SUPPORTED_CHANNEL_WIDTHS: ClassVar[tuple[int, ...]] = (20,)
+    """Channel widths accepted by ``set_channel_spec``; legacy drivers remain 20 MHz."""
 
     FAKE_MAC: ClassVar[FakeMacSupport] = FakeMacSupport.UNIMPLEMENTED
     """This radio's ability to auto-ACK a programmed MAC."""
@@ -103,6 +107,10 @@ class Driver(ABC):
     async def set_channel(self, channel: int, scan: bool = False) -> bool:
         """Tune to ``channel``. ``scan=True`` marks a transient hop, permitting a lighter path."""
         ...
+
+    async def set_channel_spec(self, spec: ChannelSpec, scan: bool = False) -> bool:
+        """Tune a primary channel and width, falling back to 20 MHz on legacy radios."""
+        return await self.set_channel(spec.primary, scan=scan)
 
     @abstractmethod
     async def close(self) -> None:

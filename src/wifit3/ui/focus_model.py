@@ -119,6 +119,49 @@ def display_ssid(ap, array) -> tuple[Optional[str], Optional[str]]:
     return (sibling, "sibling") if sibling else (None, None)
 
 
+def _band_of(channel: int) -> str:
+    return "2.4 GHz" if channel and channel <= 14 else "5 GHz"
+
+
+def _bssid_bit_diff(a: str, b: str) -> int:
+    """Hamming distance between two ``aa:bb:..``-formatted BSSIDs (matches WlanSink)."""
+    pa, pb = a.lower().split(":"), b.lower().split(":")
+    if len(pa) != 6 or len(pb) != 6:
+        return 48
+    try:
+        return sum(bin(int(x, 16) ^ int(y, 16)).count("1") for x, y in zip(pa, pb))
+    except ValueError:
+        return 48
+
+
+def band_twins(ap, array) -> list:
+    """Same-network APs on a DIFFERENT band than ``ap`` -- its other-band radio.
+
+    Dual-band routers publish one SSID on both 2.4 and 5 GHz under near-identical BSSIDs, and a
+    band-steered client keeps one link in power-save (Null keepalives only) while moving data to
+    the other band. Same-band virtual APs are already linked as ``siblings`` (same channel); this
+    finds the cross-band counterpart, matched either by SSID or by the same same-radio BSSID
+    heuristic siblings use (same OUI + small Hamming delta). Sorted by channel."""
+    if ap is None or array is None or not ap.channel:
+        return []
+    target_band = _band_of(ap.channel)
+    twins = []
+    for other in array.access_points.values():
+        if other.bssid.casefold() == ap.bssid.casefold() or not other.channel:
+            continue
+        if _band_of(other.channel) == target_band:
+            continue
+        same_ssid = bool(
+            ap.ssid and ap.ssid != "<hidden>"
+            and other.ssid and other.ssid.casefold() == ap.ssid.casefold()
+        )
+        same_oui = ap.bssid[:8].lower() == other.bssid[:8].lower()
+        same_radio = same_oui and 0 < _bssid_bit_diff(ap.bssid, other.bssid) <= 8
+        if same_ssid or same_radio:
+            twins.append(other)
+    return sorted(twins, key=lambda item: item.channel)
+
+
 def beacon_rate(ap, samples: deque, now: float, window_s: float = 5.0):
     """Windowed beacons/s + cumulative count."""
     samples.append((now, ap.beacons))

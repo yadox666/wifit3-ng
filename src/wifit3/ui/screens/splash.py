@@ -148,6 +148,7 @@ class SplashView(Screen):
         ("w", "start", "Wi-Fi"),
         ("b", "start_bluetooth", "BLE"),
         ("d", "start_usb_bluetooth", "BT + BLE"),
+        ("o", "offline", "Offline DB"),
         ("u", "update_oui", "Update OUI DB"),
         Binding("c", "clear_db", "Clear-DB"),
         Binding("enter", "enter", "Start", priority=True),
@@ -193,6 +194,11 @@ class SplashView(Screen):
                         Text("BT/BLE Scan"),
                         id="bluetooth-usb-btn",
                         variant="primary",
+                    )
+                    yield Button(
+                        Text.from_markup("[bold bright_yellow]O[/]FFLINE DB"),
+                        id="offline-btn",
+                        variant="default",
                     )
             with Center():
                 # Reverses driver/access changes for the highlighted card.
@@ -245,6 +251,7 @@ class SplashView(Screen):
         multi_list.display = False
         self.query_one("#start-btn", Button).disabled = True
         self.query_one("#bluetooth-btn", Button).disabled = False
+        self.query_one("#offline-btn", Button).disabled = False
         usb_button = self.query_one("#bluetooth-usb-btn", Button)
         usb_button.display = bool(self._usb_bluetooth_controllers)
         usb_button.disabled = not self._usb_bluetooth_controllers
@@ -411,6 +418,8 @@ class SplashView(Screen):
             self.action_start_bluetooth()
         elif event.button.id == "bluetooth-usb-btn":
             self.action_start_usb_bluetooth()
+        elif event.button.id == "offline-btn":
+            self.action_offline()
         elif event.button.id == "uninstall-btn":
             dev = self._highlighted_device()
             if dev is not None:
@@ -478,6 +487,7 @@ class SplashView(Screen):
         self.query_one("#start-btn", Button).disabled = True
         self.query_one("#bluetooth-btn", Button).disabled = True
         self.query_one("#bluetooth-usb-btn", Button).disabled = True
+        self.query_one("#offline-btn", Button).disabled = True
         self.query_one("#uninstall-btn", Button).disabled = True
 
     def _exit_busy(self) -> None:
@@ -491,6 +501,7 @@ class SplashView(Screen):
         self.query_one("#bluetooth-usb-btn", Button).disabled = (
             not self._usb_bluetooth_controllers
         )
+        self.query_one("#offline-btn", Button).disabled = False
         self.query_one("#uninstall-btn", Button).disabled = not self._devices
         if self._devices:
             (multi_list if self._using_multi() else single_list).focus()
@@ -531,6 +542,10 @@ class SplashView(Screen):
     def action_start_bluetooth(self) -> None:
         if not self._is_initializing:
             self.perform_bluetooth_start()
+
+    def action_offline(self) -> None:
+        if not self._is_initializing:
+            self.app.switch_screen("offline")
 
     def action_start_usb_bluetooth(self) -> None:
         if not self._is_initializing and self._usb_bluetooth_controllers:

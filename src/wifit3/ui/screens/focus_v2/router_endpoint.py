@@ -31,20 +31,12 @@ class RouterEndpoint(Vertical):
             super().__init__()
             self.details = details
 
-    class ProbeRequested(Message):
-        """User clicked probe button to start active probe."""
-
-    class ProbeCancelRequested(Message):
-        """User clicked probe button to cancel active probe."""
-
     def __init__(self, *, essid: str = "", bssid: str = "", channel: int = 0,
                  channel_label: str = "",
                  power_dbm: int = -100, signal: float | None = None,
                  uptime_us: int | None = None,
                  country_code: str | None = None,
                  ssid_note: str = "",
-                 wps: bool = False, has_m1: bool = False,
-                 probing: bool = False, probe_disabled: bool = False,
                  identity: str = "", identity_details: str | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._essid = essid
@@ -56,10 +48,6 @@ class RouterEndpoint(Vertical):
         self._uptime_us = uptime_us
         self._country_code = country_code
         self._ssid_note = ssid_note
-        self._wps = wps
-        self._has_m1 = has_m1
-        self._probing = probing
-        self._probe_disabled = probe_disabled
         self._identity = identity
         self._identity_details = identity_details
         self._width = art_size("focus-ap.ans")[0]      # endpoint column width
@@ -83,19 +71,12 @@ class RouterEndpoint(Vertical):
             if self._identity_details:
                 identity.add_class("identity-known")
             yield identity
-            probe = Button(self._probe_icon(), id="ap-probe")
-            probe.display = self._wps and not self._has_m1
-            probe.tooltip = "Cancel WPS/WSC probe" if self._probing else "Probe AP for WPS/WSC attributes"
-            probe.disabled = False if self._probing else self._probe_disabled
-            yield probe
 
     def update(self, *, essid: str, bssid: str, channel: int, channel_label: str,
                power_dbm: int, signal: float | None,
                uptime_us: int | None = None,
                country_code: str | None = None,
                ssid_note: str = "",
-               wps: bool = False, has_m1: bool = False,
-               probing: bool = False, probe_disabled: bool = False,
                identity: str = "", identity_details: str | None = None) -> None:
         """Update live power meter and target endpoint identity state."""
         self._essid, self._bssid, self._channel = essid, bssid, channel
@@ -104,22 +85,12 @@ class RouterEndpoint(Vertical):
         self._uptime_us = uptime_us
         self._country_code = country_code
         self._ssid_note = ssid_note
-        self._wps, self._has_m1 = wps, has_m1
-        self._probing, self._probe_disabled = probing, probe_disabled
         self._identity, self._identity_details = identity, identity_details
         self.query_one("#ap-power", Label).update(self._power_line())
         self.query_one("#router-art", BreathingArt).tooltip = identity_details
         self._push("#ap-essid", self._essid_markup(essid, ssid_note))
         self._push("#ap-bssid", bssid)
         self._push("#ap-uptime", self._uptime_label())
-
-        show_probe = self._wps and not self._has_m1
-        probe_btn = self.query_one("#ap-probe", Button)
-        probe_btn.display = show_probe
-        if show_probe:
-            probe_btn.label = self._probe_icon()
-            probe_btn.tooltip = "Cancel WPS/WSC probe" if probing else "Probe AP for WPS/WSC attributes"
-            probe_btn.disabled = False if probing else probe_disabled
 
         self._push("#ap-identity", self._identity_label())
         ident_btn = self.query_one("#ap-identity", Button)
@@ -146,12 +117,6 @@ class RouterEndpoint(Vertical):
         if event.button.id == "ap-identity" and self._identity_details:
             event.stop()
             self.post_message(self.IdentityRequested(self._identity_details))
-        elif event.button.id == "ap-probe":
-            event.stop()
-            if self._probing:
-                self.post_message(self.ProbeCancelRequested())
-            else:
-                self.post_message(self.ProbeRequested())
 
     @staticmethod
     def _truncate(text: str, max_len: int) -> str:
@@ -161,9 +126,6 @@ class RouterEndpoint(Vertical):
 
     def _identity_label(self) -> str:
         return self._truncate(self._channel_label or f"channel {self._channel}", 20)
-
-    def _probe_icon(self) -> str:
-        return "❌" if self._probing else "🔍"
 
     def _uptime_label(self) -> str:
         if self._uptime_us is None:

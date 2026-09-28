@@ -1,18 +1,23 @@
 """Clients list: List of related client MAC addresses underneath the AP."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, Label, Tooltip
+from textual.widgets import Button, Input, Label, Static, Tooltip
 from rich.text import Text
 
 from wifit3.id import Fingerprint, vendor_for_mac
 from ...signal_bar import dbm_style
 from ... import focus_model as fm
+
+if TYPE_CHECKING:
+    from wifit3.wlan.network_metadata import NetworkFact, NetworkMetadata
 
 
 def _widget_id(mac: str) -> str:
@@ -215,28 +220,75 @@ class FingerprintModal(ModalScreen[None]):
 
 
 class ClientsList(Vertical):
+    DEFAULT_CSS = """
+    ClientsList #client-web-search {
+        width: 100%; height: 1; min-height: 1;
+        border: none; padding: 0 1; margin: 0;
+    }
+    ClientsList #client-pane {
+        width: 100%; height: 1fr;
+    }
+    ClientsList #website-pane {
+        width: 100%; height: 1fr;
+        border-top: solid $primary;
+    }
+    ClientsList #website-title {
+        width: 100%; height: 1;
+        color: $text-muted; text-style: bold;
+    }
+    ClientsList #website-rows {
+        width: 100%; height: 1fr;
+        scrollbar-size-vertical: 1;
+    }
+    ClientsList #website-content {
+        width: 100%; height: auto;
+    }
+    """
+
     def __init__(self, clients, **kwargs) -> None:
         super().__init__(**kwargs)
         self._clients = clients
         self._rows: dict[str, ClientWidget] = {}
+        self._open_network_mode = False
+        self._network_metadata: NetworkMetadata | None = None
+        self._website_facts: list[NetworkFact] = []
+        self._network_revision = -1
+        self._search_text = ""
 
     def compose(self) -> ComposeResult:
-        # Broadcast button pinned at the top; only the row list scrolls below it.
-        yield Button("Deauth all", id="deauth-all", classes="bcast-btn",
-                     tooltip="Deauthenticate all clients (Broadcast)")
-        with Horizontal(classes="client-columns"):
-            yield Label("", classes="cl-fp")
-            yield Label("CLIENT", classes="cl-bssid")
-            yield Label("VENDOR", classes="cl-mfr")
-            yield Label("PWR", classes="cl-pwr")
-            yield Label("PKT", classes="cl-pkts")
-            yield Label("", classes="cl-action")
-        rows = []
-        for c in self._clients:
-            widget = ClientWidget(c)
-            self._rows[c.mac] = widget
-            rows.append(widget)
-        yield VerticalScroll(*rows, id="client-rows")
+        search = Input(
+            placeholder="Search clients and website URLs…",
+            compact=True,
+            id="client-web-search",
+        )
+        search.display = False
+        yield search
+        with Vertical(id="client-pane"):
+            yield Button("Deauth all", id="deauth-all", classes="bcast-btn",
+                         tooltip="Deauthenticate all clients (Broadcast)")
+            with Horizontal(classes="client-columns"):
+                yield Label("", classes="cl-fp")
+                yield Label("CLIENT", classes="cl-bssid")
+                yield Label("VENDOR", classes="cl-mfr")
+                yield Label("PWR", classes="cl-pwr")
+                yield Label("PKT", classes="cl-pkts")
+                yield Label("", classes="cl-action")
+            rows = []
+            for c in self._clients:
+                widget = ClientWidget(c)
+                self._rows[c.mac] = widget
+                rows.append(widget)
+            yield VerticalScroll(*rows, id="client-rows")
+        websites = Vertical(
+            Label("WEBSITES (0)", id="website-title"),
+            VerticalScroll(
+                Static("[dim]Waiting for website traffic…[/dim]", id="website-content"),
+                id="website-rows",
+            ),
+            id="website-pane",
+        )
+        websites.display = False
+        yield websites
 
     def on_mount(self) -> None:
         self._update_title()
@@ -265,6 +317,7 @@ class ClientsList(Vertical):
                 self._rows_host().mount(widget)
             else:
                 row.update_stats(c.signal, c.packets)
+        self._apply_client_filter()
         self._update_title()
 
     def _remove_row(self, mac: str) -> None:
@@ -277,11 +330,93 @@ class ClientsList(Vertical):
         for row in self._rows.values():
             row.set_deauth_enabled(enabled)
 
+    def set_open_network_metadata(
+        self,
+        metadata: NetworkMetadata | None,
+        *,
+        enabled: bool,
+    ) -> None:
+        self._open_network_mode = enabled
+        self._network_metadata = metadata if enabled else None
+        self.query_one("#client-web-search", Input).display = enabled
+        self.query_one("#website-pane").display = enabled
+        self.query_one("#client-pane").styles.height = "1fr"
+        if not enabled:
+            self._website_facts = []
+            self._network_revision = -1
+            self._search_text = ""
+            search = self.query_one("#client-web-search", Input)
+            if search.value:
+                search.value = ""
+        elif metadata is not None and metadata.revision != self._network_revision:
+            with metadata.lock:
+                self._website_facts = sorted(
+                    metadata.facts.get("websites", ()),
+                    key=lambda fact: fact.last_seen,
+                    reverse=True,
+                )
+                self._network_revision = metadata.revision
+        self._apply_filter()
+        self._update_title()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "client-web-search":
+            return
+        self._search_text = event.value
+        self._apply_filter()
+        self._update_title()
+
+    def _apply_filter(self) -> None:
+        self._apply_client_filter()
+        self._paint_websites()
+
+    def _apply_client_filter(self) -> None:
+        tokens = self._search_tokens()
+        for row in self._rows.values():
+            searchable = f"{row._mac} {row._manufacturer}".casefold()
+            row.display = all(token in searchable for token in tokens)
+
+    def _paint_websites(self) -> None:
+        if not self.is_mounted:
+            return
+        tokens = self._search_tokens()
+        visible = [
+            fact for fact in self._website_facts
+            if all(
+                token in f"{fact.value} {fact.source} {fact.confidence}".casefold()
+                for token in tokens
+            )
+        ]
+        content = Text()
+        for index, fact in enumerate(visible):
+            if index:
+                content.append("\n")
+            content.append(fact.value, style="cyan")
+            content.append(f"  ·  {fact.source}", style="dim")
+        if not visible:
+            content.append(
+                "No matching websites" if tokens else "Waiting for website traffic…",
+                style="dim italic",
+            )
+        self.query_one("#website-content", Static).update(content)
+        self.query_one("#website-title", Label).update(
+            f"WEBSITES ({len(visible)}/{len(self._website_facts)})"
+            if tokens else f"WEBSITES ({len(visible)})"
+        )
+
+    def _search_tokens(self) -> tuple[str, ...]:
+        return tuple(self._search_text.casefold().split())
+
     def _update_title(self) -> None:
-        historical = sum(row._is_historical for row in self._rows.values())
-        live = len(self._rows) - historical
+        visible = [row for row in self._rows.values() if row.display]
+        historical = sum(row._is_historical for row in visible)
+        live = len(visible) - historical
         self.border_title = (
-            f"CLIENTS ({live} live · {historical} history)"
+            f"CLIENTS ({live} live · {historical} history) + WEBSITES"
+            if self._open_network_mode and historical
+            else f"CLIENTS ({live}) + WEBSITES"
+            if self._open_network_mode
+            else f"CLIENTS ({live} live · {historical} history)"
             if historical
             else f"CLIENTS ({live})"
         )

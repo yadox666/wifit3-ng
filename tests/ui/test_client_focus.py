@@ -33,3 +33,16 @@ def test_client_focus_packet_capture_keeps_only_target_client(tmp_path):
         binding.key == "x" and binding.description == "Capture PCAP"
         for binding in ClientFocusView.BINDINGS
     )
+
+
+def test_client_network_analysis_runs_without_packet_capture():
+    screen = ClientFocusView()
+    screen._network_bssid = "00:11:22:33:44:55"
+    screen._network_analyzer = Mock()
+    screen._network_analyzer.observe.return_value = {"aa:bb:cc:dd:ee:ff"}
+    packet = SimpleNamespace(bssid="00:11:22:33:44:55")
+
+    screen._observe_network_packet(packet)
+
+    screen._network_analyzer.observe.assert_called_once_with(packet)
+    assert screen._last_network_touched == {"aa:bb:cc:dd:ee:ff"}

@@ -16,6 +16,7 @@ from wifit3.chips.driver import DeviceID, Driver, FakeMacSupport, ProgressCallba
 from wifit3.chips.products import ALFA, Panda
 from wifit3.errors import BringUpError
 from wifit3.dot11.parser import WlanFrameParser
+from wifit3.wlan.channels import ChannelSpec
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +35,12 @@ class MT7921AUDriver(Driver):
     re-sync the channel. Cold chips take the full _cold_boot path.
     """
 
-    # Dual-band Wi-Fi 6 radio, 20 MHz primary. 2.4 GHz (1-14) + the 5 GHz 20 MHz
-    # channels of the world regulatory domain (regdomain.CHANNELS_5GHZ).
+    # Dual-band Wi-Fi 6 radio. 2.4 GHz (1-14) + the 5 GHz primary channels of
+    # the world regulatory domain (regdomain.CHANNELS_5GHZ).
     SUPPORTED_CHANNELS = list(range(1, 15)) + [
         36, 40, 44, 48, 149, 153, 157, 161, 165,
     ]
+    SUPPORTED_CHANNEL_WIDTHS = (20, 40)
     # Bench (rx_autoack, 2026-07-16): auto-ACKs a spoofed MAC via active monitor on both
     # bands (2G 102/100, 5G 100/100); does NOT ACK its own silicon MAC. Behaves SPOOFABLE.
     # (An earlier read of ~120 EAPOL per WPS PBC and openwrt/mt76#839 suggested otherwise;
@@ -259,6 +261,22 @@ class MT7921AUDriver(Driver):
         cmd, payload = mcu.config_sniffer(channel)
         await self.transport.send_mcu_command(cmd, payload, wait_resp=False)
         self._channel = channel
+        return True
+
+    async def set_channel_spec(self, spec: ChannelSpec, scan: bool = False) -> bool:
+        """Tune the monitor receiver to an advertised 20/40 MHz operating channel."""
+        logger.debug(
+            "MT7921AU: tuning to channel %d/%d MHz",
+            spec.primary, spec.width_mhz,
+        )
+        cmd, payload = mcu.config_sniffer(
+            spec.primary,
+            width_mhz=spec.width_mhz,
+            secondary_offset=spec.secondary_offset,
+            center_channel=spec.center_channel,
+        )
+        await self.transport.send_mcu_command(cmd, payload, wait_resp=False)
+        self._channel = spec.primary
         return True
 
     async def _inject_frame(self, frame_bytes: bytes) -> bool:

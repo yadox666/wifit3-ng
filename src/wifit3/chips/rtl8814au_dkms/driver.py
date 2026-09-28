@@ -340,6 +340,13 @@ class Rtl8814auDkmsDriver(Driver):
                 await loop.run_in_executor(None, reader.pause)
             try:
                 await loop.run_in_executor(None, self._tune, self.transport, channel)
+                if not scan:
+                    # RTL8814AU monitor RX can lose data-frame admission after hopping while
+                    # management/Null traffic continues. Re-entering monitor mode is the
+                    # upstream driver's known recovery: restore RCR_ADF/AAP and all three
+                    # RXFLTMAP accept-all masks after the final deliberate channel lock.
+                    # Do this while RX is paused so no bulk read races the register rewrite.
+                    await loop.run_in_executor(None, enter_monitor, self.transport)
                 if pause:      # band switch re-enabled RX with no read posted -> re-prime the pipe
                     await loop.run_in_executor(None, self.transport.reset_rx_pipe)
             finally:

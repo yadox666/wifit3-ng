@@ -1,8 +1,14 @@
 """Channel helpers: scan-hop ordering and per-band label/range compression."""
+from types import SimpleNamespace
+
+import pytest
+
 from wifit3.wlan.channels import (
+    ChannelSpec,
     _compress_runs,
     band_label,
     band_ranges,
+    channel_spec_for_ap,
     scan_hop_order,
 )
 
@@ -23,6 +29,32 @@ def test_scan_hop_order_partial_priority_set():
     # Only the priority channels actually present are front-loaded.
     assert scan_hop_order([1, 2, 3, 4, 5]) == [1, 2, 3, 4, 5]
     assert scan_hop_order([2, 3, 6, 4]) == [6, 2, 3, 4]
+
+
+def test_channel_spec_for_40mhz_ap_uses_secondary_and_center():
+    ap = SimpleNamespace(
+        channel=9,
+        capabilities=SimpleNamespace(
+            operating_width_mhz=40,
+            secondary_channel_offset=-1,
+            center_channel_0=7,
+        ),
+    )
+    assert channel_spec_for_ap(ap) == ChannelSpec(9, 40, 7, -1)
+
+
+def test_channel_spec_falls_back_to_20_when_operation_is_incomplete():
+    ap = SimpleNamespace(
+        channel=44,
+        capabilities=SimpleNamespace(
+            operating_width_mhz=40,
+            secondary_channel_offset=None,
+            center_channel_0=None,
+        ),
+    )
+    assert channel_spec_for_ap(ap) == ChannelSpec(44)
+    with pytest.raises(ValueError, match="secondary"):
+        ChannelSpec(9, 40)
 
 
 # --- band label / range compression (scanner init line + Channel Filter log) --------

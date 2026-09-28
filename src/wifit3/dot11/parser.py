@@ -201,7 +201,15 @@ class WlanFrameParser:
     def _parse_data(cls, frame: bytes, fc1: int, subtype: int, base: Dict[str, Any]) -> "Packet":
         """Build the Packet for a data frame: WepDataPacket if WEP-protected, EapolPacket
         if it carries an EAPOL-Key handshake, else a bare 'data' Packet.
+
+        No-payload subtypes (Null / CF-Ack / CF-Poll and their QoS variants -- bit 2 of the
+        subtype set) carry no LLC/SNAP body: they are power-save/keepalive signalling, not
+        traffic. They are tagged ``null_data`` so client-presence tracking still fires but the
+        packet dashboard does NOT count them as data (an idle, power-saving client should not
+        render as if it were moving bytes).
         """
+        if subtype & 0x04:
+            return Packet(**base, type="null_data")
         header_len = 24
         if subtype & 0x08:            # QoS Control field present (+2)
             header_len += 2

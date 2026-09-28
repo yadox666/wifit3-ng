@@ -165,6 +165,42 @@ def test_manager_collects_bluez_class_appearance_and_address_type():
     assert observed.protocol_type == "Apple Proximity Pairing audio"
 
 
+def test_manager_keeps_private_devices_live_without_persisting_them(tmp_path):
+    history = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
+    location_store = SimpleNamespace(
+        observe=lambda *_args, **_kwargs: pytest.fail(
+            "private identifiers must not create location history",
+        ),
+    )
+    manager = BluetoothManager(
+        history=history,
+        location_store=location_store,
+        fix_provider=lambda: None,
+    )
+    advertisement = SimpleNamespace(
+        local_name="Headphones",
+        rssi=-50,
+        service_uuids=["180f"],
+        service_data={},
+        manufacturer_data={0x004C: b"data"},
+        tx_power=None,
+        platform_data=(
+            "/org/bluez/hci0/dev_40_22_33_44_55_66",
+            {"AddressType": "random"},
+        ),
+    )
+
+    manager._on_advertisement(
+        SimpleNamespace(address="40:22:33:44:55:66", name=None),
+        advertisement,
+    )
+
+    assert [device.identifier for device in manager.devices()] == [
+        "40:22:33:44:55:66",
+    ]
+    assert history.count() == 0
+
+
 def test_manager_collects_bluez_modalias_hardware_identity(monkeypatch):
     monkeypatch.setattr(
         "wifit3.bluetooth.analytics.resolve_bluez_modalias",

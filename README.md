@@ -1,9 +1,9 @@
 # wifit3-ng
-> Version 0.3.8. A standalone USB Wi-Fi and Bluetooth/BLE auditor for Linux, Windows, and macOS.
+> Version 0.3.9. A standalone USB Wi-Fi and Bluetooth/BLE auditor for Linux, Windows, and macOS.
 
-**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.8 - yadox666`.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.9 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.8**, including the Enterprise EAP lab honeypot in current builds. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.9**. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
@@ -302,11 +302,14 @@ eviction and twin beacons are visible to nearby devices.
 
 ### Passive open-network metadata
 
-Starting a focused PCAP capture on a confirmed unencrypted `OPEN` AP also starts bounded, passive infrastructure analysis. OWE/Enhanced Open is encrypted and is not treated as an open network.
+Focusing a confirmed unencrypted `OPEN` AP starts bounded, passive infrastructure analysis, whether or not PCAP recording is enabled. OWE/Enhanced Open is encrypted and is not treated as an open network.
 
 - Decodes clear-text LLC/SNAP, ARP, IPv4, IPv6, UDP, TCP, DHCP, and IPv6 Router Advertisements.
 - Extracts observed or advertised IPv4 addresses and ranges, IPv6 addresses and prefixes, gateways, DHCP servers, DNS servers, domains, lease expiry, and captive-portal evidence.
-- Builds a deduplicated website list from clear-text DNS questions, TLS SNI, and plain HTTP requests. All unique URLs are saved at AP and client level; HTTP URLs replace SNI and DNS-only placeholders for the same host, while distinct paths remain separate entries.
+- Builds a deduplicated website list from clear-text DNS questions, TLS SNI, QUIC/HTTP-3 Initial SNI, and plain HTTP requests. All unique URLs are saved at AP and client level; HTTP URLs replace SNI and DNS-only placeholders for the same host, while distinct paths remain separate entries.
+- Recovers **QUIC / HTTP-3** destinations that carry no clear-text host: a self-contained decoder derives the client-Initial keys from the public Destination Connection ID, decrypts v1/v2 Initial packets, reassembles CRYPTO frames, and reads the TLS ClientHello SNI. Hosts are recorded with source `quic_sni`.
+- Reassembles TLS ClientHellos that span multiple TCP segments (bounded, in-order) so the SNI is still recovered when the handshake is fragmented.
+- Identifies a network's **cross-band (2.4/5 GHz) twin** in AP Focus, matching by SSID or same-OUI/near-BSSID. The notice is informational and does not change the current channel; switch targets only when the client is independently confirmed on the alternate BSSID. Power-save **Null / QoS-Null** frames register client presence but are not counted as payload data on the packet-rate dashboard.
 - Correlates DHCP replies to clients through the DHCP client hardware address even when the wireless destination is broadcast.
 - Classifies captive-portal evidence as **Observed** from a plain HTTP redirect, **Declared** from DHCP option 114 or IPv6 option 37, or **Suspected** from bounded portal-like DNS/TLS SNI hints. An expected active HTTP 204 is shown as **NO CAPTIVE PORTAL DETECTED**; an intercepted connectivity check is suspected (90%). Without evidence the panel shows **unknown**, not a misleading zero.
 - Keeps conflicting DHCP servers, gateways, DNS sets, and network ranges with source, confidence, first/last observation times, and expiry instead of silently overwriting them.
@@ -626,11 +629,28 @@ The normal **SCAN BLE** action continues to use the operating system's Bluetooth
 | CSR BlueCore4-ROM / Sena Parani-UD100 | Bluetooth Classic (BR/EDR); system BLE remains active | `0a12:0001` | Uses the adapter's legitimate CSR Bluetooth 2.0 ROM firmware; it does not support BLE HCI commands. Direct mode provides Classic inquiry, remote names, read-only SDP, Classic Focus, health telemetry, and btsnoop capture. |
 | Realtek RTL8761BU | Bluetooth Classic (BR/EDR) + BLE | `0bda:8771`, `0bda:a728`, `0b05:190e`, `2357:0604`, `2357:0607`, `2c4e:0115`, `2550:8761`, `6655:8771`, `7392:c611`, `2b89:8761`, `2b89:6275` | Uses the bundled, hash-verified `rtl8761bu` firmware and config from `linux-firmware`. Direct USB mode provides Classic inquiry, remote names, read-only SDP, passive BLE discovery, health telemetry, and btsnoop capture; BLE GATT Focus remains available through **SCAN BLE**. |
 
+Documented commercial RTL8761BU/RTL8761BUV adapters:
+
+| Commercial adapter | Advertised Bluetooth | Known USB ID / compatibility note |
+|---|---|---|
+| ASUS USB-BT500 | 5.0 | `0b05:190e`; directly supported |
+| TP-Link UB500 | 5.x | `2357:0604`; directly supported for revisions using this ID. Product names alone do not prove the chipset |
+| UGREEN CM390 | 5.0 | `2b89:8761` or `2b89:6275`; both directly supported |
+| EDUP EP-B3519 | 5.x | RTL8761BUV is documented by Linux/FCC evidence; support requires the individual unit to expose one of the USB IDs listed above |
+| EDUP LOVE EP-B3536 | 5.x | RTL8761BU/BUV is documented; support requires a listed USB ID |
+| Edimax BT-8500 | 5.0 | `7392:c611`; directly supported |
+| Delock 61014 | 5.0 | Manufacturer specifies RTL8761BUV; support requires a listed USB ID |
+| Sandberg 134-34 | 5.3 | Manufacturer specifies the RTL8761B family; support requires a listed USB ID and the expected RTL8761BU runtime identity |
+
+`RTL8761BU` is commonly used as the USB-family name. Linux maintainers
+document that the silicon fitted to many of these dongles is marked
+`RTL8761BUV`; this is distinct from the UART-oriented `RTL8761BTV`.
+
 Retail vendors may change chipsets without changing a product name, so support is determined by USB ID rather than branding. Use a dedicated adapter: direct mode temporarily claims it from the operating system, and Windows requires the adapter to be bound to WinUSB. If macOS or Linux has already claimed the Sena controller, the red alert asks you to unplug and re-plug it so wifit3 can reserve it.
 
 ## Installation and running
 
-Python 3.11 or newer is required to run from source. Release **0.3.8** binaries are published from this fork.
+Python 3.11 or newer is required to run from source. Release **0.3.9** binaries are published from this fork.
 
 ### Option 1: Download a prebuilt binary
 

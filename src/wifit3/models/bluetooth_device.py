@@ -1,6 +1,7 @@
 """Bluetooth discovery data shared by the scanner backend and UI."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from .location import SignalPosition
@@ -8,6 +9,42 @@ from .location import SignalPosition
 
 BLE_RADIO = "BLE"
 CLASSIC_RADIO = "BT"
+
+
+def has_stable_persistent_identifier(device: "BluetoothDevice") -> bool:
+    identifier = device.identifier.strip()
+    return not (
+        not re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", identifier)
+        or identifier.casefold() in {"00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"}
+        or device.address_type in {
+            "anonymous",
+            "non-resolvable-private",
+            "platform-opaque",
+            "random",
+            "random-reserved",
+            "resolvable-private",
+        }
+    )
+
+
+def has_coherent_persistent_identity(device: "BluetoothDevice") -> bool:
+    if not has_stable_persistent_identifier(device):
+        return False
+    meaningful_name = device.name.strip().casefold() not in {
+        "", "<unknown>", "unknown", "unnamed", "bluetooth device",
+    }
+    return bool(
+        meaningful_name
+        or device.service_uuids
+        or device.service_data_uuids
+        or device.manufacturer_ids
+        or device.class_of_device is not None
+        or device.appearance is not None
+        or device.protocol_type
+        or device.modalias
+        or device.hardware_vendor
+        or device.hardware_product
+    )
 
 
 @dataclass(slots=True)
