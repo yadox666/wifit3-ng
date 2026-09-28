@@ -227,7 +227,8 @@ class BluetoothManager:
     async def connect(self, device: BluetoothDevice, update_callback=None) -> BluetoothConnection:
         if not getattr(device, "is_connectable_with_bleak", True):
             raise BluetoothConnectionError(
-                "Direct USB HCI observations are discovery-only; use SCAN BLE for GATT Focus"
+                "This Classic-only observation has no BLE GATT endpoint; select the matching "
+                "system BLE row for GATT Focus"
             )
         await self.disconnect()
         platform_device = self._platform_devices.get(device.identifier, device.identifier)

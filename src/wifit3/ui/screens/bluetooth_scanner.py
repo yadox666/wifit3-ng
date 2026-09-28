@@ -568,9 +568,8 @@ class BluetoothScannerView(Screen):
             log.write("[dim]A complete GATT service list requires connecting to the device.[/dim]")
         else:
             log.write(
-                "[dim]Dedicated USB discovery uses active Classic inquiry; "
-                "BLE and GATT remain on the system adapter. "
-                "GATT Focus remains available through SCAN BLE.[/dim]"
+                "[dim]This Classic-only observation has no BLE GATT endpoint. "
+                "Select the matching system BLE row for GATT Focus.[/dim]"
             )
 
     def action_toggle_selected_group(self) -> None:
@@ -617,7 +616,8 @@ class BluetoothScannerView(Screen):
             return
         if not device.is_connectable_with_bleak:
             self.notify(
-                "USB HCI observations are discovery-only; use SCAN BLE for GATT Focus.",
+                "Classic-only observations have no BLE GATT endpoint. "
+                "Select the matching BLE row.",
                 title="Bluetooth USB",
                 severity="warning",
             )
@@ -696,7 +696,8 @@ class BluetoothScannerView(Screen):
             self.app.target_store.update_missing(target, candidate.details)
             if not device.is_connectable_with_bleak:
                 self.notify(
-                    "Target saved; USB HCI discovery does not open GATT Focus.",
+                    "Target saved. Classic discovery has no BLE GATT endpoint; "
+                    "select the matching BLE row for Focus.",
                     title="Bluetooth USB",
                     severity="information",
                 )
