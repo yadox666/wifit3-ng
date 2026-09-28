@@ -37,6 +37,8 @@ from wifit3.bluetooth.rtl8761_firmware import (
 
 logger = logging.getLogger(__name__)
 
+HCI_MAX_EVENT_SIZE = 257
+
 _SUPPORTED_CONTROLLERS = {
     (0x0A12, 0x0001): ("BlueCore4-ROM", "Sena", "Parani-UD100", True, False),
     (0x0BDA, 0x8771): ("RTL8761BU", "Realtek", "Bluetooth 5 USB Adapter", True, True),
@@ -289,8 +291,10 @@ class UsbHciScanner:
 
     def _read_event(self, timeout_ms: int = 500) -> bytes | None:
         try:
-            return bytes(self._event_endpoint.read(
-                self._event_endpoint.wMaxPacketSize, timeout=timeout_ms,
+            return bytes(self._device.read(
+                self._event_endpoint.bEndpointAddress,
+                HCI_MAX_EVENT_SIZE,
+                timeout=timeout_ms,
             ))
         except usb.core.USBError as exc:
             if getattr(exc, "errno", None) in {60, 110} or "timed out" in str(exc).lower():

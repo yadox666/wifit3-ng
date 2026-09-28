@@ -12,6 +12,7 @@ from wifit3.bluetooth.hci_protocol import (
 )
 from wifit3.bluetooth.rtl8761_firmware import RTL_DOWNLOAD_OPCODE, RTL_ROM_VERSION_OPCODE
 from wifit3.bluetooth.usb_hci import (
+    HCI_MAX_EVENT_SIZE,
     UsbBluetoothController,
     UsbHciScanner,
     find_usb_bluetooth_controllers,
@@ -79,6 +80,29 @@ def test_bluecore4_starts_classic_without_sending_le_commands():
         HCI_LE_SET_SCAN_PARAMETERS,
         HCI_LE_SET_SCAN_ENABLE,
     } & {opcode for opcode, _parameters in commands}
+
+
+def test_event_read_requests_complete_hci_event_not_usb_packet_size():
+    controller = UsbBluetoothController(
+        0x0A12, 0x0001, "BlueCore4-ROM", "Sena", "Parani-UD100", 1, 1,
+        supports_classic=True, supports_le=False,
+    )
+    scanner = UsbHciScanner(controller, lambda _observation: None)
+    requested = []
+
+    class Endpoint:
+        bEndpointAddress = 0x81
+
+    class Device:
+        def read(self, endpoint, size, timeout):
+            requested.append((endpoint, size, timeout))
+            return bytes.fromhex("010100")
+
+    scanner._event_endpoint = Endpoint()
+    scanner._device = Device()
+
+    assert scanner._read_event(750) == bytes.fromhex("010100")
+    assert requested == [(0x81, HCI_MAX_EVENT_SIZE, 750)]
 
 
 def test_rtl8761bu_stock_rom_loads_verified_usb_patch():
