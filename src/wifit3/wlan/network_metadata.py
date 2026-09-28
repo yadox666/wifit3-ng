@@ -257,6 +257,29 @@ class NetworkMetadata:
             )
         return changed
 
+    def observe_arp_neighbors(
+        self,
+        neighbors: Iterable[tuple[str, str]],
+        *,
+        now: float,
+    ) -> bool:
+        """Record IP/MAC pairs from an active ARP sweep onto each client."""
+        changed = False
+        for ip, mac in neighbors:
+            mac = mac.casefold()
+            if not _valid_mac(mac):
+                continue
+            changed |= self.add(
+                "ipv4_addresses",
+                ip,
+                source="arp_sweep_active",
+                confidence="observed",
+                now=now,
+                client_mac=mac,
+                include_ap=False,
+            )
+        return changed
+
     def observe_connectivity(
         self,
         result: Any,

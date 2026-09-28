@@ -44,12 +44,13 @@ def _path(cck, bw40):
 def test_power_index_matches_wire_pattern():
     # 5th arg is the PG group (0 = 2.4G ch1-2); cck_group defaults to it.
     a = _path(0x20, 0x20)
-    assert txpower.power_index(a, "cck", "cck", 1, 0) == 0x22
-    assert txpower.power_index(a, "bw40", "bw20", 3, 0) == 0x22   # 3SS, diffs net 0
+    ch = 1
+    assert txpower.power_index(a, "cck", "cck", 1, 0, 0, ch) == 0x22
+    assert txpower.power_index(a, "bw40", "bw20", 3, 0, 0, ch) == 0x22   # 3SS, diffs net 0
     # Path B: CCK 0x27 -> 0x29; BW40 0x28 -> 0x2a (matches the captured PP bytes).
     b = _path(0x27, 0x28)
-    assert txpower.power_index(b, "cck", "cck", 1, 0) == 0x29
-    assert txpower.power_index(b, "bw40", "ofdm", 1, 0) == 0x2A
+    assert txpower.power_index(b, "cck", "cck", 1, 0, 0, ch) == 0x29
+    assert txpower.power_index(b, "bw40", "ofdm", 1, 0, 0, ch) == 0x2A
 
 
 def test_set_tx_power_write_format_and_count():

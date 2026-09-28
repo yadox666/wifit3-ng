@@ -78,7 +78,7 @@ def _ch_group_5g(channel: int) -> int:
 
 
 def power_index(pp, base_kind: str, diff_kind: str, nss: int,
-                group: int, cck_group: int = 0) -> int:
+                group: int, cck_group: int, channel: int) -> int:
     """[SRC] phy_get_pg_txpwr_idx + PHY_GetTxPowerIndex8814A (by-rate/limit = no-op).
 
     ``group`` is the channel's PG group (``_ch_group_2g`` / ``_ch_group_5g``); ``cck_group``
@@ -89,7 +89,10 @@ def power_index(pp, base_kind: str, diff_kind: str, nss: int,
     diff = {"cck": pp.cck_diff, "ofdm": pp.ofdm_diff, "bw20": pp.bw20_diff}[diff_kind]
     pg = base + sum(diff[k] for k in range(nss))   # cumulative diff over stream count
     idx = pg + (_CURRENT_TX_PWR_IDX - 18)
-    return max(0, min(_TXGI_MAX, idx))
+    idx = max(0, min(_TXGI_MAX, idx))
+    from wifit3.wlan.regulatory import clamp_realtek_txagc_index
+
+    return clamp_realtek_txagc_index(idx, channel)
 
 
 def set_tx_power(t, channel: int, tx_power: tuple, write_cck: bool = True) -> None:
@@ -106,7 +109,7 @@ def set_tx_power(t, channel: int, tx_power: tuple, write_cck: bool = True) -> No
     for path in range(4):
         pp = tx_power[path]
         for hw, base_kind, diff_kind, nss in rate_table:
-            pidx = power_index(pp, base_kind, diff_kind, nss, g, cck_g)
+            pidx = power_index(pp, base_kind, diff_kind, nss, g, cck_g, channel)
             wd = (_TXAGC_BASE | (path << 8) | hw | (pidx << 24)) & 0xFFFFFFFF
             t.write32(REG_TXAGC, wd)
             if hw == 0x00:                 # MGN_1M: written twice to turn on the table
@@ -128,6 +131,6 @@ def set_tx_power_5g(t, channel: int, tx_power_5g: tuple) -> None:
     for path in range(4):
         pp = tx_power_5g[path]
         for hw, base_kind, diff_kind, nss in RATE_TABLE_5G:
-            pidx = power_index(pp, base_kind, diff_kind, nss, g)
+            pidx = power_index(pp, base_kind, diff_kind, nss, g, 0, channel)
             wd = (_TXAGC_BASE | (path << 8) | hw | (pidx << 24)) & 0xFFFFFFFF
             t.write32(REG_TXAGC, wd)

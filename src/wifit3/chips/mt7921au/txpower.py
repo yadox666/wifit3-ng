@@ -43,21 +43,22 @@ _TX_POWER = 127            # 2 * conf.power_level; power_level 0 -> 127
 
 
 def _enabled(band_idx, hw_value):
-    """A channel is enabled iff cfg80211's world domain kept it — i.e. it appears
-    in our regdomain table. No 6 GHz channels are enabled in the world domain."""
-    from . import regdomain as rd
-    if band_idx == 0:
-        return any(hw == hw_value for hw, _ in rd.CHANNELS_2GHZ)
-    if band_idx == 1:
-        return any(hw == hw_value for hw, _ in rd.CHANNELS_5GHZ)
-    return False
+    """A channel is enabled iff it appears in the active connac regdomain table."""
+    from wifit3.wlan.regulatory import mt7921_enabled
+
+    return mt7921_enabled(band_idx, hw_value)
 
 
 def _target_power(band_idx, hw_value):
     """mt76_connac_get_ch_power: enabled -> min(2*max_reg_power, tx_power),
     disabled (or not found) -> tx_power unchanged."""
+    from wifit3.wlan.regulatory import configured_country, max_eirp_dbm
+
     if _enabled(band_idx, hw_value):
-        return min(2 * _WORLD_MAX_EIRP, _TX_POWER)
+        eirp = max_eirp_dbm(configured_country(), hw_value)
+        if eirp <= 0:
+            eirp = _WORLD_MAX_EIRP
+        return min(2 * eirp, _TX_POWER)
     return _TX_POWER
 
 
@@ -96,7 +97,9 @@ def rate_txpower_payloads(caps=None):
     mt76_connac_mcu_set_rate_txpower + the last_ch pick in mt76_connac_mcu_rate_txpower_band
     [SRC mt76_connac_mcu.c:2183-2188,2260-2284]. ``caps=None`` (or the reference units,
     all bands present) reproduces the captured wire: 2.4+5+6 GHz, last_ch 233."""
-    from . import regdomain as rd
+    from wifit3.wlan.regulatory import connac_domain
+
+    dom = connac_domain()
     has_2 = True if caps is None else caps.has_2ghz
     has_5 = True if caps is None else caps.has_5ghz
     has_6 = True if caps is None else caps.has_6ghz
@@ -131,6 +134,6 @@ def rate_txpower_payloads(caps=None):
                 body += bytes([ch & 0xFF]) + _build_sku(band_idx, tp)
                 last_msg = 1 if ch == last_ch else 0
             tlv = struct.pack("<BBHBBBB4s32x", 0, 0, 0, num_ch, tlv_band,
-                              last_msg, 0, rd.WORLD_ALPHA2)
+                              last_msg, 0, dom.alpha2)
             payloads.append(bytes(tlv) + bytes(body))
     return payloads

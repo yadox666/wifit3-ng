@@ -187,6 +187,7 @@ async def test_open_ap_splits_clients_and_websites_with_shared_search():
         clients.set_open_network_metadata(metadata, enabled=True)
         await pilot.pause()
 
+        assert clients.query_one("#client-web-search-box").display is True
         assert clients.query_one("#client-web-search", Input).display is True
         assert clients.query_one("#website-pane").display is True
         assert abs(
@@ -208,6 +209,13 @@ async def test_open_ap_splits_clients_and_websites_with_shared_search():
         assert clients._rows[_MAC].display is True
         assert clients._rows[other_mac].display is False
         assert "No matching websites" in websites.content.plain
+
+        await pilot.click("#clear-client-web-search")
+        await pilot.pause()
+        assert clients.query_one("#client-web-search", Input).value == ""
+        assert all(row.display for row in clients._rows.values())
+        assert "example.test" in websites.content.plain
+        assert "updates.test" in websites.content.plain
 
 
 # ----- detail popup ---------------------------------------------------------

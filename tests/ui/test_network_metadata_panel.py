@@ -117,3 +117,14 @@ def test_client_popup_details_include_client_ip_and_network_evidence():
 
 def test_client_popup_details_has_clear_empty_state():
     assert "No network observations" in client_network_details(None, "00:11:22:33:44:55")
+
+
+def test_client_popup_shows_arp_sweep_ipv4():
+    metadata = NetworkMetadata("aa:bb:cc:dd:ee:ff", "Cafe")
+    mac = "6a:a9:f9:87:7e:d1"
+    metadata.observe_arp_neighbors([("192.168.0.84", mac)], now=200)
+
+    details = client_network_details(metadata, mac)
+
+    assert "192.168.0.84" in details
+    assert "No network observations" not in details

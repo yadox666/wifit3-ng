@@ -78,6 +78,25 @@ def parse_arp_reply(
     return ArpReply(target_ip, body[8:14])
 
 
+def parse_arp_reply_any(
+    frame: bytes,
+    client_mac: bytes,
+    client_ip: str,
+) -> ArpReply | None:
+    """Parse an ARP reply directed at us from *any* sender (for a subnet sweep):
+    returns the responder's IP and MAC, without pinning a specific target IP."""
+    body = _llc_payload(frame, LLC_ARP)
+    if (
+        body is None
+        or len(body) < 28
+        or body[:8] != b"\x00\x01\x08\x00\x06\x04\x00\x02"
+        or body[18:24] != client_mac
+        or body[24:28] != ipaddress.IPv4Address(client_ip).packed
+    ):
+        return None
+    return ArpReply(str(ipaddress.IPv4Address(body[14:18])), body[8:14])
+
+
 def build_dns_query(
     bssid: bytes,
     client_mac: bytes,

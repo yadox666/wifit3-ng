@@ -138,6 +138,7 @@ class EfuseRead:
     bb_swing_2g: int = 0      # tx_bb_swing_setting_2g (2 bits/path)
     bb_swing_5g: int = 0
     thermal_meter: int = 0xFF
+    log_map: bytes = b""       # de-mapped EFUSE (512 B) for TX PG decode
 
 
 def _efuse_grant(transport: RTL8814AUTransport, on: bool) -> None:
@@ -265,4 +266,5 @@ def read_efuse(transport: RTL8814AUTransport) -> EfuseRead:
         bb_swing_2g=log_map[OFF_TX_BB_SWING_2G],
         bb_swing_5g=log_map[OFF_TX_BB_SWING_5G],
         thermal_meter=log_map[OFF_THERMAL_METER],
+        log_map=bytes(log_map),
     )

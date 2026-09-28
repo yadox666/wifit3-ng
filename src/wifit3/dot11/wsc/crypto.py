@@ -333,6 +333,49 @@ def aes128_cbc_decrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
     return bytes(out)
 
 
+_KEY_WRAP_IV = b"\xa6\xa6\xa6\xa6\xa6\xa6\xa6\xa6"
+
+
+def aes128_key_wrap(kek: bytes, plaintext: bytes) -> bytes:
+    """NIST AES Key Wrap encrypt (RFC 3394). ``plaintext`` length must be a
+    multiple of 8 and at least 16 bytes."""
+    if len(plaintext) < 16 or len(plaintext) % 8 != 0:
+        raise ValueError("key-wrap plaintext must be >= 16 bytes, multiple of 8")
+    ks = _expand_key(kek)
+    n = len(plaintext) // 8
+    a = bytearray(_KEY_WRAP_IV)
+    r = [bytearray(plaintext[8 * i:8 * i + 8]) for i in range(n)]
+    for j in range(6):
+        for i in range(1, n + 1):
+            block = _aes128_encrypt_block(ks, bytes(a) + bytes(r[i - 1]))
+            t = n * j + i
+            a = bytearray(x ^ y for x, y in zip(block[:8], t.to_bytes(8, "big")))
+            r[i - 1] = bytearray(block[8:])
+    return bytes(a) + b"".join(bytes(chunk) for chunk in r)
+
+
+def aes128_key_unwrap(kek: bytes, wrapped: bytes) -> bytes | None:
+    """NIST AES Key Wrap decrypt (RFC 3394). Returns the unwrapped octets, or
+    None if the integrity check value does not match. Used for WPA2 (key
+    descriptor version 2) EAPOL-Key Data, which is AES-key-wrapped, not CBC."""
+    if len(wrapped) < 16 or len(wrapped) % 8 != 0:
+        return None
+    ks = _expand_key(kek)
+    n = len(wrapped) // 8 - 1
+    a = bytearray(wrapped[:8])
+    r = [bytearray(wrapped[8 + 8 * i:16 + 8 * i]) for i in range(n)]
+    for j in range(5, -1, -1):
+        for i in range(n, 0, -1):
+            t = n * j + i
+            a_xor = bytes(x ^ y for x, y in zip(a, t.to_bytes(8, "big")))
+            block = _aes128_decrypt_block(ks, a_xor + bytes(r[i - 1]))
+            a = bytearray(block[:8])
+            r[i - 1] = bytearray(block[8:])
+    if bytes(a) != _KEY_WRAP_IV:
+        return None
+    return b"".join(bytes(chunk) for chunk in r)
+
+
 def pkcs5_pad(data: bytes, block: int = 16) -> bytes:
     pad = block - (len(data) % block)
     return data + bytes([pad]) * pad

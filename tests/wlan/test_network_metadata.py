@@ -364,6 +364,16 @@ def _tcp_segment(body, dest_port, seq, *, from_ds=False):
     return _frame(_ipv4(tcp, 6, "192.168.50.42", "93.184.216.34"), from_ds=from_ds)
 
 
+def test_observe_arp_neighbors_records_ip_on_each_client():
+    metadata = NetworkMetadata(BSSID, "Cafe")
+    neighbor = "6a:a9:f9:87:7e:d1"
+    assert metadata.observe_arp_neighbors(
+        [("192.168.0.84", neighbor)], now=100,
+    )
+    assert metadata.clients[neighbor].facts["ipv4_addresses"][0].value == "192.168.0.84"
+    assert metadata.clients[neighbor].facts["ipv4_addresses"][0].source == "arp_sweep_active"
+
+
 def test_quic_initial_sni_recorded_as_website():
     metadata = NetworkMetadata(BSSID, "Cafe")
     touched = PassiveNetworkAnalyzer(metadata).observe(

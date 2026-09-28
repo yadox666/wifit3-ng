@@ -40,12 +40,18 @@ def random_xid() -> int:
     return secrets.randbits(32)
 
 
-def build_discover(bssid: bytes, client_mac: bytes, xid: int) -> bytes:
-    """Build a broadcast DHCPDISCOVER in an 802.11 ToDS data frame."""
+def build_discover(
+    bssid: bytes, client_mac: bytes, xid: int, *, broadcast: bool = True,
+) -> bytes:
+    """Build a DHCPDISCOVER in an 802.11 ToDS data frame.
+
+    ``broadcast`` sets the BOOTP broadcast flag. Encrypted stations should pass
+    ``False`` so the server unicasts the reply to our MAC (decryptable with the
+    pairwise key) rather than broadcasting it under the group key."""
     bootp = bytearray(236)
     bootp[0:4] = b"\x01\x01\x06\x00"  # BOOTREQUEST, Ethernet, MAC length 6, hops 0
     bootp[4:8] = struct.pack("!I", xid)
-    bootp[10:12] = b"\x80\x00"         # request broadcast reply
+    bootp[10:12] = b"\x80\x00" if broadcast else b"\x00\x00"
     bootp[28:34] = client_mac
     options = (
         b"\x35\x01\x01"                # DHCP message type: Discover
@@ -70,12 +76,14 @@ def build_request(
     xid: int,
     offered_ip: str,
     server: str,
+    *,
+    broadcast: bool = True,
 ) -> bytes:
     """Build the selecting-state DHCPREQUEST for one received Offer."""
     bootp = bytearray(236)
     bootp[0:4] = b"\x01\x01\x06\x00"
     bootp[4:8] = struct.pack("!I", xid)
-    bootp[10:12] = b"\x80\x00"
+    bootp[10:12] = b"\x80\x00" if broadcast else b"\x00\x00"
     bootp[28:34] = client_mac
     options = (
         b"\x35\x01\x03"

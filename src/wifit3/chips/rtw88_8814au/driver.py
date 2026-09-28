@@ -88,6 +88,21 @@ class RTL8814AUDriver(Driver):
         self.current_channel: int = 1
         self.current_band_is_2g: bool = True
         self._rfe_option: int = 1
+        self._tx_power_2g: tuple = ()
+        self._tx_power_5g: tuple = ()
+
+    def _write_tx_power(self, channel: int) -> None:
+        """EFUSE PG table + ``wifi_regulatory_country`` cap (shared with DKMS driver)."""
+        if not self._tx_power_2g:
+            return
+        from wifit3.chips.rtl8814au_dkms import txpower as dkms_tx
+
+        if channel <= 14:
+            dkms_tx.set_tx_power(
+                self.transport, channel, self._tx_power_2g, write_cck=True,
+            )
+        else:
+            dkms_tx.set_tx_power_5g(self.transport, channel, self._tx_power_5g)
 
     def register_rx_callback(self, cb: Callable[[dict], None]) -> None:
         self._rx_callback = cb
@@ -186,6 +201,14 @@ class RTL8814AUDriver(Driver):
         er = await loop.run_in_executor(None, read_efuse, self.transport)
         self.mac_address = ":".join(f"{b:02x}" for b in er.mac_addr)
         self._rfe_option = er.rfe_option
+        if er.log_map:
+            from wifit3.chips.rtl8814au_dkms.efuse import (
+                _parse_tx_power,
+                _parse_tx_power_5g,
+            )
+
+            self._tx_power_2g = _parse_tx_power(er.log_map, 4)
+            self._tx_power_5g = _parse_tx_power_5g(er.log_map, 4)
         logger.info("RTL8814AU M4: EFUSE rfe_option=%d (raw 0x%02x) MAC=%s xtal=0x%02x",
                     er.rfe_option, er.rfe_option_raw, self.mac_address, er.crystal_cap)
         efuse = defaults_from_efuse(er, cut=(chip_version >> 12) & 0xF)
@@ -217,6 +240,7 @@ class RTL8814AUDriver(Driver):
                 None, lambda: chan.set_channel(self.transport, 1,
                                                rfe_option=self._rfe_option,
                                                force_band=True))
+            await loop.run_in_executor(None, lambda: self._write_tx_power(1))
             await loop.run_in_executor(None, rx.mac_init_for_rx, self.transport)
             await loop.run_in_executor(None, rx.apply_monitor_rcr, self.transport)
             # Seed DIG to max coverage (IGI=0x1c) BEFORE the liveness check, so
@@ -393,6 +417,7 @@ class RTL8814AUDriver(Driver):
             def _apply(force_band: bool) -> None:
                 chan.set_channel(self.transport, channel,
                                  rfe_option=self._rfe_option, force_band=force_band)
+                self._write_tx_power(channel)
                 # cck_tx_dfir touches a shared CCK reg; re-pin monitor CCK
                 # sensitivity after each tune so it survives channel hops.
                 rx.tune_monitor_cck_sensitivity(self.transport)

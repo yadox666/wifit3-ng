@@ -159,6 +159,11 @@ def _wep_key_chip(key_hex) -> str:
     return f"[black bold on cyan] {wep_key_ascii(key_hex)} [/black bold on cyan]"
 
 
+def _recovered_credential_chip(label: str) -> str:
+    """Focus log chip for a saved credential without echoing the secret."""
+    return f"[black bold on cyan] {label} recovered [/black bold on cyan]"
+
+
 def _client_connection_segments(
     source_x: int,
     target_x: int,
@@ -578,12 +583,20 @@ class FocusViewV2(Screen):
         probing = self._is_probing()
         for cls in fm.BUTTON_CAMPAIGNS:
             btn = self.query_one(f"#{cls.button_id}", Button)
-            btn.display = cls.visible(ap)
+            vault = self.app.vault
+            visible = (
+                cls.visible(ap, vault)
+                if cls is FakeConnectCampaign
+                else cls.visible(ap)
+            )
+            btn.display = visible
             running = active is not None and active.key == cls.key and cls.stoppable
             if running:
                 btn.label, btn.variant, btn.disabled, reason = cls.run_label, cls.run_variant, False, ""
             else:
-                reason = fm.campaign_blocked(cls, ap)
+                reason = fm.campaign_blocked(
+                    cls, ap, vault if cls is FakeConnectCampaign else None,
+                )
                 btn.label, btn.variant = cls.idle_label, cls.idle_variant
                 btn.disabled = reason is not None
             if probing and not running:
@@ -780,16 +793,21 @@ class FocusViewV2(Screen):
             head = f"[bold cyan]{label}[/bold cyan] [dim]({n})[/dim]{pad}"
             dt = datetime.fromtimestamp(cap.timestamp)
             if label == "WEP Key":
-                self._log(line(f"{head}  {_wep_key_chip(cap.value)} "
-                               f"[dim]{dt:%Y-%m-%d %H:%M}[/dim]"))
+                self._log(line(
+                    f"{head}  {_recovered_credential_chip('WEP key')} "
+                    f"[dim]{dt:%Y-%m-%d %H:%M}[/dim]",
+                ))
             elif label in ("WPS PIN", "WPS PBC"):
-                creds = []
-                if cap.value:
-                    creds.append(f"[black bold on cyan] {escape(cap.value)} [/black bold on cyan]")
+                creds = [_recovered_credential_chip("PSK")]
                 if cap.pin:
-                    creds.append(f"[dim]PIN[/dim] {escape(cap.pin)}")
-                joined = ("  ".join(creds) + "  ") if creds else ""
+                    creds.append("[dim]PIN recovered[/dim]")
+                joined = "  ".join(creds) + "  "
                 self._log(line(f"{head}  {joined}[dim]{dt:%Y-%m-%d %H:%M}[/dim]"))
+            elif label == "WPA PSK":
+                self._log(line(
+                    f"{head}  {_recovered_credential_chip('PSK')} "
+                    f"[dim]{dt:%Y-%m-%d %H:%M}[/dim]",
+                ))
             else:
                 self._log(line(f"{head}  {dt:%Y-%m-%d} "
                                f"[dim]{dt:%H:%M}[/dim]"))
@@ -1189,12 +1207,21 @@ class FocusViewV2(Screen):
                 running = cur is not None and cur.key == "wep"
                 return None if (not running or Config.is_silenced(ap.bssid)) else True
             cls = fm.CAMPAIGN_BY_KEY.get(key)
-            if cls is None or not cls.visible(ap):
+            vault = self.app.vault
+            visible = (
+                cls.visible(ap, vault)
+                if cls is FakeConnectCampaign
+                else cls.visible(ap)
+            )
+            if cls is None or not visible:
                 return False
             active = Campaign.active
             if active is not None and active.key == key and cls.stoppable:
                 return True
-            return None if fm.campaign_blocked(cls, ap) is not None else True
+            blocked = fm.campaign_blocked(
+                cls, ap, vault if cls is FakeConnectCampaign else None,
+            )
+            return None if blocked is not None else True
         if action == "enterprise":
             return ap is not None and is_enterprise_ap(ap)
         if action == "deauth_all":
@@ -1224,12 +1251,21 @@ class FocusViewV2(Screen):
             active = Campaign.active
             probing = self._is_probing()
 
+            vault = self.app.vault
+
             def _disabled(cls) -> bool:
                 if active is not None and active.key == cls.key and cls.stoppable:
                     return False
-                return fm.campaign_blocked(cls, ap) is not None
+                return fm.campaign_blocked(
+                    cls, ap, vault if cls is FakeConnectCampaign else None,
+                ) is not None
 
-            btn_sig = tuple((cls.key, cls.visible(ap), True if probing else _disabled(cls))
+            def _visible(cls) -> bool:
+                if cls is FakeConnectCampaign:
+                    return cls.visible(ap, vault)
+                return cls.visible(ap)
+
+            btn_sig = tuple((cls.key, _visible(cls), True if probing else _disabled(cls))
                             for cls in fm.BUTTON_CAMPAIGNS)
             sig = (btn_sig,
                    is_enterprise_ap(ap),
@@ -1747,15 +1783,21 @@ class FocusViewV2(Screen):
             "wps": "Actively attempts WPS enrollment and PIN recovery.",
         }
         ap = self._target_ap
-        if (
-            camp_key == "fake_connect"
-            and ap is not None
-            and (ap.encryption or "").casefold() == "wep"
-        ):
-            impacts[camp_key] = (
-                "Authenticates and associates a randomized temporary client with the WEP AP. "
-                "It does not send encrypted data, request DHCP, or test Internet access."
-            )
+        vault = self.app.vault
+        if camp_key == "fake_connect" and ap is not None:
+            enc = (ap.encryption or "").casefold()
+            cred = FakeConnectCampaign.resolve_credential(ap, vault)
+            if enc == "wep" and cred is None:
+                impacts[camp_key] = (
+                    "Authenticates and associates a randomized temporary client with the WEP AP. "
+                    "It does not send encrypted data, request DHCP, or test Internet access."
+                )
+            elif enc.startswith("wpa2") and cred is not None:
+                impacts[camp_key] = (
+                    "Runs a WPA2-PSK 4-way handshake with the captured passphrase, "
+                    "associates a randomized temporary client, claims and releases a DHCP "
+                    f"lease, then contacts {CONNECTIVITY_URL} to test Internet/captive-portal access."
+                )
         self._confirm_active(fm.CAMPAIGN_BY_KEY[camp_key].idle_label, impacts[camp_key], toggle)
 
     def _request_evil_twin(self) -> None:
@@ -1961,9 +2003,11 @@ class FocusViewV2(Screen):
                 f"[bold cyan]Fake-Connect[/bold cyan] → "
                 f"[bold]{escape(ap.ssid or ap.bssid)}[/bold]"
             )
+            credential = FakeConnectCampaign.resolve_credential(ap, self.app.vault)
             self._controls.start(
                 FakeConnectCampaign, array, ap,
                 log=lambda message: self._log(treelog.branch(message)),
+                credential=credential,
             )
         self.refresh_buttons()
 
@@ -2011,6 +2055,11 @@ class FocusViewV2(Screen):
                 expires_at=expires_at,
             )
             camp.connectivity_recorded = True
+        if camp.arp_neighbors and not camp.arp_neighbors_recorded:
+            changed |= store.metadata.observe_arp_neighbors(
+                camp.arp_neighbors, now=now,
+            )
+            camp.arp_neighbors_recorded = True
         if not changed:
             return
         try:

@@ -140,9 +140,10 @@ def cold_bringup(t: AR9271Transport) -> BringupResult:
     wmi.cmd(WMI_SET_MODE_CMDID, _MODE_11NG)
     wmi.cmd(WMI_ENABLE_INTR_CMDID, b"")
 
-    # config CONF_CHANGE_POWER: power_level 20 -> txpowlimit 40 raises the limit back from 0,
-    # then mac80211 re-applies the (unchanged) monitor filter -> 0xc03f (now with PROM).
-    phy_power.update_txpow(hw, chan, 40)
+    # config CONF_CHANGE_POWER: raise txpowlimit from 0 to the configured regulatory ceiling.
+    from wifit3.wlan.regulatory import ath9k_txpowlimit_half_db
+
+    phy_power.update_txpow(hw, chan, ath9k_txpowlimit_half_db(chan.channel))
     rx.configure_filter(hw, hw.rxfilter_flags)
     return BringupResult(wmi=wmi, hw=hw, endpoints=st.endpoints)
 

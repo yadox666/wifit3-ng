@@ -20,6 +20,21 @@ def test_aes128_block_fips197():
     assert wc._aes128_decrypt_block(ks, ct) == pt
 
 
+# ---- AES Key Unwrap: RFC 3394 Section 4.1 (128-bit KEK, 128-bit key) -------
+def test_aes128_key_unwrap_rfc3394_vector():
+    kek = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
+    wrapped = bytes.fromhex("1fa68b0a8112b447aef34bd8fb5a7b829d3e862371d2cfe5")
+    assert wc.aes128_key_unwrap(kek, wrapped) == bytes.fromhex(
+        "00112233445566778899aabbccddeeff",
+    )
+
+
+def test_aes128_key_unwrap_rejects_wrong_kek():
+    wrong = bytes.fromhex("0f0e0d0c0b0a09080706050403020100")
+    wrapped = bytes.fromhex("1fa68b0a8112b447aef34bd8fb5a7b829d3e862371d2cfe5")
+    assert wc.aes128_key_unwrap(wrong, wrapped) is None
+
+
 # ---- AES-128-CBC: NIST SP800-38A F.2.1 (first block) ----------------------
 def test_aes128_cbc_nist():
     key = bytes.fromhex("2b7e151628aed2a6abf7158809cf4f3c")

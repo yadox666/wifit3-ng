@@ -19,6 +19,7 @@ from wifit3.dot11.connectivity import (
     build_dns_query,
     build_tcp_frame,
     parse_arp_reply,
+    parse_arp_reply_any,
     parse_dns_response,
     parse_http_response,
     parse_tcp_segment,
@@ -33,9 +34,14 @@ from wifit3.dot11.dhcp import (
     parse_offer,
     random_xid,
 )
+from wifit3.dot11.ie import GENERIC_RSN_IE, force_psk_akm
+from wifit3.dot11.station_crypto import CcmpStationCodec, WepStationCodec
+from wifit3.id.common import vendor_for_mac
+from wifit3.models.access_point import CaptureType
 
 from .auth_assoc import Association, build_client_leaving
 from .campaign import Campaign
+from .wpa_station import WpaHandshakeError, WpaPskSupplicant
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +49,13 @@ CONNECTIVITY_HOST = "connectivitycheck.gstatic.com"
 CONNECTIVITY_PATH = "/generate_204"
 CONNECTIVITY_URL = f"http://{CONNECTIVITY_HOST}{CONNECTIVITY_PATH}"
 MAX_HTTP_HEADER_BYTES = 8192
+DHCP_PROBE_ATTEMPTS = 6
+DHCP_PROBE_WAIT_SECONDS = 3.0
+DATAPATH_VERIFY_SECONDS = 4.0
+ARP_SWEEP_MAX_HOSTS = 256           # cap the sweep (a /24 is 254 usable hosts)
+ARP_SWEEP_PACING_SECONDS = 0.005    # gap between broadcast ARP requests
+ARP_SWEEP_SETTLE_SECONDS = 1.5      # listen window after the last request
+ARP_SWEEP_LOG_LIMIT = 20            # neighbors listed inline before "+N more"
 
 
 @dataclass(slots=True)
@@ -63,15 +76,18 @@ class ConnectivityResult:
 class _PacketInbox:
     """Bounded thread-safe packet handoff for a short active probe."""
 
-    def __init__(self, iface):
+    def __init__(self, iface, decode=None):
         self.iface = iface
+        self.decode = decode or (lambda raw: raw)
         self.loop = asyncio.get_running_loop()
         self.queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=256)
 
     def _rx(self, packet) -> None:
         raw = bytes(getattr(packet, "raw", b""))
         if raw:
-            self.loop.call_soon_threadsafe(self._put, raw)
+            decoded = self.decode(raw)
+            if decoded is not None:
+                self.loop.call_soon_threadsafe(self._put, decoded)
 
     def _put(self, raw: bytes) -> None:
         if not self.queue.full():
@@ -101,19 +117,31 @@ class _PacketInbox:
 class _DhcpProbe:
     """Thread-safe handoff from driver RX callbacks to one DHCP probe."""
 
-    def __init__(self, iface, bssid: str, client_mac: bytes, xid: int):
+    def __init__(self, iface, bssid: str, client_mac: bytes, xid: int, decode=None):
         self.iface = iface
         self.bssid = bssid.casefold()
         self.client_mac = client_mac
         self.xid = xid
+        self.decode = decode or (lambda raw: raw)
         self.loop = asyncio.get_running_loop()
         self.queue: asyncio.Queue[DhcpOffer] = asyncio.Queue(maxsize=1)
         self._seen = False
 
     def _rx(self, packet) -> None:
-        if (getattr(packet, "bssid", "") or "").casefold() != self.bssid:
+        raw = bytes(getattr(packet, "raw", b""))
+        if len(raw) < 24:
             return
-        offer = parse_offer(getattr(packet, "raw", b""), self.xid, self.client_mac)
+        bssid = str_to_mac(self.bssid)
+        if raw[10:16] != bssid:
+            return
+        dest = raw[4:10]
+        if dest != self.client_mac and dest != b"\xff" * 6:
+            return
+        raw = self.decode(raw)
+        offer = (
+            parse_offer(raw, self.xid, self.client_mac)
+            if raw is not None else None
+        )
         if offer is not None and not self._seen:
             self._seen = True
             self.loop.call_soon_threadsafe(self.queue.put_nowait, offer)
@@ -132,7 +160,7 @@ class _DhcpProbe:
 
 
 class FakeConnectCampaign(Campaign):
-    """Associate a temporary client with an OPEN or WEP AP until disconnected."""
+    """Associate a temporary client with an open, WEP, or captured-key WPA2 AP."""
 
     button_id = "btn-fake-connect"
     key = "fake_connect"
@@ -143,7 +171,14 @@ class FakeConnectCampaign(Campaign):
     idle_variant = "primary"
     run_variant = "error"
 
-    def __init__(self, array, target, source_mac: bytes | None = None, log=None):
+    def __init__(
+        self,
+        array,
+        target,
+        source_mac: bytes | None = None,
+        log=None,
+        credential: str | bytes | None = None,
+    ):
         super().__init__(ap=target, array=array)
         self.target = target
         cache = getattr(array, "_fake_connect_macs", None)
@@ -154,9 +189,10 @@ class FakeConnectCampaign(Campaign):
             source_mac = cache.setdefault(target.bssid.casefold(), random_client_mac())
         self.source_mac = source_mac
         self.log = log or (lambda _message: None)
-        self.association_only = (
-            (getattr(target, "encryption", "") or "").casefold() == "wep"
-        )
+        self.credential = credential
+        self.security = (getattr(target, "encryption", "") or "").casefold()
+        self.association_only = self.security == "wep" and credential is None
+        self._codec: WepStationCodec | CcmpStationCodec | None = None
         self.association_ssid, self.ssid_is_guess = self._association_ssid(array, target)
         self.associated = False
         self.fail_reason: Optional[str] = None
@@ -164,6 +200,9 @@ class FakeConnectCampaign(Campaign):
         self.dhcp_lease: DhcpOffer | None = None
         self.connectivity_result: ConnectivityResult | None = None
         self.dhcp_probing = False
+        self.datapath_verified = False
+        self.arp_neighbors: list[tuple[str, str]] = []   # (ip, mac) discovered on-subnet
+        self.arp_neighbors_recorded = False
         self.metadata_recorded = False
         self.lease_recorded = False
         self.connectivity_recorded = False
@@ -174,17 +213,71 @@ class FakeConnectCampaign(Campaign):
     def client_mac(self) -> str:
         return mac_to_str(self.source_mac)
 
+    @staticmethod
+    def _usable_passphrase(psk: str | None) -> bool:
+        if not psk or not psk.strip():
+            return False
+        return psk.strip().casefold() != "placeholder"
+
     @classmethod
-    def visible(cls, ap) -> bool:
+    def _wpa2_psk_ccmp(cls, ap) -> bool:
         encryption = (getattr(ap, "encryption", "") or "").casefold()
-        return encryption == "wep" or (
-            encryption == "open" and not getattr(ap, "akm_suites", ())
+        return (
+            encryption.startswith("wpa2")
+            and 2 in getattr(ap, "akm_suites", ())
+            and (getattr(ap, "pairwise_cipher", None) or "CCMP") == "CCMP"
         )
 
     @classmethod
-    def ineligible_reason(cls, ap) -> Optional[str]:
+    def _session_psk(cls, ap) -> str | None:
+        psk = getattr(ap, "wps_pbc_psk", None) or getattr(ap, "wps_pin_psk", None)
+        return psk if cls._usable_passphrase(psk) else None
+
+    @classmethod
+    def resolve_credential(cls, ap, vault) -> str | bytes | None:
+        encryption = (getattr(ap, "encryption", "") or "").casefold()
+        if encryption == "wep":
+            wep_key = getattr(ap, "wep_key", None)
+            if wep_key:
+                return wep_key
+            for cap in vault.persisted(ap.bssid):
+                if cap.type == CaptureType.WEP and cap.value:
+                    try:
+                        return bytes.fromhex(cap.value.strip())
+                    except ValueError:
+                        pass
+            return None
+        if cls._wpa2_psk_ccmp(ap):
+            psk = cls._session_psk(ap) or vault.known_psk(ap)
+            return psk if cls._usable_passphrase(psk) else None
+        return None
+
+    @classmethod
+    def visible(cls, ap, vault=None) -> bool:
+        encryption = (getattr(ap, "encryption", "") or "").casefold()
+        if encryption == "wep":
+            return True
+        if encryption == "open" and not getattr(ap, "akm_suites", ()):
+            return True
+        if cls._wpa2_psk_ccmp(ap):
+            if cls._session_psk(ap):
+                return True
+            if vault is not None and cls._usable_passphrase(vault.known_psk(ap)):
+                return True
+        return False
+
+    @classmethod
+    def ineligible_reason(cls, ap, vault=None) -> Optional[str]:
         if ap.is_hidden and not getattr(ap, "siblings", ()):
             return "hidden SSID: no confirmed or sibling-derived name"
+        encryption = (getattr(ap, "encryption", "") or "").casefold()
+        if encryption.startswith("wpa") and not cls._wpa2_psk_ccmp(ap):
+            return "captured-key connection supports WPA2-PSK with CCMP only"
+        if cls._wpa2_psk_ccmp(ap) and vault is not None:
+            if not cls._session_psk(ap) and not cls._usable_passphrase(
+                vault.known_psk(ap),
+            ):
+                return "no captured WPA2-PSK in Vault"
         return None
 
     @staticmethod
@@ -254,13 +347,22 @@ class FakeConnectCampaign(Campaign):
                     self.association_ssid,
                     self.target.channel,
                     our_mac=self.source_mac,
-                    privacy=self.association_only,
+                    assoc_trailer_ies=self._association_ies(),
+                    privacy=self.security != "open",
                     should_stop=lambda: self.stopped,
                 )
                 assoc.start()
                 try:
+                    if self.security == "open":
+                        auth_label = "Open auth"
+                    elif self.security == "wep":
+                        auth_label = "Shared-key auth"
+                    elif self.security.startswith("wpa2"):
+                        auth_label = "WPA2-PSK auth"
+                    else:
+                        auth_label = "Auth"
                     self.log(
-                        f"Open auth → association to [cyan]{self.association_ssid}[/cyan] "
+                        f"{auth_label} → association to [cyan]{self.association_ssid}[/cyan] "
                         f"{'[black bold on yellow] SIBLING GUESS [/black bold on yellow] ' if self.ssid_is_guess else ''}"
                         f"[dim](client MAC: {self.client_mac})[/dim]"
                     )
@@ -279,6 +381,9 @@ class FakeConnectCampaign(Campaign):
                             "[dim](network data requires the WEP key)[/dim]"
                         )
                     else:
+                        if not await self._establish_data_security(iface, bssid):
+                            return
+                        await self._verify_encrypted_datapath(iface, bssid)
                         self.log(
                             "[bold green]Associated[/bold green] · passively observing "
                             "traffic generated by the AP"
@@ -321,19 +426,25 @@ class FakeConnectCampaign(Campaign):
     async def _discover_dhcp(self, iface, bssid: bytes) -> DhcpOffer | None:
         xid = random_xid()
         self._dhcp_xid = xid
-        discover = build_discover(bssid, self.source_mac, xid)
-        probe = _DhcpProbe(iface, self.target.bssid, self.source_mac, xid)
+        discover = build_discover(
+            bssid, self.source_mac, xid, broadcast=self._codec is None,
+        )
+        probe = _DhcpProbe(
+            iface, self.target.bssid, self.source_mac, xid,
+            decode=self._decode_data,
+        )
         self.dhcp_probing = True
         probe.start()
         try:
-            for attempt in range(1, 4):
+            for attempt in range(1, DHCP_PROBE_ATTEMPTS + 1):
                 if self.stopped:
                     return None
                 self.log(
-                    f"DHCP Discover [dim](attempt {attempt}/3; no lease claimed)[/dim]"
+                    f"DHCP Discover [dim](attempt {attempt}/{DHCP_PROBE_ATTEMPTS}; "
+                    "no lease claimed)[/dim]"
                 )
-                await iface.send_no_wait(discover)
-                offer = await probe.wait(1.5)
+                await self._send_data(iface, discover)
+                offer = await probe.wait(DHCP_PROBE_WAIT_SECONDS)
                 if offer is not None:
                     return offer
             return None
@@ -357,7 +468,7 @@ class FakeConnectCampaign(Campaign):
             )
             return result
 
-        inbox = _PacketInbox(iface)
+        inbox = _PacketInbox(iface, decode=self._decode_data)
         inbox.start()
         gateway_mac = None
         try:
@@ -380,12 +491,17 @@ class FakeConnectCampaign(Campaign):
                 iface, inbox, bssid, lease,
             )
             gateway_mac = result.gateway_mac
+            # Release the shared inbox before the sweep so it is the sole codec
+            # reader: a second _codec.open() on the same frame trips CCMP replay.
+            inbox.stop()
+            await self._sweep_arp_neighbors(iface, bssid, lease)
             return result
         finally:
             lease = self.dhcp_lease
             if lease is not None and lease.server:
                 try:
-                    await iface.send_no_wait(
+                    await self._send_data(
+                        iface,
                         build_release(
                             bssid,
                             self.source_mac,
@@ -413,17 +529,21 @@ class FakeConnectCampaign(Campaign):
             self._dhcp_xid,
             offer.offered_ip,
             offer.server,
+            broadcast=self._codec is None,
         )
-        for attempt in range(1, 4):
+        for attempt in range(1, DHCP_PROBE_ATTEMPTS + 1):
             if self.stopped:
                 return None, False
-            self.log(f"DHCP Request [dim](attempt {attempt}/3; temporary lease)[/dim]")
-            await iface.send_no_wait(request)
+            self.log(
+                f"DHCP Request [dim](attempt {attempt}/{DHCP_PROBE_ATTEMPTS}; "
+                "temporary lease)[/dim]"
+            )
+            await self._send_data(iface, request)
             reply = await inbox.match(
                 lambda raw: _matching_ack(
                     raw, self._dhcp_xid, self.source_mac,
                 ),
-                1.5,
+                DHCP_PROBE_WAIT_SECONDS,
             )
             if reply is None:
                 continue
@@ -530,6 +650,63 @@ class FakeConnectCampaign(Campaign):
             )
         return result
 
+    async def _sweep_arp_neighbors(self, iface, bssid: bytes, lease: DhcpOffer) -> None:
+        """Broadcast an ARP request to every host in our /24-scoped subnet and
+        collect the responders (IP + MAC). Bounded and best-effort; enumerates
+        LAN neighbours while the temporary lease is held. Never aborts."""
+        hosts = _sweep_targets(lease.offered_ip, lease.subnet_mask)
+        if not hosts:
+            return
+        found: dict[str, bytes] = {}
+
+        def _rx(packet) -> None:
+            raw = self._decode_data(bytes(getattr(packet, "raw", b"")))
+            if raw is None:
+                return
+            reply = parse_arp_reply_any(raw, self.source_mac, lease.offered_ip)
+            if reply is not None and reply.address not in found:
+                found[reply.address] = reply.mac
+
+        self.log(
+            f"[cyan]ARP sweep[/cyan] · probing {len(hosts)} host"
+            f"{'s' if len(hosts) != 1 else ''} on {lease.offered_ip}/"
+            f"{_mask_to_prefix(lease.subnet_mask)}"
+        )
+        iface.register_rx_callback(_rx)
+        try:
+            for host_ip in hosts:
+                if self.stopped:
+                    break
+                await self._send_data(
+                    iface,
+                    build_arp_request(bssid, self.source_mac, lease.offered_ip, host_ip),
+                )
+                await asyncio.sleep(ARP_SWEEP_PACING_SECONDS)
+            await asyncio.sleep(ARP_SWEEP_SETTLE_SECONDS)
+        finally:
+            iface.unregister_rx_callback(_rx)
+
+        self.arp_neighbors = sorted(
+            ((ip, mac_to_str(mac)) for ip, mac in found.items()),
+            key=lambda item: tuple(int(octet) for octet in item[0].split(".")),
+        )
+        if not self.arp_neighbors:
+            self.log("[dim]ARP sweep · no neighbours responded[/dim]")
+            return
+        self.log(
+            f"[bold green]ARP sweep[/bold green] · {len(self.arp_neighbors)} "
+            f"neighbour{'s' if len(self.arp_neighbors) != 1 else ''} discovered"
+        )
+        for ip, mac in self.arp_neighbors[:ARP_SWEEP_LOG_LIMIT]:
+            vendor = vendor_for_mac(mac)
+            marker = " [dim](gateway)[/dim]" if ip in (lease.routers or ()) else ""
+            self.log(
+                f"[dim]  {ip:<15} {mac}{f'  {vendor}' if vendor else ''}{marker}[/dim]"
+            )
+        remaining = len(self.arp_neighbors) - ARP_SWEEP_LOG_LIMIT
+        if remaining > 0:
+            self.log(f"[dim]  … +{remaining} more[/dim]")
+
     async def _resolve_arp(
         self,
         iface,
@@ -542,7 +719,7 @@ class FakeConnectCampaign(Campaign):
         for _ in range(3):
             if self.stopped:
                 return None
-            await iface.send_no_wait(frame)
+            await self._send_data(iface, frame)
             reply = await inbox.match(
                 lambda raw: parse_arp_reply(
                     raw, self.source_mac, client_ip, target_ip,
@@ -572,7 +749,7 @@ class FakeConnectCampaign(Campaign):
         for _ in range(2):
             if self.stopped:
                 return None
-            await iface.send_no_wait(frame)
+            await self._send_data(iface, frame)
             response = await inbox.match(
                 lambda raw: parse_dns_response(
                     raw, client_ip, dns_ip, source_port, transaction_id,
@@ -604,7 +781,7 @@ class FakeConnectCampaign(Campaign):
         for _ in range(3):
             if self.stopped:
                 return None, False
-            await iface.send_no_wait(syn)
+            await self._send_data(iface, syn)
             candidate = await inbox.match(
                 lambda raw: parse_tcp_segment(
                     raw, client_ip, remote_ip, source_port, 80,
@@ -628,7 +805,8 @@ class FakeConnectCampaign(Campaign):
             f"Host: {CONNECTIVITY_HOST}\r\n"
             "Connection: close\r\n\r\n"
         ).encode("ascii")
-        await iface.send_no_wait(
+        await self._send_data(
+            iface,
             build_tcp_frame(
                 bssid, self.source_mac, next_hop_mac,
                 client_ip, remote_ip, source_port, 80,
@@ -636,7 +814,8 @@ class FakeConnectCampaign(Campaign):
                 ident=secrets.randbits(16),
             )
         )
-        await iface.send_no_wait(
+        await self._send_data(
+            iface,
             build_tcp_frame(
                 bssid, self.source_mac, next_hop_mac,
                 client_ip, remote_ip, source_port, 80,
@@ -664,7 +843,8 @@ class FakeConnectCampaign(Campaign):
                 remote_sequence = (
                     remote_sequence + len(segment.payload)
                 ) & 0xFFFFFFFF
-                await iface.send_no_wait(
+                await self._send_data(
+                    iface,
                     build_tcp_frame(
                         bssid, self.source_mac, next_hop_mac,
                         client_ip, remote_ip, source_port, 80,
@@ -674,7 +854,8 @@ class FakeConnectCampaign(Campaign):
                 )
                 parsed = parse_http_response(bytes(received))
                 if parsed is not None:
-                    await iface.send_no_wait(
+                    await self._send_data(
+                        iface,
                         build_tcp_frame(
                             bssid, self.source_mac, next_hop_mac,
                             client_ip, remote_ip, source_port, 80,
@@ -684,6 +865,134 @@ class FakeConnectCampaign(Campaign):
                     )
                     return parsed, True
         return None, True
+
+    def _association_ies(self) -> bytes:
+        if not self.security.startswith("wpa"):
+            return b""
+        source = getattr(self.target, "rsn_ie", None) or GENERIC_RSN_IE
+        return force_psk_akm(
+            source,
+            pmf_capable=bool(getattr(self.target, "pmf_capable", False)),
+        ) or GENERIC_RSN_IE
+
+    async def _establish_data_security(self, iface, bssid: bytes) -> bool:
+        if self.security == "open":
+            return True
+        if self.security == "wep":
+            if not isinstance(self.credential, bytes):
+                self.fail_reason = "no captured WEP key is available"
+                return False
+            try:
+                self._codec = WepStationCodec(self.credential)
+            except ValueError as exc:
+                self.fail_reason = str(exc)
+                return False
+            self.log("[bold green]WEP key loaded[/bold green] · encrypted data enabled")
+            return True
+        if not isinstance(self.credential, str):
+            self.fail_reason = "no captured WPA2 passphrase is available"
+            return False
+        self.log("[cyan]WPA2 4-way handshake[/cyan] · validating captured passphrase")
+        try:
+            keys = await WpaPskSupplicant(
+                iface,
+                bssid=bssid,
+                client_mac=self.source_mac,
+                ssid=self.association_ssid,
+                passphrase=self.credential,
+                rsn_ie=self._association_ies(),
+                should_stop=lambda: self.stopped,
+            ).run()
+        except WpaHandshakeError as exc:
+            self.fail_reason = str(exc)
+            return False
+        self._codec = CcmpStationCodec(keys.temporal_key)
+        for key_id, group_key in keys.group_keys.items():
+            self._codec.install_group_key(key_id, group_key)
+        detail = "CCMP data enabled"
+        if keys.group_keys:
+            detail += " · group key for broadcast DHCP"
+        self.log(f"[bold green]WPA2 key confirmed[/bold green] · {detail}")
+        return True
+
+    async def _verify_encrypted_datapath(self, iface, bssid: bytes) -> bool:
+        """Confirm the negotiated key really works on the air: transmit an
+        encrypted frame the AP link-ACKs (write) and wait for one MIC-valid
+        frame the AP sent us (read). Informational; never aborts the campaign."""
+        if self._codec is None:
+            return True
+        loop = asyncio.get_running_loop()
+        decrypted: asyncio.Future = loop.create_future()
+
+        def _rx(packet) -> None:
+            if decrypted.done():
+                return
+            raw = bytes(getattr(packet, "raw", b""))
+            # Only Protected data frames the AP transmitted (Addr2 == BSSID).
+            if len(raw) < 24 or raw[10:16] != bssid:
+                return
+            if raw[0] & 0x0C != 0x08 or not raw[1] & 0x40:
+                return
+            if self._codec.open(raw) is not None:      # None => MIC/ICV failure
+                loop.call_soon_threadsafe(decrypted.set_result, True)
+
+        iface.register_rx_callback(_rx)
+        try:
+            tx_ok = await self._send_encrypted_probe(iface, bssid)
+            try:
+                await asyncio.wait_for(decrypted, DATAPATH_VERIFY_SECONDS)
+                rx_ok = True
+            except asyncio.TimeoutError:
+                rx_ok = False
+        finally:
+            iface.unregister_rx_callback(_rx)
+
+        self.datapath_verified = rx_ok
+        if rx_ok:
+            self.log(
+                "[bold green]Encrypted data path verified[/bold green] · "
+                f"{'TX link-ACKed · ' if tx_ok else ''}"
+                "decrypted a live frame from the AP (MIC valid)"
+            )
+        elif tx_ok:
+            self.log(
+                "[yellow]Encrypted TX link-ACKed[/yellow] · no decryptable "
+                "downlink yet [dim](AP may not be forwarding traffic)[/dim]"
+            )
+        else:
+            self.log(
+                "[yellow]Encrypted data path unconfirmed[/yellow] "
+                "[dim](no AP ACK or decryptable frame observed)[/dim]"
+            )
+        return rx_ok
+
+    async def _send_encrypted_probe(self, iface, bssid: bytes) -> bool:
+        """Send one encrypted, AP-addressed (RA == BSSID) DHCP Discover and, when
+        the card supports it, use its link-ACK as write confirmation."""
+        frame = build_discover(
+            bssid, self.source_mac, random_xid(), broadcast=self._codec is None,
+        )
+        if self._codec is not None:
+            frame = self._codec.protect(frame)
+        enable = getattr(iface, "enable_rx_acks", None)
+        send_until_ack = getattr(iface, "send_until_ack", None)
+        if enable is not None and send_until_ack is not None:
+            try:
+                await enable()
+                return await send_until_ack(frame, max_retries=3)
+            finally:
+                disable = getattr(iface, "disable_rx_acks", None)
+                if disable is not None:
+                    await disable()
+        return await iface.send_no_wait(frame)
+
+    async def _send_data(self, iface, frame: bytes) -> bool:
+        if self._codec is not None:
+            frame = self._codec.protect(frame)
+        return await iface.send_no_wait(frame)
+
+    def _decode_data(self, frame: bytes) -> bytes | None:
+        return self._codec.open(frame) if self._codec is not None else frame
 
 
 def _matching_ack(
@@ -721,3 +1030,28 @@ def _same_network(address: str, other: str, mask: str | None) -> bool:
         return ipaddress.IPv4Address(other) in network
     except (ipaddress.AddressValueError, ipaddress.NetmaskValueError):
         return False
+
+
+def _mask_to_prefix(mask: str | None) -> int:
+    """Prefix length for a dotted mask, defaulting to /24 when unknown."""
+    if not mask:
+        return 24
+    try:
+        return ipaddress.IPv4Network(("0.0.0.0", mask)).prefixlen
+    except (ipaddress.AddressValueError, ipaddress.NetmaskValueError):
+        return 24
+
+
+def _sweep_targets(client_ip: str, mask: str | None) -> list[str]:
+    """Host IPs to ARP-probe: every host in the subnet except our own address,
+    scoped to the /24 around us when the subnet is larger, and capped."""
+    try:
+        network = ipaddress.IPv4Network((client_ip, mask or "255.255.255.0"),
+                                        strict=False)
+    except (ipaddress.AddressValueError, ipaddress.NetmaskValueError):
+        return []
+    if network.num_addresses > 256:
+        network = ipaddress.IPv4Network((client_ip, "255.255.255.0"), strict=False)
+    us = ipaddress.IPv4Address(client_ip)
+    hosts = [str(host) for host in network.hosts() if host != us]
+    return hosts[:ARP_SWEEP_MAX_HOSTS]

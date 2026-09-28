@@ -64,6 +64,19 @@ def test_build_discover_contains_randomized_client_and_requested_options():
     assert b"\x35\x01\x01" in body
     assert b"\x72" in body  # captive-portal option requested
     assert len(body) >= 300  # BOOTP minimum for embedded-server compatibility
+    assert body[10:12] == b"\x80\x00"  # broadcast flag set by default
+
+
+def test_build_discover_can_request_unicast_reply_for_encrypted_stations():
+    body = build_discover(BSSID, CLIENT, XID, broadcast=False)
+    start = body.index(DHCP_COOKIE) - 236
+    assert body[start + 10:start + 12] == b"\x00\x00"
+
+    request = build_request(
+        BSSID, CLIENT, XID, "192.168.40.25", "192.168.40.2", broadcast=False,
+    )
+    rstart = request.index(DHCP_COOKIE) - 236
+    assert request[rstart + 10:rstart + 12] == b"\x00\x00"
 
 
 def test_parse_client_message_recognizes_only_matching_discover_and_request():

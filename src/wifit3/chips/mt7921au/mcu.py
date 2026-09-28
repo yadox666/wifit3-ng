@@ -257,14 +257,28 @@ def set_channel_domain():
     """mt76_connac_mcu_set_channel_domain — MCU_CE_CMD(SET_CHAN_DOMAIN), no reply.
 
     [ hdr ][ per-channel { __le16 hw_value; __le16 pad; __le32 flags; } ]. We
-    announce the world ('00') domain (regdomain.py); the kernel skips DISABLED
-    channels, so the body is just the enabled 2.4/5 GHz channels with their
-    cfg80211 flags. hdr: alpha2[4], bw_2g, bw_5g, bw_6g, pad, n_2ch, n_5ch,
-    n_6ch, pad2."""
+    announce the configured regulatory domain (``Config.wifi_regulatory_country``,
+    default world ``00``); the kernel skips DISABLED channels, so the body is just
+    the enabled 2.4/5 GHz channels with their cfg80211 flags. hdr: alpha2[4], bw_2g,
+    bw_5g, bw_6g, pad, n_2ch, n_5ch, n_6ch, pad2."""
+    from wifit3.wlan.regulatory import connac_domain
+
     from . import regdomain as rd
-    ch = rd.CHANNELS_2GHZ + rd.CHANNELS_5GHZ
-    hdr = struct.pack("<4sBBBBBBBB", rd.WORLD_ALPHA2, rd.WORLD_BW_2G, rd.WORLD_BW_5G,
-                      rd.WORLD_BW_6G, 0, len(rd.CHANNELS_2GHZ), len(rd.CHANNELS_5GHZ), 0, 0)
+
+    dom = connac_domain()
+    ch = list(dom.channels_2ghz) + list(dom.channels_5ghz)
+    hdr = struct.pack(
+        "<4sBBBBBBBB",
+        dom.alpha2,
+        rd.WORLD_BW_2G,
+        rd.WORLD_BW_5G,
+        rd.WORLD_BW_6G,
+        0,
+        len(dom.channels_2ghz),
+        len(dom.channels_5ghz),
+        0,
+        0,
+    )
     body = b"".join(struct.pack("<HHI", hw, 0, flags) for hw, flags in ch)
     return MCU_CE_CMD(CE_CMD_SET_CHAN_DOMAIN), hdr + body
 

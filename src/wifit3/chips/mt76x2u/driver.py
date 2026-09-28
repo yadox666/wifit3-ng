@@ -145,10 +145,10 @@ class MT76x2UDriver(Driver):
         # kernel's mt76.mutex. Stops a re-tune interleaving MCU commands with
         # an in-flight calibration.
         self._cal_lock: asyncio.Lock = asyncio.Lock()
-        # Regulatory TX power cap. Kernel reads from cfg80211; wifit3 has no
-        # regulatory framework yet — clamp to 60 (= 30 dBm * 2, kernel's
-        # post-init default before any country code applies).
-        self._txpower_conf: int = 60
+        # Regulatory TX power cap (2 * max EIRP dBm) from ``wifi_regulatory_country``.
+        from wifit3.wlan.regulatory import txpower_conf_units
+
+        self._txpower_conf: int = txpower_conf_units()
         # ``WIFIT3_MT76X2U_SET_TXPOWER=0`` skips the kernel's
         # `mt76x2_phy_set_txpower` per-rate TX_PWR_CFG_0..9 + TX_ALC_CFG_0
         # writes on each channel-tune, leaving the static 0x3a3a3a3a

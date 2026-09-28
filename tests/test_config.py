@@ -13,7 +13,8 @@ _DEFAULTS = {n: getattr(Config, n)
                  "active_action_intensity", "auto_lock_targets",
                  "target_reacquire_timeout", "target_capture_max_mb",
                  "target_capture_max_parts", "gps_port",
-                 "gps_movement_threshold_m", "gps_max_accuracy_m")}
+                 "gps_movement_threshold_m", "gps_max_accuracy_m",
+                 "wifi_regulatory_country")}
 
 
 @pytest.fixture(autouse=True)
@@ -199,6 +200,30 @@ def test_unlimited_capture_parts_save_load_roundtrip(config_path):
     Config.target_capture_max_parts = 10
     Config.load()
     assert Config.target_capture_max_parts == 0
+
+
+def test_wifi_regulatory_country_save_load_roundtrip(config_path):
+    Config.wifi_regulatory_country = "US"
+    Config.save()
+    Config.wifi_regulatory_country = "00"
+    Config.load()
+    assert Config.wifi_regulatory_country == "US"
+
+
+def test_wifi_regulatory_empty_and_00_are_world(config_path):
+    from wifit3.wlan.regulatory import configured_country
+
+    for line in ("wifi_regulatory_country = ''\n", "wifi_regulatory_country = '00'\n"):
+        config_path.write_text(line)
+        Config.load()
+        assert Config.wifi_regulatory_country == "00"
+        assert configured_country() == "00"
+
+
+def test_save_world_writes_empty_regulatory_country(config_path):
+    Config.wifi_regulatory_country = "00"
+    Config.save()
+    assert "wifi_regulatory_country = ''" in config_path.read_text("utf-8")
 
 
 def test_gps_preferences_save_load_roundtrip(config_path):

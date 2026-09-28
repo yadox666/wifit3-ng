@@ -1,9 +1,9 @@
 # wifit3-ng
-> Version 0.3.9. A standalone USB Wi-Fi and Bluetooth/BLE auditor for Linux, Windows, and macOS.
+> Version 0.3.10. A standalone USB Wi-Fi and Bluetooth/BLE auditor for Linux, Windows, and macOS.
 
-**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.9 - yadox666`.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.10 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.9**. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.10**. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
@@ -111,7 +111,11 @@ Vault is available only in Wi-Fi mode.
   BSSID.
 - WPS Info stays on the AP Focus key menu and on the magnifying-glass control.
 - Entering AP Focus fixes the scanner to that AP's channel until Focus is left.
-- Wide 40/80/160 MHz networks remain tuned through their primary 20 MHz channel. Center-frequency segments are displayed for diagnosis but are never mistaken for the tune target; campaigns stop if the adapter cannot confirm the requested channel.
+- On MT7921AU and MT7925U, AP Focus and Client Focus automatically follow
+  advertised **20/40 MHz** operation on both 2.4 and 5 GHz, including the
+  secondary-above/below and center-channel fields. Other adapters safely remain
+  on the primary 20 MHz channel. Wider 80/160 MHz operation is displayed for
+  diagnosis but is not yet selected automatically.
 - Signal colours match across AP, client, and Bluetooth views.
 - A hidden AP that has a named same-radio sibling uses a yellow `SSID [guess]` label in both Scanner and Focus. The marker is presentation-only and is never appended to the transmitted SSID.
 
@@ -304,7 +308,9 @@ eviction and twin beacons are visible to nearby devices.
 
 Focusing a confirmed unencrypted `OPEN` AP starts bounded, passive infrastructure analysis, whether or not PCAP recording is enabled. OWE/Enhanced Open is encrypted and is not treated as an open network.
 
-- Decodes clear-text LLC/SNAP, ARP, IPv4, IPv6, UDP, TCP, DHCP, and IPv6 Router Advertisements.
+- Decodes clear-text LLC/SNAP, ARP, IPv4, IPv6, UDP, TCP, DHCP, and IPv6 Router
+  Advertisements, including bounded extraction of the individual payloads in
+  QoS A-MSDU aggregates.
 - Extracts observed or advertised IPv4 addresses and ranges, IPv6 addresses and prefixes, gateways, DHCP servers, DNS servers, domains, lease expiry, and captive-portal evidence.
 - Builds a deduplicated website list from clear-text DNS questions, TLS SNI, QUIC/HTTP-3 Initial SNI, and plain HTTP requests. All unique URLs are saved at AP and client level; HTTP URLs replace SNI and DNS-only placeholders for the same host, while distinct paths remain separate entries.
 - Recovers **QUIC / HTTP-3** destinations that carry no clear-text host: a self-contained decoder derives the client-Initial keys from the public Destination Connection ID, decrypts v1/v2 Initial packets, reassembles CRYPTO frames, and reads the TLS ClientHello SNI. Hosts are recorded with source `quic_sni`.
@@ -322,18 +328,22 @@ Focusing a confirmed unencrypted `OPEN` AP starts bounded, passive infrastructur
 
 The analyzer only consumes packets seen during a live capture; it does not retrospectively analyze old PCAP files.
 
-### Fake-Connect for open and WEP APs
+### Fake-Connect for open, WEP, and captured-key WPA2 APs
 
-The upper AP Focus action bar shows **Fake-Connect** for confirmed open and WEP
-APs with a confirmed or sibling-derived SSID. While its temporary client is
-connected, the same button changes to **Disconnect**. After the normal
-active-action confirmation, it:
+The upper AP Focus action bar shows **Fake-Connect** for confirmed open APs, WEP
+APs, and WPA2-PSK/CCMP APs when a usable passphrase is in the session or Vault
+(WPS recovery, cracked handshake, etc.). WEP without a recovered key still
+appears, but only performs association. While its temporary client is connected,
+the same button changes to **Disconnect**. After the normal active-action
+confirmation, it:
 
 - Generates a randomized temporary client MAC.
-- Performs Open-System authentication and association. A yellow sibling-derived `SSID [guess]` can be attempted when the hidden AP has no exact name; only the SSID itself is transmitted, and the AP may reject it.
-- On WEP, stops at authentication/association and sends no DHCP or connectivity traffic because network data requires the WEP key.
+- Performs Open-System authentication and association (WEP uses shared-key privacy when associating). A yellow sibling-derived `SSID [guess]` can be attempted when the hidden AP has no exact name; only the SSID itself is transmitted, and the AP may reject it.
+- With a recovered WEP key or WPA2-PSK, completes protected station traffic (WEP RC4 or WPA2 4-way + CCMP) before DHCP.
+- On WEP without a key, stops at authentication/association and sends no DHCP or connectivity traffic.
 - Sends bounded DHCP Discover probes, requests one offered lease, and releases it after the connectivity check. The same randomized client MAC is reused for that AP during the session to avoid accumulating unclaimed offers.
 - ARP-checks the default gateway, resolves `connectivitycheck.gstatic.com` through the advertised DNS server, and makes one bounded HTTP request to `http://connectivitycheck.gstatic.com/generate_204`. The active-action confirmation discloses this destination before anything is transmitted.
+- Runs a bounded ARP neighbour sweep while the temporary lease is held: it broadcasts an ARP request to each host in the subnet (scoped to the /24 around our address and capped at 256 probes) and logs the responding IP/MAC pairs with vendor and a gateway marker. On encrypted networks the replies arrive under the pairwise key.
 - Classifies the expected HTTP 204 as confirmed Internet access, a redirect as an observed captive portal, an unexpected response as suspected interception, and timeouts as limited or inconclusive rather than automatically calling them portals.
 - Immediately merges DHCP and connectivity evidence into the AP and temporary-client NETWORK sections and atomically saves it in the private AP database, even when PCAP recording is not active.
 - Keeps the temporary association active so the AP may emit otherwise-idle broadcast or client-directed traffic for the running capture.
@@ -341,7 +351,7 @@ active-action confirmation, it:
 - Changes the button to **Disconnect** while associated.
 - Sends a client-leaving frame and removes the forged client registration when stopped, when Focus is left, or when the AP disconnects it.
 
-Fake-Connect is unavailable for WPA/OWE APs and for hidden APs with neither an exact historical name nor a named same-radio sibling.
+Fake-Connect is unavailable for WPA3/OWE/enterprise APs, WPA2 without a captured PSK, placeholder WPS passphrases, and hidden APs with neither an exact historical name nor a named same-radio sibling.
 
 The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and roughly 30 seconds. It does not submit portal forms or retain HTTP bodies, cookies, DNS history, credentials, or URL paths/query strings.
 
@@ -618,6 +628,14 @@ publish the capture directory or location database.
 | Ralink RT5372 | 2.4 GHz | Panda PAU05/PAU06 |
 | Ralink RT5572 | 2.4 / 5 GHz | Panda PAU09 N600 |
 
+For passive 802.11ax/HE capture, prefer MT7921AU (for example ALFA
+AWUS036AXML or Panda PAU0F) or MT7925U. Their Focus path supports both bands
+and advertised 20/40 MHz operation. The command encoding follows upstream
+`mt76` and is unit-tested; 40 MHz remains pending live hardware validation.
+Legacy 802.11ac/n adapters such as RTL8814AU and AR9271 can still see
+management and fallback frames on an AX network, but cannot demodulate HE
+payload frames.
+
 Per-device capabilities and limitations: [Supported Hardware](docs/SUPPORTED-HARDWARE.md).
 
 ### Dedicated Bluetooth Classic + BLE adapter
@@ -650,7 +668,7 @@ Retail vendors may change chipsets without changing a product name, so support i
 
 ## Installation and running
 
-Python 3.11 or newer is required to run from source. Release **0.3.9** binaries are published from this fork.
+Python 3.11 or newer is required to run from source. Release **0.3.10** binaries are published from this fork.
 
 ### Option 1: Download a prebuilt binary
 

@@ -139,6 +139,7 @@ class WifiteApp(App):
     /* App CSS outranks a widget's DEFAULT_CSS, so lower the global min-width for the
        EvilTwin modal's compact BSSID buttons from here, not the modal. */
     EvilTwinInputModal #bssid-btns Button { min-width: 4; }
+    ClientsList #clear-client-web-search { min-width: 3; margin: 0; }
     """
 
     active_jobs: reactive[List[JobState]] = reactive([], always_update=True)

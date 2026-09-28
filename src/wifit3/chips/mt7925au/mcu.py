@@ -388,13 +388,22 @@ W00_5G = [
 
 
 def set_channel_domain():
-    """mt7925_mcu_set_channel_domain (mt7925/mcu.c:3249) for the world-"00" regdom.
-    hdr{alpha2="00\\0\\0", bw_2g=0, bw_5g=3, bw_6g=3, pad} + n_ch{tag=2, len, n_2ch,
-    n_5ch, n_6ch, pad} + per-channel{hw_value:le16, pad:le16, flags:le32}. len =
-    sizeof(n_chan)(8) + n_channels*8 (mcu.c:3345). 6 GHz world-disabled: none emitted."""
-    chans = b"".join(struct.pack("<HHI", hv, 0, fl) for hv, fl in W00_2G + W00_5G)
-    hdr = struct.pack("<4sBBBx", b"00", 0, 3, 3)
-    n_ch = struct.pack("<HHBBBx", 2, 8 + len(chans), len(W00_2G), len(W00_5G), 0)
+    """mt7925_mcu_set_channel_domain (mt7925/mcu.c:3249) for the configured regdom.
+    hdr{alpha2, bw_2g=0, bw_5g=3, bw_6g=3, pad} + n_ch{tag=2, len, n_2ch, n_5ch,
+    n_6ch, pad} + per-channel{hw_value:le16, pad:le16, flags:le32}. len =
+    sizeof(n_chan)(8) + n_channels*8 (mcu.c:3345). 6 GHz is not emitted here."""
+    from wifit3.wlan.regulatory import configured_country, connac_domain
+
+    if configured_country() == "00":
+        ch2, ch5 = W00_2G, W00_5G
+        alpha2 = b"00\x00\x00"
+    else:
+        dom = connac_domain()
+        ch2, ch5 = dom.channels_2ghz, dom.channels_5ghz
+        alpha2 = dom.alpha2[:4].ljust(4, b"\x00")
+    chans = b"".join(struct.pack("<HHI", hv, 0, fl) for hv, fl in ch2 + ch5)
+    hdr = struct.pack("<4sBBBx", alpha2, 0, 3, 3)
+    n_ch = struct.pack("<HHBBBx", 2, 8 + len(chans), len(ch2), len(ch5), 0)
     return MCU_UNI_CMD(MCU_UNI_CMD_SET_DOMAIN_INFO), hdr + n_ch + chans
 
 

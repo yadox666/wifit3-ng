@@ -221,9 +221,27 @@ class FingerprintModal(ModalScreen[None]):
 
 class ClientsList(Vertical):
     DEFAULT_CSS = """
+    ClientsList #client-web-search-box {
+        width: 100%; height: 3; min-height: 3;
+        border: solid $primary;
+        background: $surface;
+        padding: 0; margin: 0;
+    }
     ClientsList #client-web-search {
-        width: 100%; height: 1; min-height: 1;
+        width: 1fr; height: 1; min-height: 1;
         border: none; padding: 0 1; margin: 0;
+        background: transparent;
+    }
+    ClientsList #clear-client-web-search {
+        width: 3; min-width: 3; height: 1; min-height: 1;
+        border: none; padding: 0; margin: 0;
+        background: transparent;
+        color: $text-muted;
+    }
+    ClientsList #clear-client-web-search:hover,
+    ClientsList #clear-client-web-search:focus {
+        background: $primary;
+        color: $text;
     }
     ClientsList #client-pane {
         width: 100%; height: 1fr;
@@ -256,13 +274,21 @@ class ClientsList(Vertical):
         self._search_text = ""
 
     def compose(self) -> ComposeResult:
-        search = Input(
-            placeholder="Search clients and website URLs…",
-            compact=True,
-            id="client-web-search",
+        search_box = Horizontal(
+            Input(
+                placeholder="Search clients and website URLs…",
+                compact=True,
+                id="client-web-search",
+            ),
+            Button(
+                "×",
+                id="clear-client-web-search",
+                tooltip="Clear search",
+            ),
+            id="client-web-search-box",
         )
-        search.display = False
-        yield search
+        search_box.display = False
+        yield search_box
         with Vertical(id="client-pane"):
             yield Button("Deauth all", id="deauth-all", classes="bcast-btn",
                          tooltip="Deauthenticate all clients (Broadcast)")
@@ -338,7 +364,7 @@ class ClientsList(Vertical):
     ) -> None:
         self._open_network_mode = enabled
         self._network_metadata = metadata if enabled else None
-        self.query_one("#client-web-search", Input).display = enabled
+        self.query_one("#client-web-search-box").display = enabled
         self.query_one("#website-pane").display = enabled
         self.query_one("#client-pane").styles.height = "1fr"
         if not enabled:
@@ -365,6 +391,14 @@ class ClientsList(Vertical):
         self._search_text = event.value
         self._apply_filter()
         self._update_title()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "clear-client-web-search":
+            return
+        event.stop()
+        search = self.query_one("#client-web-search", Input)
+        search.value = ""
+        search.focus()
 
     def _apply_filter(self) -> None:
         self._apply_client_filter()

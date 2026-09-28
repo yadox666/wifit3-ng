@@ -47,6 +47,10 @@ WORLD_ENABLED_5GHZ = {36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 1
 
 
 def _chan_power(band_code: int, channel: int) -> int:
+    from wifit3.wlan.regulatory import configured_country, mt7925_chan_power
+
+    if configured_country() != "00":
+        return mt7925_chan_power(band_code, channel)
     if band_code == 1:
         return WORLD_POWER                        # all 2.4 GHz channels enabled at 20 dBm
     if band_code == 2:
@@ -83,13 +87,16 @@ def build_sku(is_2ghz: bool, power: int = WORLD_POWER) -> bytes:
 
 
 def _tlv_header(n_chan: int, band_code: int, last_msg: int) -> bytes:
-    """mt7925_tx_power_limit_tlv (mcu.h:543), 52 bytes. alpha2 "00" -> 30 30 00 00."""
+    """mt7925_tx_power_limit_tlv (mcu.h:543), 52 bytes."""
+    from wifit3.wlan.regulatory import connac_domain
+
+    alpha2 = connac_domain().alpha2[:4].ljust(4, b"\x00")
     return struct.pack("<4xHHBxHBBBB4s32x",
                        0x1, 52,          # tag, len
                        0,                # ver (pad0 via x, rsv1 via H below)... see note
                        0,                # rsv1
                        n_chan, band_code, last_msg, 0,   # n_chan, band, last_msg, limit_type
-                       b"00\x00\x00")    # alpha2[4]
+                       alpha2)           # alpha2[4]
 
 
 def rate_txpower_band(band_code: int, chan_list):

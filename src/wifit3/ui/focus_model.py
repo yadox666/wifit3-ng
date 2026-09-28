@@ -37,7 +37,7 @@ BUTTON_CAMPAIGNS = [
 CAMPAIGN_BY_KEY = {cls.key: cls for cls in BUTTON_CAMPAIGNS}
 
 
-def campaign_blocked(cls, ap) -> Optional[str]:
+def campaign_blocked(cls, ap, vault=None) -> Optional[str]:
     """Why cls's attack button is disabled right now, or None if it can start:
     the AP is silenced, another campaign owns the radio, or the campaign's own
     ineligible_reason (hidden SSID, WPS locked, unconfirmed encryption, …)."""
@@ -46,6 +46,8 @@ def campaign_blocked(cls, ap) -> Optional[str]:
     active = Campaign.active
     if active is not None and active.key != cls.key:
         return f"Blocked ({active.key} is active)"
+    if cls is FakeConnectCampaign and vault is not None:
+        return cls.ineligible_reason(ap, vault)
     return cls.ineligible_reason(ap)
 
 

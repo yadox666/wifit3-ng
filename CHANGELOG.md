@@ -6,6 +6,38 @@ build compared with the original
 
 ## Unreleased
 
+## 0.3.10 - 2026-09-28
+
+### Added
+
+- **Fake-Connect** on WEP APs with a recovered key (session or Vault) and on
+  WPA2-PSK/CCMP APs with a captured passphrase (WPS, cracked handshake, or Vault).
+  Protected paths run a 4-way handshake (WPA2), encrypt station traffic, then use
+  the same bounded DHCP and connectivity probe as open networks. WEP without a
+  key remains association-only. Placeholder WPS passphrases are not treated as
+  usable credentials.
+- WPA2 Fake-Connect now installs the group key from message 3 so broadcast DHCP
+  Offers decrypt correctly on APs that do not unicast replies. The GTK is
+  extracted with NIST AES Key Wrap (RFC 3394), the encryption WPA2 actually uses
+  for EAPOL Key Data (validated against the RFC 3394 known-answer vector).
+- Fake-Connect requests **unicast** DHCP replies (BOOTP broadcast flag cleared)
+  on encrypted networks, so the Offer/ACK arrive under the pairwise key.
+- Added an on-air encrypted **data-path self-check** after key install: it
+  transmits an AP-acknowledged encrypted frame and confirms a MIC-valid frame
+  can be decrypted from the AP, logging the write/read result.
+- Fake-Connect now runs a bounded **ARP neighbour sweep** while holding the
+  temporary lease: it broadcasts an ARP request to each host in the (/24-scoped,
+  capped) subnet and logs the responding IP/MAC pairs with vendor and gateway
+  annotations. Runs on open and encrypted networks alike. Each neighbour’s IPv4
+  is merged into that client’s **NETWORK** popup and saved in AP network metadata.
+- AP Focus no longer prints saved WEP/WPS/WPA passphrases in the “Existing
+  captures” log; it shows a **recovered** placeholder chip instead.
+- Preferences **Wi-Fi regulatory country** (ISO alpha-2) with bundled
+  wireless-regdb rules applied to Mediatek connac channel domains and several
+  chip TX-power paths when the OS has no cfg80211 regdom.
+- Native WPA2-PSK station helpers (`wpa_station`, `station_crypto`) for the
+  Fake-Connect protected data path, including AES Key Wrap for GTK install.
+
 ## 0.3.9 - 2026-09-28
 
 ### Added
@@ -23,11 +55,15 @@ build compared with the original
   of AP Focus or Client Focus, independently of optional PCAP file recording.
 - MT7921AU and MT7925U Focus tuning now follows an AP's advertised 20/40 MHz
   operating channel, including the secondary-above/below and center-channel
-  fields. Legacy cards continue to tune the primary 20 MHz channel.
+  fields on both 2.4 and 5 GHz. The sniffer command follows upstream `mt76`;
+  legacy cards continue to tune the primary 20 MHz channel.
 - AP Focus now warns about a network's **cross-band (2.4/5 GHz) twin** when one is
   visible, matching by SSID or by same-OUI / near-identical BSSID (for hidden
   twins). The informational notice explicitly states that the current capture
   remains on its selected channel.
+- The shared client/website search field in AP Focus now has a persistent
+  outline and a keyboard-focusable `×` control that clears the query while
+  keeping focus in the field.
 
 ### Fixed
 

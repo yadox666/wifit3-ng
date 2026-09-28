@@ -362,10 +362,12 @@ def _set_txpower(hw: AthHw, chan: Channel, cfg_ctl: int, antenna_reduction: int,
 def apply_txpower(hw: AthHw, chan: Channel) -> None:
     """ath9k_hw_apply_txpower [SRC] hw.c:2944 (test=false). The per-rate target powers are
     clamped to the current regulatory state: chan_pwr = min(channel->max_power*2,
-    MAX_COMBINED_POWER), new_pwr = min(chan_pwr, reg->power_limit). On the cold reset that state
-    is the stack default (max_power 20, power_limit MAX_COMBINED_POWER -> new_pwr 40); after the
-    first update_txpow(0) it drops to 0 (every rate -> 0x0a)."""
+    MAX_COMBINED_POWER), new_pwr = min(chan_pwr, reg->power_limit). ``channel->max_power`` is
+    filled from ``Config.wifi_regulatory_country`` (default world ~20 dBm)."""
+    from wifit3.wlan.regulatory import ath9k_chan_max_power_dbm
+
     eep = Map4k(hw.eeprom)
+    hw.chan_max_power = ath9k_chan_max_power_dbm(chan.channel)
     chan_pwr = min(hw.chan_max_power * 2, _MAX_COMBINED_POWER)
     new_pwr = min(chan_pwr, hw.reg_power_limit)
     _set_txpower(hw, chan, NO_CTL, eep.antennaGainCh0, new_pwr)

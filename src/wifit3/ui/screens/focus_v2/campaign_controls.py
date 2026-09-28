@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Optional
 
 from wifit3.campaigns.campaign import Campaign
+from wifit3.campaigns.fake_connect import FakeConnectCampaign
 from wifit3.campaigns.wep import WepCampaign
 from wifit3.campaigns.eviltwin import EvilTwinCampaign, EvilTwinInput
 
@@ -18,7 +19,8 @@ class CampaignControls:
         return self._campaign
 
     def start(self, campaign: type[Campaign], array, ap, *,
-              log=None, evil_input: Optional[EvilTwinInput] = None) -> Optional[Campaign]:
+              log=None, evil_input: Optional[EvilTwinInput] = None,
+              credential: str | bytes | None = None) -> Optional[Campaign]:
         """Construct and run one campaign, None if another campaign is active.
 
         Constructors differ per campaign (intentionally not unified): wep takes
@@ -30,6 +32,8 @@ class CampaignControls:
             inst = campaign(array, ap, log_callback=log)
         elif campaign is EvilTwinCampaign:
             inst = campaign(array, ap, evil_input)
+        elif campaign is FakeConnectCampaign:
+            inst = campaign(array, ap, log=log, credential=credential)
         else:
             inst = campaign(array, ap, log=log)
         inst.run()

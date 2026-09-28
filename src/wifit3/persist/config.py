@@ -36,6 +36,8 @@ class Config:
     gps_movement_threshold_m: float = 20.0
     gps_max_accuracy_m: float = 20.0
     silenced_bssids: list[str] = []
+    # ISO 3166-1 alpha-2; ``""``, ``00``, and ``world`` (any case) all mean cfg80211 world.
+    wifi_regulatory_country: str = "00"
 
     @classmethod
     def is_silenced(cls, bssid: str) -> bool:
@@ -114,6 +116,11 @@ class Config:
             pass
         raw = data.get("silenced_bssids", cls.silenced_bssids)
         cls.silenced_bssids = [str(x).lower() for x in raw] if isinstance(raw, list) else cls.silenced_bssids
+        from wifit3.wlan.regulatory import normalize_country
+
+        cls.wifi_regulatory_country = normalize_country(
+            str(data.get("wifi_regulatory_country", cls.wifi_regulatory_country))
+        )
 
     @classmethod
     def save(cls) -> None:
@@ -138,12 +145,21 @@ class Config:
             f"gps_movement_threshold_m = {_fmt(cls.gps_movement_threshold_m)}\n"
             f"gps_max_accuracy_m = {_fmt(cls.gps_max_accuracy_m)}\n"
             f"silenced_bssids = {_fmt(cls.silenced_bssids)}\n"
+            f"wifi_regulatory_country = {_fmt_regulatory_country(cls.wifi_regulatory_country)}\n"
         )
         try:
             ensure_private_directory(_PATH.parent)
             write_private_text(_PATH, text)
         except OSError as e:
             raise ConfigError(f"Failed to save config at {_PATH}: {e}") from e
+
+
+def _fmt_regulatory_country(code: str) -> str:
+    from wifit3.wlan.regulatory import normalize_country
+
+    if normalize_country(code) == "00":
+        return "''"
+    return _fmt(code)
 
 
 def _fmt(v: object) -> str:
