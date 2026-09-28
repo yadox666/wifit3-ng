@@ -111,8 +111,26 @@ class MT7921AUDriver(Driver):
         self.transport.subscribe(self._on_raw_rx)
 
         if self._detect_warm():
+            self._require_own_firmware()
             return await self._warm_reattach(progress_cb)
         return await self._cold_boot(progress_cb)
+
+    def _require_own_firmware(self) -> None:
+        """Reject warm reattach when another driver left firmware running (WFDMA latch)."""
+        try:
+            needs_reset = self.firmware.dma_need_reinit()
+        except usb.core.USBError as e:
+            logger.warning(
+                "MT7921AU warm check: WFDMA read failed (%s); assuming reset needed.",
+                e,
+            )
+            needs_reset = True
+        if needs_reset:
+            logger.error("MT7921AU: firmware was booted by another driver; replug required.")
+            raise BringUpError(
+                "Warm-reattach",
+                "please unplug/replug the device and try again",
+            )
 
     def _detect_warm(self) -> bool:
         """True if firmware is already running (FW_N9_RDY set in MT_CONN_ON_MISC) —
@@ -154,7 +172,10 @@ class MT7921AUDriver(Driver):
         if progress_cb:
             progress_cb(0.1, "Uploading firmware...")
         if not await self.firmware.load_firmware():
-            raise BringUpError("firmware", "MT7921AU firmware load failed")
+            raise BringUpError(
+                "Firmware upload",
+                "please unplug/replug the device and try again",
+            )
         self.transport.start_rx()   # idempotent — load_firmware already started it
 
         if progress_cb:

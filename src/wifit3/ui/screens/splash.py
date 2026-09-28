@@ -341,7 +341,7 @@ class SplashView(Screen):
         """Surface a recoverable bring-up failure: a persistent red label (which poll_usb leaves
         alone, unlike the status line) plus a toast."""
         label = self.query_one("#error-label", Label)
-        label.update(f"[bold red]⚠  {message}[/bold red]")
+        label.update(f"[bold red]{message}[/bold red]")
         label.display = True
         self.notify(message, title=title, severity="error")
 

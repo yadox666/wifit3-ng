@@ -74,6 +74,22 @@ class MT7925AUDriver(Driver):
             return False
         return (misc & MT_TOP_MISC2_FW_N9_RDY) != 0
 
+    def _require_own_firmware(self) -> None:
+        try:
+            needs_reset = self.firmware.dma_need_reinit()
+        except usb.core.USBError as e:
+            logger.warning(
+                "MT7925AU warm check: WFDMA read failed (%s); assuming reset needed.",
+                e,
+            )
+            needs_reset = True
+        if needs_reset:
+            logger.error("MT7925AU: firmware was booted by another driver; replug required.")
+            raise BringUpError(
+                "Warm-reattach",
+                "please unplug/replug the device and try again",
+            )
+
     async def _warm_reattach(self, progress_cb: Optional[ProgressCallback]) -> bool:
         """Light reattach to firmware already running in monitor mode (kernel mt7921u_resume
         model): no reset, no mcu_power_on, no reload, no post-boot init. Re-establish only
@@ -122,12 +138,16 @@ class MT7925AUDriver(Driver):
         already running (warm)."""
         self.transport.subscribe(self._on_raw_rx)
         if self._detect_warm():
+            self._require_own_firmware()
             return await self._warm_reattach(progress_cb)
 
         if progress_cb:
             progress_cb(0.1, "Uploading MT7925AU firmware...")
         if not await self.firmware.load_firmware():
-            raise BringUpError("firmware", "MT7925AU firmware load failed")
+            raise BringUpError(
+                "Firmware upload",
+                "please unplug/replug the device and try again",
+            )
         self.transport.start_rx()
 
         if progress_cb:
