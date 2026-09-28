@@ -349,6 +349,50 @@ async def test_usb_scanner_is_separate_and_marks_classic_observations():
     assert scanner.stopped
 
 
+@pytest.mark.asyncio
+async def test_classic_only_usb_scanner_runs_with_system_ble():
+    controller = UsbBluetoothController(
+        0x0A12, 0x0001, "BlueCore4-ROM", "Sena", "Parani-UD100", 1, 2,
+        supports_classic=True, supports_le=False,
+    )
+    system_scanner = None
+    usb_scanner = None
+
+    def system_factory(**kwargs):
+        nonlocal system_scanner
+        system_scanner = _Scanner(**kwargs)
+        return system_scanner
+
+    class UsbScanner:
+        def __init__(self, selected, callback):
+            nonlocal usb_scanner
+            usb_scanner = self
+            self.controller = selected
+            self.callback = callback
+            self.started = False
+            self.stopped = False
+
+        async def start(self):
+            self.started = True
+
+        async def stop(self):
+            self.stopped = True
+
+    manager = BluetoothManager(
+        scanner_factory=system_factory,
+        usb_scanner_factory=UsbScanner,
+    )
+    await manager.start_usb(controller)
+
+    assert system_scanner.started
+    assert usb_scanner.started
+    assert manager.backend_name == "BlueCore4-ROM + OS BLE"
+
+    await manager.stop()
+    assert system_scanner.stopped
+    assert usb_scanner.stopped
+
+
 def test_usb_and_ble_observations_merge_as_dual_mode():
     manager = BluetoothManager()
     platform_device = SimpleNamespace(address="AA:BB:CC:DD:EE:FF", name=None)
@@ -370,4 +414,31 @@ def test_usb_and_ble_observations_merge_as_dual_mode():
     observed = manager.devices()[0]
     assert observed.radio_label == "BT+BLE"
     assert observed.name == "Headset"
+    assert observed.discovery_source == "system+usb-hci"
+    assert observed.is_connectable_with_bleak
+
+
+def test_usb_then_ble_observations_keep_both_radios_and_sources():
+    manager = BluetoothManager()
+    manager._on_usb_observation(DiscoveryObservation(
+        identifier="AA:BB:CC:DD:EE:FF",
+        radio_type="BT",
+        rssi=-48,
+    ))
+    manager._on_advertisement(
+        SimpleNamespace(address="AA:BB:CC:DD:EE:FF", name=None),
+        SimpleNamespace(
+            local_name="Headset",
+            rssi=-45,
+            service_uuids=[],
+            service_data={},
+            manufacturer_data={},
+            tx_power=None,
+        ),
+    )
+
+    observed = manager.devices()[0]
+    assert observed.radio_label == "BT+BLE"
+    assert observed.discovery_source == "system+usb-hci"
+    assert observed.is_connectable_with_bleak
 

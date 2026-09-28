@@ -86,7 +86,11 @@ class BluetoothManager:
     @property
     def backend_name(self) -> str:
         if self._usb_scanner is not None:
-            return self._usb_scanner.controller.chipset
+            chipset = self._usb_scanner.controller.chipset
+            return (
+                f"{chipset} + OS BLE"
+                if self._scanner is not None else chipset
+            )
         scanner = self._scanner
         return scanner.__class__.__name__ if scanner is not None else "Bleak"
 
@@ -150,21 +154,30 @@ class BluetoothManager:
     async def start_usb(self, controller: UsbBluetoothController) -> None:
         if self.is_scanning:
             return
-        scanner = self._usb_scanner_factory(controller, self._on_usb_observation)
+        system_scanner = None
+        if not controller.supports_le:
+            system_scanner = self._scanner_factory(detection_callback=self._on_advertisement)
+        usb_scanner = self._usb_scanner_factory(controller, self._on_usb_observation)
         try:
-            await scanner.start()
+            await usb_scanner.start()
+            if system_scanner is not None:
+                await system_scanner.start()
         except Exception as exc:
             self.scan_failures += 1
-            try:
-                await scanner.stop()
-            except Exception:
-                pass
+            for scanner in (usb_scanner, system_scanner):
+                if scanner is None:
+                    continue
+                try:
+                    await scanner.stop()
+                except Exception:
+                    pass
             if isinstance(exc, BluetoothScanError):
                 raise
             if isinstance(exc, UsbBluetoothError):
                 raise BluetoothScanError(str(exc)) from exc
             raise BluetoothScanError(str(exc) or type(exc).__name__) from exc
-        self._usb_scanner = scanner
+        self._scanner = system_scanner
+        self._usb_scanner = usb_scanner
         self.scan_started_at = time.time()
 
     async def stop(self) -> None:
@@ -290,8 +303,13 @@ class BluetoothManager:
             first_seen=previous.first_seen if previous is not None else now,
             last_seen=now,
             similar_identifier_count=similar_identifier_count,
-            radio_types=(BLE_RADIO,),
-            discovery_source="system",
+            radio_types=tuple(sorted(
+                set(previous.radio_types) | {BLE_RADIO}
+                if previous is not None else {BLE_RADIO}
+            )),
+            discovery_source=_merged_discovery_source(
+                previous.discovery_source if previous is not None else "", "system",
+            ),
             class_of_device=(
                 platform_metadata.get("class_of_device")
                 or (previous.class_of_device if previous is not None else None)
@@ -401,7 +419,9 @@ class BluetoothManager:
                 set(previous.radio_types) | {observation.radio_type}
                 if previous is not None else {observation.radio_type}
             )),
-            discovery_source="usb-hci",
+            discovery_source=_merged_discovery_source(
+                previous.discovery_source if previous is not None else "", "usb-hci",
+            ),
             class_of_device=observation.class_of_device or (
                 previous.class_of_device if previous is not None else None
             ),
@@ -492,4 +512,10 @@ def _is_private_identifier(identifier: str, address_type: str) -> bool:
         "platform-opaque",
         "anonymous",
     }
+
+
+def _merged_discovery_source(previous: str, current: str) -> str:
+    sources = set(previous.split("+")) if previous else set()
+    sources.add(current)
+    return "+".join(source for source in ("system", "usb-hci") if source in sources)
 

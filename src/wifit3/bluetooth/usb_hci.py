@@ -38,16 +38,17 @@ from wifit3.bluetooth.rtl8761_firmware import (
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_CONTROLLERS = {
-    (0x0BDA, 0x8771): ("RTL8761BU", "Realtek", "Bluetooth 5 USB Adapter"),
-    (0x0BDA, 0xA728): ("RTL8761BU", "Realtek", "Bluetooth USB Adapter"),
-    (0x2357, 0x0604): ("RTL8761BU", "TP-Link", "Bluetooth USB Adapter"),
-    (0x2357, 0x0607): ("RTL8761BU", "TP-Link", "Bluetooth USB Adapter"),
-    (0x2C4E, 0x0115): ("RTL8761BU", None, "Bluetooth USB Adapter"),
-    (0x2550, 0x8761): ("RTL8761BU", None, "Bluetooth USB Adapter"),
-    (0x6655, 0x8771): ("RTL8761BU", None, "Bluetooth USB Adapter"),
-    (0x7392, 0xC611): ("RTL8761BU", None, "Bluetooth USB Adapter"),
-    (0x2B89, 0x8761): ("RTL8761BU", "UGREEN", "Bluetooth USB Adapter"),
-    (0x2B89, 0x6275): ("RTL8761BU", "UGREEN", "Bluetooth USB Adapter"),
+    (0x0A12, 0x0001): ("BlueCore4-ROM", "Sena", "Parani-UD100", True, False),
+    (0x0BDA, 0x8771): ("RTL8761BU", "Realtek", "Bluetooth 5 USB Adapter", True, True),
+    (0x0BDA, 0xA728): ("RTL8761BU", "Realtek", "Bluetooth USB Adapter", True, True),
+    (0x2357, 0x0604): ("RTL8761BU", "TP-Link", "Bluetooth USB Adapter", True, True),
+    (0x2357, 0x0607): ("RTL8761BU", "TP-Link", "Bluetooth USB Adapter", True, True),
+    (0x2C4E, 0x0115): ("RTL8761BU", None, "Bluetooth USB Adapter", True, True),
+    (0x2550, 0x8761): ("RTL8761BU", None, "Bluetooth USB Adapter", True, True),
+    (0x6655, 0x8771): ("RTL8761BU", None, "Bluetooth USB Adapter", True, True),
+    (0x7392, 0xC611): ("RTL8761BU", None, "Bluetooth USB Adapter", True, True),
+    (0x2B89, 0x8761): ("RTL8761BU", "UGREEN", "Bluetooth USB Adapter", True, True),
+    (0x2B89, 0x6275): ("RTL8761BU", "UGREEN", "Bluetooth USB Adapter", True, True),
 }
 
 
@@ -64,6 +65,8 @@ class UsbBluetoothController:
     product_name: str
     bus: int | None
     address: int | None
+    supports_classic: bool = True
+    supports_le: bool = True
 
     @property
     def instance_key(self) -> tuple:
@@ -86,7 +89,7 @@ def find_usb_bluetooth_controllers() -> list[UsbBluetoothController]:
         identity = _SUPPORTED_CONTROLLERS.get((device.idVendor, device.idProduct))
         if identity is None:
             continue
-        chipset, vendor, product = identity
+        chipset, vendor, product, supports_classic, supports_le = identity
         controllers.append(UsbBluetoothController(
             vid=device.idVendor,
             pid=device.idProduct,
@@ -95,6 +98,8 @@ def find_usb_bluetooth_controllers() -> list[UsbBluetoothController]:
             product_name=product,
             bus=getattr(device, "bus", None),
             address=getattr(device, "address", None),
+            supports_classic=supports_classic,
+            supports_le=supports_le,
         ))
     return controllers
 
@@ -141,15 +146,24 @@ class UsbHciScanner:
         self._command(HCI_RESET)
         version = self._command(HCI_READ_LOCAL_VERSION)
         self._load_realtek_firmware(version)
-        self._command(HCI_SET_EVENT_MASK, bytes.fromhex("fffffbff07f8bf3d"))
-        self._command(HCI_WRITE_INQUIRY_MODE, b"\x02")
-        self._command(HCI_LE_SET_EVENT_MASK, b"\x02" + b"\x00" * 7)
-        self._command(
-            HCI_LE_SET_SCAN_PARAMETERS,
-            struct.pack("<BHHBB", 0x00, 0x0010, 0x0010, 0x00, 0x00),
+        event_mask = (
+            bytes.fromhex("fffffbff07f8bf3d")
+            if self.controller.supports_le else
+            bytes.fromhex("fffffbff03000000")
         )
-        self._command(HCI_LE_SET_SCAN_ENABLE, b"\x01\x00")
-        self._command(HCI_INQUIRY, b"\x33\x8b\x9e\x08\x00")
+        self._command(HCI_SET_EVENT_MASK, event_mask)
+        if self.controller.supports_classic:
+            inquiry_mode = b"\x02" if self.controller.supports_le else b"\x01"
+            self._command(HCI_WRITE_INQUIRY_MODE, inquiry_mode)
+        if self.controller.supports_le:
+            self._command(HCI_LE_SET_EVENT_MASK, b"\x02" + b"\x00" * 7)
+            self._command(
+                HCI_LE_SET_SCAN_PARAMETERS,
+                struct.pack("<BHHBB", 0x00, 0x0010, 0x0010, 0x00, 0x00),
+            )
+            self._command(HCI_LE_SET_SCAN_ENABLE, b"\x01\x00")
+        if self.controller.supports_classic:
+            self._command(HCI_INQUIRY, b"\x33\x8b\x9e\x08\x00")
 
     def _open(self) -> None:
         backend = libusb_package.get_libusb1_backend()
@@ -177,7 +191,7 @@ class UsbHciScanner:
             None,
         )
         if interface is None:
-            raise UsbBluetoothError("RTL8761BU Bluetooth HCI interface was not found")
+            raise UsbBluetoothError(f"{self.controller.chipset} Bluetooth HCI interface was not found")
         self._interface_number = interface.bInterfaceNumber
         try:
             if device.is_kernel_driver_active(self._interface_number):
@@ -185,11 +199,18 @@ class UsbHciScanner:
                 self._detached_kernel_driver = True
         except (AttributeError, NotImplementedError):
             pass
+        except usb.core.USBError as exc:
+            if getattr(exc, "errno", None) != 2:
+                raise UsbBluetoothError(
+                    f"Could not detach {self.controller.chipset} from the OS Bluetooth driver; "
+                    "replug it after stopping OS use, or bind it to WinUSB on Windows"
+                ) from exc
         try:
             usb.util.claim_interface(device, self._interface_number)
         except usb.core.USBError as exc:
             raise UsbBluetoothError(
-                "Could not claim RTL8761BU; use a dedicated adapter and bind it to WinUSB "
+                f"Could not claim {self.controller.chipset}; use a dedicated adapter and bind it "
+                "to WinUSB "
                 "on Windows"
             ) from exc
         endpoint = next(
@@ -277,7 +298,11 @@ class UsbHciScanner:
                 continue
             for observation in parse_discovery_event(event_code, parameters):
                 self._detection_callback(observation)
-            if event_code == EVENT_INQUIRY_COMPLETE and self._running:
+            if (
+                event_code == EVENT_INQUIRY_COMPLETE
+                and self._running
+                and self.controller.supports_classic
+            ):
                 try:
                     await asyncio.to_thread(
                         self._command, HCI_INQUIRY, b"\x33\x8b\x9e\x08\x00",
@@ -288,14 +313,16 @@ class UsbHciScanner:
 
     def _stop_and_close(self) -> None:
         if self._device is not None:
-            try:
-                self._command(HCI_INQUIRY_CANCEL)
-            except Exception:
-                pass
-            try:
-                self._command(HCI_LE_SET_SCAN_ENABLE, b"\x00\x00")
-            except Exception:
-                pass
+            if self.controller.supports_classic:
+                try:
+                    self._command(HCI_INQUIRY_CANCEL)
+                except Exception:
+                    pass
+            if self.controller.supports_le:
+                try:
+                    self._command(HCI_LE_SET_SCAN_ENABLE, b"\x00\x00")
+                except Exception:
+                    pass
         self._close()
 
     def _close(self) -> None:

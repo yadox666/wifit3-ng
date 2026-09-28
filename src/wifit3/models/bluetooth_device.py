@@ -61,5 +61,5 @@ class BluetoothDevice:
 
     @property
     def is_connectable_with_bleak(self) -> bool:
-        return BLE_RADIO in self.radio_types and self.discovery_source == "system"
+        return BLE_RADIO in self.radio_types and "system" in self.discovery_source.split("+")
 

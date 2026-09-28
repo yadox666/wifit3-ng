@@ -46,6 +46,14 @@ def _is_anonymous_apple(device: BluetoothDevice) -> bool:
     return 0x004C in device.manufacturer_ids and device.name == "<Unknown>"
 
 
+def _discovery_source_label(source: str) -> str:
+    if source == "system+usb-hci":
+        return "system BLE + dedicated USB HCI"
+    if source == "usb-hci":
+        return "dedicated USB HCI"
+    return "system BLE"
+
+
 def _group_anonymous_apple_devices(devices: list[BluetoothDevice]) -> list[BluetoothDevice]:
     apple = [device for device in devices if _is_anonymous_apple(device)]
     if len(apple) < 2:
@@ -199,7 +207,7 @@ class BluetoothScannerView(Screen):
         self.query_one("#bluetooth-table", DataTable).focus()
         self.query_one("#bluetooth-log", RichLog).write(
             (
-                "[bold green]Bluetooth Classic + LE USB scanner initialized[/bold green]\n"
+                "[bold green]Bluetooth Classic USB + system BLE scanners initialized[/bold green]\n"
                 if self.app.bluetooth_manager.is_usb_scanning else
                 "[bold green]Bluetooth LE scanner initialized[/bold green]\n"
             )
@@ -485,7 +493,7 @@ class BluetoothScannerView(Screen):
         log.write(f"[bold]{device.name}[/bold]  [dim]{identifier}[/dim]")
         log.write(
             f"Radio: [bold cyan]{device.radio_label}[/bold cyan]  "
-            f"Discovery: [bold]{'dedicated USB HCI' if device.discovery_source == 'usb-hci' else 'system BLE'}[/bold]"
+            f"Discovery: [bold]{escape(_discovery_source_label(device.discovery_source))}[/bold]"
         )
         if device.approximate_group:
             log.write(
@@ -560,7 +568,8 @@ class BluetoothScannerView(Screen):
             log.write("[dim]A complete GATT service list requires connecting to the device.[/dim]")
         else:
             log.write(
-                "[dim]Dedicated USB discovery uses active Classic inquiry and passive BLE scan; "
+                "[dim]Dedicated USB discovery uses active Classic inquiry; "
+                "BLE and GATT remain on the system adapter. "
                 "GATT Focus remains available through SCAN BLE.[/dim]"
             )
 
