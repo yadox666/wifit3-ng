@@ -279,6 +279,21 @@ def router_identity_details(ap: AccessPoint) -> str | None:
     return "\n".join(rows) if rows else None
 
 
+def has_stored_wps_identity(ap: AccessPoint) -> bool:
+    """True when WPS router identity is already on the AP (DB or passive WSC)."""
+    if not getattr(ap, "wps", False):
+        return False
+    ident = getattr(ap, "identity", None)
+    if ident is None:
+        return False
+    if not (
+        ident.has_source(IdSource.WSC_M1)
+        or ident.has_source(IdSource.WSC_BEACON)
+    ):
+        return False
+    return bool(ident.summary or router_identity_details(ap))
+
+
 def router_advertised_details(ap: AccessPoint) -> str:
     rows = _router_identity_rows(ap)
     if not rows:
@@ -658,6 +673,45 @@ def status_headlines(ap, array, vault) -> list[str]:
         return ["[dim]● Open network: no handshake to capture[/dim]"]
     return ["[green]● Listening for handshake + PMKID[/green]",
             "[dim]passive: deauth a client to force a handshake[/dim]"]
+
+
+def client_dashboard_rows(client, ap) -> list[DashboardRow]:
+    """Sparkline rows for Client Focus (AP family when associated, else station-centric)."""
+    if ap is not None:
+        return dashboard_rows(ap)
+    return [
+        DashboardRow("data", "data", "blue", 120),
+        DashboardRow("deauth", "deauth", "red", 12),
+    ]
+
+
+def client_status_headlines(client, ap, *, honeypot_active: bool = False) -> list[str]:
+    from wifit3.id import vendor_for_mac
+
+    vendor = vendor_for_mac(client.mac) or "Unknown station"
+    if honeypot_active:
+        return [
+            "[yellow]● Probe honeypot active[/yellow]",
+            f"[dim]{escape(client.mac)} · {escape(vendor)}[/dim]",
+        ]
+    if ap is not None:
+        ssid = truncate_ssid(ap.ssid) if ap.ssid else "‹hidden›"
+        return [
+            f"[bold cyan]{escape(client.mac)}[/bold cyan]",
+            f"[dim]on [bold]{escape(ssid)}[/bold] · {escape(ap.bssid)}[/dim]",
+        ]
+    return [
+        f"[bold cyan]{escape(client.mac)}[/bold cyan]",
+        f"[dim]{escape(vendor)} · unassociated[/dim]",
+    ]
+
+
+def client_dashboard_bssid(client, ap, honeypot_campaign=None) -> str | None:
+    if honeypot_campaign is not None and honeypot_campaign.endpoints:
+        return honeypot_campaign.endpoints[0].bssid_text
+    if ap is not None:
+        return ap.bssid
+    return None
 
 
 def card_identity(array: WlanArray) -> tuple[str, str | None]:

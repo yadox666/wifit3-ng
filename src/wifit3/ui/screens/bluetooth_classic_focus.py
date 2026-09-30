@@ -8,7 +8,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Static
+from textual.widgets import Button, Footer, Static
+
+from wifit3.ui.notification_center import WifiteHeader
 
 from wifit3.bluetooth.assigned_numbers import manufacturer_label, service_label
 from wifit3.bluetooth.classification import device_classification
@@ -26,6 +28,7 @@ class BluetoothClassicFocusView(Screen):
     BINDINGS = [
         Binding("escape", "go_back", "Back"),
         Binding("r", "browse_services", "Browse SDP"),
+        Binding("shift+t", "targets_editor", "Targets"),
     ]
 
     CSS = """
@@ -38,7 +41,7 @@ class BluetoothClassicFocusView(Screen):
     """
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
+        yield WifiteHeader(show_clock=False)
         with Horizontal(id="classic-top"):
             yield Button("‹ Bluetooth", id="classic-back")
             yield Button("Browse SDP", id="classic-sdp", variant="primary")
@@ -139,6 +142,9 @@ class BluetoothClassicFocusView(Screen):
             self.action_go_back()
         elif event.button.id == "classic-sdp":
             self.action_browse_services()
+
+    def action_targets_editor(self) -> None:
+        self.app.open_targets_editor()
 
     def action_go_back(self) -> None:
         self.app.pop_screen()

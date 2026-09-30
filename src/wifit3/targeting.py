@@ -7,6 +7,7 @@ from wifit3.bluetooth.assigned_numbers import manufacturer_label
 from wifit3.bluetooth.classification import device_classification
 from wifit3.id import vendor_for_mac
 from wifit3.models import AccessPoint, BluetoothDevice, Client
+from wifit3.persist.targets import SavedTarget, TargetStore
 from wifit3.wlan.enterprise_risk import enterprise_findings
 
 
@@ -139,3 +140,150 @@ def bluetooth_candidate(device: BluetoothDevice) -> TargetCandidate:
         title=device.name if device.name != "<Unknown>" else device.identifier,
         details=details,
     )
+
+
+def _bluetooth_is_ble(device: BluetoothDevice) -> bool:
+    radios = {item.casefold() for item in device.radio_types}
+    if "ble" in radios or "le" in radios:
+        return True
+    if "classic" in radios or "br/edr" in radios:
+        return False
+    return device.is_connectable_with_bleak
+
+
+def editor_category(target: SavedTarget) -> str:
+    if target.role == "whitelist":
+        return "whitelist"
+    if target.medium == "wifi" and target.kind == "ap":
+        return "ap"
+    if target.medium == "wifi" and target.kind == "client":
+        return "sta"
+    radios = {
+        str(item).casefold()
+        for item in (target.details.get("radio_types") or [])
+    }
+    if "classic" in radios or "br/edr" in radios:
+        return "bt"
+    return "ble"
+
+
+def editor_category_label(category: str) -> str:
+    return {
+        "all": "All",
+        "ap": "Wi-Fi AP",
+        "sta": "Wi-Fi STA",
+        "ble": "BLE",
+        "bt": "Bluetooth",
+        "whitelist": "Whitelist",
+    }.get(category, category)
+
+
+def match_access_point(store: TargetStore, ap: AccessPoint) -> SavedTarget | None:
+    by_bssid = store.find("wifi", "ap", ap.bssid)
+    if by_bssid is not None:
+        return by_bssid
+    if ap.ssid:
+        return store.find_by_name("wifi", "ap", ap.ssid)
+    return None
+
+
+def _client_probe_matches(store: TargetStore, client: Client) -> list[SavedTarget]:
+    seen: set[str] = set()
+    matches: list[SavedTarget] = []
+    for ssid in sorted(client.probed_ssids):
+        for candidate in (
+            store.find_by_probe(ssid),
+            store.find_by_name("wifi", "ap", ssid),
+        ):
+            if candidate is not None and candidate.id not in seen:
+                seen.add(candidate.id)
+                matches.append(candidate)
+    return matches
+
+
+def match_client(
+    store: TargetStore,
+    client: Client,
+) -> SavedTarget | None:
+    direct = store.find("wifi", "client", client.mac)
+    if direct is not None:
+        return direct
+    for entry in _client_probe_matches(store, client):
+        return entry
+    return None
+
+
+def iter_wifi_client_sightings(
+    store: TargetStore,
+    client: Client,
+) -> list[tuple[SavedTarget, str]]:
+    """Distinct saved entries to notify for this client (MAC, probes, AP-name rules)."""
+    seen: set[str] = set()
+    sightings: list[tuple[SavedTarget, str]] = []
+
+    def add(target: SavedTarget | None, where: str) -> None:
+        if target is None or not target.enabled or target.id in seen:
+            return
+        seen.add(target.id)
+        sightings.append((target, where))
+
+    add(store.find("wifi", "client", client.mac), f"client {client.mac}")
+    for ssid in sorted(client.probed_ssids):
+        add(store.find_by_probe(ssid), f"client {client.mac} probing {ssid}")
+        add(store.find_by_name("wifi", "ap", ssid), f"client {client.mac} probing {ssid}")
+    return sightings
+
+
+def match_bluetooth_device(
+    store: TargetStore,
+    device: BluetoothDevice,
+) -> SavedTarget | None:
+    by_id = store.find("bluetooth", "device", device.identifier)
+    if by_id is not None:
+        return by_id
+    if device.name and device.name != "<Unknown>":
+        by_name = store.find_by_name("bluetooth", "device", device.name)
+        if by_name is not None:
+            return by_name
+    return None
+
+
+def match_candidate(store: TargetStore, candidate: TargetCandidate) -> SavedTarget | None:
+    if candidate.medium == "wifi" and candidate.kind == "ap":
+        by_id = store.find(candidate.medium, candidate.kind, candidate.identifier)
+        if by_id is not None:
+            return by_id
+        ssid = candidate.details.get("ssid")
+        if isinstance(ssid, str) and ssid:
+            return store.find_by_name(candidate.medium, candidate.kind, ssid)
+        return None
+    if candidate.medium == "wifi" and candidate.kind == "client":
+        return store.find(candidate.medium, candidate.kind, candidate.identifier)
+    if candidate.medium == "bluetooth" and candidate.kind == "device":
+        by_id = store.find(candidate.medium, candidate.kind, candidate.identifier)
+        if by_id is not None:
+            return by_id
+        name = candidate.details.get("name")
+        if isinstance(name, str) and name and name != "<Unknown>":
+            return store.find_by_name(candidate.medium, candidate.kind, name)
+    return None
+
+
+def is_whitelisted_entry(target: SavedTarget | None) -> bool:
+    return target is not None and target.enabled and target.role == "whitelist"
+
+
+def is_target_entry(target: SavedTarget | None) -> bool:
+    return target is not None and target.enabled and target.role == "target"
+
+
+def is_wifi_client_whitelisted(store: TargetStore, mac: str) -> bool:
+    return is_whitelisted_entry(store.find("wifi", "client", mac))
+
+
+def is_wifi_ap_whitelisted(store: TargetStore, bssid: str) -> bool:
+    return is_whitelisted_entry(store.find("wifi", "ap", bssid))
+
+
+def bluetooth_editor_category(device: BluetoothDevice) -> str:
+    return "ble" if _bluetooth_is_ble(device) else "bt"

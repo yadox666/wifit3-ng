@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -310,6 +311,46 @@ async def test_manager_wraps_backend_start_failure():
 
     assert scanner.stopped
     assert not manager.is_scanning
+
+
+@pytest.mark.asyncio
+async def test_os_ble_probe_reports_ready_and_releases_probe_scanner():
+    scanner = _Scanner(lambda *_: None)
+
+    def factory(**kwargs):
+        assert len(inspect.signature(kwargs["detection_callback"]).parameters) == 2
+        return scanner
+
+    manager = BluetoothManager(scanner_factory=factory)
+
+    status = await manager.probe_os_ble()
+
+    assert status.available is True
+    assert status.state == "OS-READY"
+    assert scanner.started is True
+    assert scanner.stopped is True
+    assert not manager.is_scanning
+
+
+@pytest.mark.asyncio
+async def test_os_ble_probe_reports_os_disabled_instead_of_raising():
+    scanner = _Scanner(lambda *_: None, start_error=PermissionError("Bluetooth is off"))
+    manager = BluetoothManager(scanner_factory=lambda **_kwargs: scanner)
+
+    status = await manager.probe_os_ble()
+
+    assert status.available is False
+    assert status.state == "OS-DISABLED"
+    assert status.detail == "Bluetooth is off"
+
+
+@pytest.mark.asyncio
+async def test_user_can_disable_os_ble_without_changing_os_settings():
+    manager = BluetoothManager(os_ble_enabled=False)
+
+    assert manager.os_ble_status.state == "APP-DISABLED"
+    with pytest.raises(BluetoothScanError, match="disabled on the startup screen"):
+        await manager.start()
 
 
 @pytest.mark.asyncio

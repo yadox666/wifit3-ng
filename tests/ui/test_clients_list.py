@@ -218,6 +218,24 @@ async def test_open_ap_splits_clients_and_websites_with_shared_search():
         assert "updates.test" in websites.content.plain
 
 
+@pytest.mark.asyncio
+async def test_metadata_kept_for_client_hints_when_website_pane_disabled():
+    mac = "6a:a9:f9:87:7e:d1"
+    app = _DemoApp([_client(mac=mac)])
+    metadata = NetworkMetadata("00:11:22:33:44:55", "WPA2")
+    metadata.observe_arp_neighbors([("192.168.0.84", mac)], now=10)
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        clients = app.query_one("#clients", ClientsList)
+        clients.set_open_network_metadata(metadata, enabled=False)
+        await pilot.pause()
+
+        assert clients._network_metadata is metadata
+        assert clients.query_one("#website-pane").display is False
+        row = clients._rows[mac]
+        assert "192.168.0.84" in str(row._mfr_label.render())
+
+
 # ----- detail popup ---------------------------------------------------------
 
 def test_detail_popup_dismisses_on_backdrop_click_not_inner_content():

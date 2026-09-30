@@ -29,19 +29,14 @@ import usb.util
 from wifit3.chips.rx_reader import RxReaderThread
 from wifit3.chips.driver import DeviceID, Driver, FakeMacSupport, ProgressCallback
 from wifit3.errors import BringUpError
-from wifit3.dot11.parser import WlanFrameParser
-
-from . import bringup, chan, efuse, mac, phy, tx, watchdog
+from wifit3.wlan.channels import DUAL_BAND_SCAN_CHANNELS
+from . import bringup, chan, mac, phy, tx
 from .rx import iter_frames
 from .transport import Rtl8821cuTransport
 
 logger = logging.getLogger(__name__)
 
 CHANNELS_2G = list(range(1, 15))
-# Non-DFS 5 GHz only for now; the capture also tunes DFS 52..144 but set_channel
-# (and the DFS tune path) is a later milestone — see RTL8821CU_DKMS.md.
-CHANNELS_5G = [36, 40, 44, 48, 149, 153, 157, 161, 165]
-
 # Monitor-mode management-inject TX-descriptor attributes. [WIRE] every aireplay-ng frame in the
 # capture (probe-req / RTS / auth / deauth) shares macid 1, QSEL_MGNT, raid 1, 1M CCK, retry off;
 # only TXPKTSIZE + BMC (from addr1) + the XOR checksum vary, all derived from the 802.11 frame.
@@ -64,7 +59,7 @@ _REF_CUT = 4                    # hal chip_ver / dm cut_version
 
 
 class Rtl8821cuDkmsDriver(Driver):
-    SUPPORTED_CHANNELS: ClassVar[List[int]] = CHANNELS_2G + CHANNELS_5G
+    SUPPORTED_CHANNELS: ClassVar[List[int]] = list(DUAL_BAND_SCAN_CHANNELS)
     FAKE_MAC: ClassVar[FakeMacSupport] = FakeMacSupport.SPOOFABLE
 
     def __init__(self, dev: usb.core.Device):

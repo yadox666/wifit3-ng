@@ -31,9 +31,11 @@ def test_multi_card_keeps_decoy_channel_and_target_bssid():
     assert m._default_bssid() == "94:83:c4:8c:3f:78"
 
 
-def test_plus_one_bumps_last_nibble():
+def test_plus_one_increments_full_48_bit_mac():
     assert _plus_one("94:83:c4:8c:3f:78") == "94:83:c4:8c:3f:79"
-    assert _plus_one("94:83:c4:8c:3f:7f") == "94:83:c4:8c:3f:70"   # wraps f -> 0
+    assert _plus_one("94:83:c4:8c:3f:7f") == "94:83:c4:8c:3f:80"
+    assert _plus_one("94:83:c4:8c:3f:79") == "94:83:c4:8c:3f:7a"
+    assert _plus_one("94:83:c4:8c:3f:7a") == "94:83:c4:8c:3f:7b"   # three presses from .78
 
 
 def test_random_bssid_is_locally_administered():

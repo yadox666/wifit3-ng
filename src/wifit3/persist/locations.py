@@ -200,12 +200,42 @@ def _position(row: sqlite3.Row) -> SignalPosition:
     )
 
 
+# Hysteresis: an improvement only counts if it clears these margins, and a fix
+# is only rejected for "regressing" an axis if it does so by more than the same
+# margin. Sub-margin GPS/RSSI jitter therefore neither triggers nor blocks a
+# rewrite, so a stored position stays stable instead of churning on noise.
+SIGNAL_IMPROVEMENT_DB = 2.0
+ACCURACY_IMPROVEMENT_M = 1.0
+
+
 def _is_better(rssi: int | None, accuracy_m: float, current: SignalPosition) -> bool:
-    current_rssi = current.rssi
-    if current_rssi is None:
-        return rssi is not None or accuracy_m < current.accuracy_m
-    if rssi is None:
-        return False
-    return rssi > current_rssi or (
-        rssi == current_rssi and accuracy_m < current.accuracy_m
+    """Should the new fix replace the stored position for this cluster?
+
+    We overwrite only when the new observation is meaningfully better: it
+    improves at least one axis (signal or GPS precision) by its hysteresis
+    margin while not worsening either axis by more than that same margin. This
+    expresses "precision better plus signal higher" (the two-axis intent) but
+    is robust to noise: a strong reading with a much larger error radius never
+    overwrites a good one, and jitter within the margins leaves the stored fix
+    untouched.
+
+    A missing RSSI is treated as the weakest possible signal, so a fix without
+    signal info can only win by being more precise past the accuracy margin
+    while not losing signal.
+    """
+    new_signal = float("-inf") if rssi is None else float(rssi)
+    cur_signal = float("-inf") if current.rssi is None else float(current.rssi)
+
+    signal_delta = new_signal - cur_signal            # positive = stronger
+    accuracy_delta = current.accuracy_m - accuracy_m  # positive = more precise
+
+    signal_not_worse = signal_delta >= -SIGNAL_IMPROVEMENT_DB
+    precision_not_worse = accuracy_delta >= -ACCURACY_IMPROVEMENT_M
+    signal_better = signal_delta >= SIGNAL_IMPROVEMENT_DB
+    precision_better = accuracy_delta >= ACCURACY_IMPROVEMENT_M
+
+    return (
+        signal_not_worse
+        and precision_not_worse
+        and (signal_better or precision_better)
     )

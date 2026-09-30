@@ -23,6 +23,26 @@ _NMEA_PREFIXES = ("$GPGGA,", "$GNGGA,", "$GPRMC,", "$GNRMC,")
 class GpsStatus:
     port: str
     baudrate: int
+    description: str = ""
+    manufacturer: str = ""
+    product: str = ""
+    vid: int | None = None
+    pid: int | None = None
+
+    @property
+    def instance_key(self) -> tuple:
+        return self.port, self.baudrate, self.vid, self.pid
+
+    @property
+    def label(self) -> str:
+        product = self.product.strip()
+        manufacturer = self.manufacturer.strip()
+        description = self.description.strip()
+        if product:
+            return f"{manufacturer} {product}".strip()
+        if description and description.casefold() not in {"n/a", "unknown"}:
+            return f"{manufacturer} {description}".strip()
+        return manufacturer or "NMEA GPS receiver"
 
 
 class GpsManager:
@@ -78,7 +98,7 @@ class GpsManager:
                 await self._wait(5.0)
                 continue
             port, baudrate = detected
-            self.status = GpsStatus(port, baudrate)
+            self.status = self._status_for_port(port, baudrate)
             if self.on_detected is not None:
                 self.on_detected(self.status)
             await asyncio.to_thread(self._read_until_disconnected, port, baudrate)
@@ -125,6 +145,22 @@ class GpsManager:
                 for ignored in ("bluetooth", "debug-console", "wlan-debug")
             )
         ]
+
+    @staticmethod
+    def _status_for_port(port: str, baudrate: int) -> GpsStatus:
+        if list_ports is not None:
+            for candidate in list_ports.comports():
+                if candidate.device == port:
+                    return GpsStatus(
+                        port=port,
+                        baudrate=baudrate,
+                        description=candidate.description or "",
+                        manufacturer=candidate.manufacturer or "",
+                        product=candidate.product or "",
+                        vid=candidate.vid,
+                        pid=candidate.pid,
+                    )
+        return GpsStatus(port, baudrate)
 
     def _read_until_disconnected(self, port: str, baudrate: int) -> None:
         state: dict[str, object] = {}

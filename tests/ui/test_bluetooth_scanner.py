@@ -4,11 +4,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 from rich.text import Text
-from textual.widgets import DataTable, Input, Select
+from textual.widgets import Checkbox, DataTable, Input, Select
 from textual.widgets.data_table import ColumnKey
 
 from wifit3.models import BluetoothDevice, SignalPosition
 from wifit3.bluetooth.connection import BluetoothConnectionError
+from wifit3.bluetooth.manager import OsBleSourceStatus
 from wifit3.bluetooth.usb_hci import UsbBluetoothController
 from wifit3.persist.config import Config
 from wifit3.persist.targets import TargetStore
@@ -86,6 +87,58 @@ async def test_splash_can_start_bluetooth_without_wifi_device(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
+async def test_splash_shows_and_can_disable_os_ble_source():
+    app = WifiteApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0)
+        splash = app.screen
+        panel = splash.query_one("#os-ble-picker")
+
+        assert panel.border_title == "Operating-system BLE"
+        assert "Test vendor TestBleak" in panel.query_one(".os-ble-name").render().plain
+        assert panel.query_one(".os-ble-state").render().plain == "OS-READY"
+        assert not splash.query_one("#bluetooth-btn").disabled
+
+        splash.query_one("#os-ble-enabled", Checkbox).value = False
+        await pilot.pause(0)
+
+        assert app.bluetooth_manager.os_ble_enabled is False
+        assert Config.os_ble_enabled is False
+        assert panel.query_one(".os-ble-state").render().plain == "APP-DISABLED"
+        assert splash.query_one("#bluetooth-btn").disabled
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_splash_marks_unavailable_os_ble_layer_in_red():
+    app = WifiteApp()
+    status = OsBleSourceStatus(
+        True,
+        False,
+        "OS-DISABLED",
+        "CoreBluetooth",
+        "macOS",
+        "Apple",
+        "System adapter",
+        "Bluetooth is turned off",
+    )
+
+    async def unavailable():
+        app.bluetooth_manager.os_ble_status = status
+        return status
+
+    app.bluetooth_manager.probe_os_ble = unavailable
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0)
+        state = app.screen.query_one(".os-ble-state").render()
+
+        assert state.plain == "OS-DISABLED"
+        assert any("red" in str(span.style) for span in state.spans)
+        assert app.screen.query_one("#bluetooth-btn").disabled
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
 async def test_splash_primary_buttons_share_a_centered_row():
     app = WifiteApp()
     async with app.run_test(size=(100, 36)) as pilot:
@@ -139,8 +192,12 @@ async def test_splash_shows_separate_dual_mode_button_when_controller_is_detecte
         await pilot.pause(0)
         splash = app.screen
         button = splash.query_one("#bluetooth-usb-btn")
+        picker = splash.query_one("#bluetooth-picker")
         assert button.display
         assert button.label.plain == "BT/BLE Scan"
+        assert picker.display
+        assert picker.region.height == 3
+        assert picker.selected_controllers() == [controller]
 
         splash.action_start_usb_bluetooth()
         for _ in range(40):
@@ -150,6 +207,70 @@ async def test_splash_shows_separate_dual_mode_button_when_controller_is_detecte
 
         app.bluetooth_manager.start_usb.assert_awaited_once_with(controller)
         assert switched == ["bluetooth"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_unchecked_bluetooth_adapter_is_not_started():
+    app = WifiteApp()
+    first = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+    )
+    second = UsbBluetoothController(
+        0x0A12, 0x0001, "BlueCore4-ROM", "Sena", "Parani-UD100", 1, 3,
+        supports_le=False,
+    )
+    app.bluetooth_manager.available_usb_controllers = lambda: [first, second]
+    app.bluetooth_manager.start_usb = AsyncMock()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0)
+        splash = app.screen
+        picker = splash.query_one("#bluetooth-picker")
+        assert picker.region.height == 4
+        assert [str(mode.content) for mode in picker.query(".bt-mode")] == ["BT+BLE", "BT"]
+
+        splash.query_one("#bt-chk-0", Checkbox).value = False
+        await pilot.pause(0)
+        button = splash.query_one("#bluetooth-usb-btn")
+        assert not button.disabled
+        splash.action_start_usb_bluetooth()
+        for _ in range(20):
+            await pilot.pause(0)
+            if app.bluetooth_manager.start_usb.await_count:
+                break
+        app.bluetooth_manager.start_usb.assert_awaited_once_with(second)
+
+        splash.query_one("#bt-chk-1", Checkbox).value = False
+        await pilot.pause(0)
+        assert button.disabled
+        app.bluetooth_manager.start_usb.reset_mock()
+        splash.action_start_usb_bluetooth()
+        await pilot.pause(0)
+        app.bluetooth_manager.start_usb.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_picker_rebuilds_rows():
+    app = WifiteApp()
+    first = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+    )
+    second = UsbBluetoothController(
+        0x0A12, 0x0001, "BlueCore4-ROM", "Sena", "Parani-UD100", 1, 3,
+        supports_le=False,
+    )
+    async with app.run_test(size=(120, 40)) as pilot:
+        splash = app.screen
+        picker = splash.query_one("#bluetooth-picker")
+        picker.set_controllers([first, second])
+        await pilot.pause()
+        picker.set_controllers([second])
+        await pilot.pause()
+        assert len(list(picker.query(".bt-row"))) == 1
+        assert splash.query_one("#bt-chk-0", Checkbox).value is True
+        assert str(picker.query_one(".bt-name").content) == second.label
 
 
 @pytest.mark.asyncio
@@ -244,7 +365,7 @@ async def test_bluetooth_saved_target_row_is_red_and_marked(tmp_path):
         name = scanner.query_one("#bluetooth-table", DataTable).get_row(
             device.identifier,
         )[0]
-        assert name.plain.startswith("! ")
+        assert name.plain.startswith("⌖ ")
         assert any("red" in str(span.style) for span in name.spans)
 
 

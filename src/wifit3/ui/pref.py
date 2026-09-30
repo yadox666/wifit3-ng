@@ -6,22 +6,46 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.color import Color
-from textual.containers import Horizontal, Vertical, VerticalGroup
+from textual.containers import Horizontal, Vertical, VerticalGroup, VerticalScroll
 from textual.events import Event
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Button, Checkbox, Footer, Input, Label, Select
+from textual.widgets import Button, Checkbox, ContentSwitcher, Input, Label, Select, Tab, Tabs
 
 from wifit3.persist.config import Config
-from wifit3.ui.screens.targets import TargetsModal
+from wifit3.ui.screens.targets_editor import TargetsEditorDrawer
+
+
+_PREF_SECTION_CSS = """
+.pref-section {
+    height: auto;
+    margin-bottom: 1;
+}
+.pref-tag {
+    text-style: bold;
+    color: $accent;
+    height: 1;
+    margin-top: 1;
+}
+.pref-section > .pref-tag:first-child,
+.pref-field > .pref-tag:first-child {
+    margin-top: 0;
+}
+.pref-field {
+    height: auto;
+    margin-bottom: 1;
+}
+"""
+
+
+def _pref_tag(text: str) -> Label:
+    return Label(text, classes="pref-tag")
 
 
 class ThemeSetting(VerticalGroup):
-    DEFAULT_CSS = """
-    ThemeSetting { border: round $primary }
-    """
+    DEFAULT_CSS = _PREF_SECTION_CSS
     def compose(self) -> ComposeResult:
-        self.border_title = "Theme"
+        yield _pref_tag("Color theme")
         yield Select(self._theme_options(), id="theme",
                      value=self.app.theme, allow_blank=False)
 
@@ -48,9 +72,7 @@ class ThemeSetting(VerticalGroup):
 
 
 class SortDelaySetting(VerticalGroup):
-    DEFAULT_CSS = """
-    SortDelaySetting { border: round $primary }
-    """
+    DEFAULT_CSS = _PREF_SECTION_CSS
 
     OPTIONS: list[tuple[str, float]] = [
         ("Instant", 0.0),
@@ -63,7 +85,7 @@ class SortDelaySetting(VerticalGroup):
     ]
 
     def compose(self) -> ComposeResult:
-        self.border_title = "Sort Delay"
+        yield _pref_tag("AP / client table sort delay")
         current = Config.scanner_sort_delay
         values = [val for _, val in self.OPTIONS]
         value = current if current in values else 2.0
@@ -76,9 +98,7 @@ class SortDelaySetting(VerticalGroup):
 
 
 class ApExpirySetting(VerticalGroup):
-    DEFAULT_CSS = """
-    ApExpirySetting { border: round $primary }
-    """
+    DEFAULT_CSS = _PREF_SECTION_CSS
 
     OPTIONS: list[tuple[str, float]] = [
         ("15 seconds", 15.0),
@@ -91,7 +111,7 @@ class ApExpirySetting(VerticalGroup):
     ]
 
     def compose(self) -> ComposeResult:
-        self.border_title = "Hide inactive Wi-Fi and Bluetooth devices"
+        yield _pref_tag("Hide inactive Wi‑Fi and Bluetooth rows")
         current = Config.scanner_ap_expiry
         values = [value for _, value in self.OPTIONS]
         value = current if current in values else 30.0
@@ -104,12 +124,10 @@ class ApExpirySetting(VerticalGroup):
 
 
 class ActiveIntensitySetting(VerticalGroup):
-    DEFAULT_CSS = """
-    ActiveIntensitySetting { border: round $primary }
-    """
+    DEFAULT_CSS = _PREF_SECTION_CSS
 
     def compose(self) -> ComposeResult:
-        self.border_title = "Active action intensity"
+        yield _pref_tag("Deauth / broadcast frame intensity")
         yield Select(
             [
                 ("Low · 3 client rounds / 6 broadcast frames", "low"),
@@ -123,30 +141,25 @@ class ActiveIntensitySetting(VerticalGroup):
 
 
 class CapturesDirSetting(VerticalGroup):
-    DEFAULT_CSS = """
-    CapturesDirSetting { border: round $primary }
-    """
+    DEFAULT_CSS = _PREF_SECTION_CSS
     def compose(self) -> ComposeResult:
-        self.border_title = "Save directory"
+        yield _pref_tag("Handshake and capture save directory")
         yield Input(Config.captures_dir, id="captures_dir")
 
 
 class GpsSetting(VerticalGroup):
-    DEFAULT_CSS = """
-    GpsSetting { border: round $primary }
-    """
+    DEFAULT_CSS = _PREF_SECTION_CSS
 
     def compose(self) -> ComposeResult:
-        self.border_title = "GPS"
-        yield Label("USB serial port (blank = auto-detect)")
-        yield Input(Config.gps_port, placeholder="COM3 or /dev/ttyUSB0", id="gps_port")
-        yield Label("Portable-device movement distance (metres)")
+        yield _pref_tag("GPS serial port")
+        yield Input(Config.gps_port, placeholder="COM3 or /dev/ttyUSB0 - blank = auto", id="gps_port")
+        yield _pref_tag("Movement distance before logging a new fix (metres)")
         yield Input(
             str(Config.gps_movement_threshold_m),
             type="number",
             id="gps_movement_threshold_m",
         )
-        yield Label("Required accuracy: maximum error radius (metres)")
+        yield _pref_tag("Maximum acceptable fix error radius (metres)")
         yield Input(
             str(Config.gps_max_accuracy_m),
             type="number",
@@ -155,12 +168,10 @@ class GpsSetting(VerticalGroup):
 
 
 class TargetCaptureSetting(VerticalGroup):
-    DEFAULT_CSS = """
-    TargetCaptureSetting { border: round $primary }
-    """
+    DEFAULT_CSS = _PREF_SECTION_CSS
 
     def compose(self) -> ComposeResult:
-        self.border_title = "Target reacquisition and capture rotation"
+        yield _pref_tag("Wait for locked target to reappear")
         yield Select(
             [
                 ("Reacquire for 30 seconds", 30.0),
@@ -172,6 +183,7 @@ class TargetCaptureSetting(VerticalGroup):
             allow_blank=False,
             id="target_reacquire_timeout",
         )
+        yield _pref_tag("Locked-target capture file size")
         yield Select(
             [("25 MiB per file", 25), ("50 MiB per file", 50),
              ("100 MiB per file", 100), ("250 MiB per file", 250)],
@@ -179,6 +191,7 @@ class TargetCaptureSetting(VerticalGroup):
             allow_blank=False,
             id="target_capture_max_mb",
         )
+        yield _pref_tag("Rotating capture parts per target")
         yield Select(
             [("1 capture part", 1), ("3 capture parts", 3),
              ("5 capture parts", 5), ("10 capture parts", 10),
@@ -199,11 +212,8 @@ class SaveFooter(Horizontal):
     """
 
     def compose(self) -> ComposeResult:
-        yield Button(Text("Save"), "primary", id="save")
-        yield Button(Text("Cancel"), "default", id="cancel")
-
-    def cancel_pressed(self, event: Event):
-        self.app.pop_screen()
+        yield Button("Save", variant="primary", id="save")
+        yield Button("Cancel", id="cancel")
 
 
 class PreferencesModal(ModalScreen):
@@ -214,53 +224,134 @@ class PreferencesModal(ModalScreen):
     ]
 
     DEFAULT_CSS = """
-    PreferencesModal { align: center middle; }
-    PreferencesModal #dialog {
-        width: 44; height: auto;
-        max-height: 100%;
-        overflow-y: auto;
-        border: thick $primary; background: $surface; padding: 0 2;
+    PreferencesModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.4);
     }
-    PreferencesModal #dialog > * { width: 100% }
+    PreferencesModal #dialog {
+        width: 64;
+        max-width: 92%;
+        height: 28;
+        max-height: 85%;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+    }
     PreferencesModal #title {
-        text-style: bold; text-align: center;
-        margin: 0;
+        text-style: bold;
+        text-align: center;
+        height: 1;
+        margin-bottom: 1;
+    }
+    PreferencesModal #prefs-tabs {
+        margin-bottom: 1;
+    }
+    PreferencesModal #prefs-panels {
+        height: 1fr;
+        border: round $primary-darken-1;
+        padding: 0 1;
+        margin-bottom: 1;
+    }
+    PreferencesModal .pref-panel-scroll {
+        height: 1fr;
+    }
+    PreferencesModal SaveFooter {
+        margin-top: 0;
+    }
+    PreferencesModal .pref-tag {
+        text-style: bold;
+        color: $accent;
+        height: 1;
+        margin-top: 1;
+    }
+    PreferencesModal .pref-field > .pref-tag:first-child {
+        margin-top: 0;
+    }
+    PreferencesModal .pref-field {
+        height: auto;
+        margin-bottom: 1;
     }
     """
+
+    _TAB_PANELS: dict[str, str] = {
+        "tab-general": "panel-general",
+        "tab-scanner": "panel-scanner",
+        "tab-safety": "panel-safety",
+        "tab-captures": "panel-captures",
+        "tab-gps": "panel-gps",
+    }
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label("Preferences", id="title")
-            yield ThemeSetting()
-            yield SortDelaySetting()
-            yield ApExpirySetting()
-            yield ActiveIntensitySetting()
-            yield CapturesDirSetting()
-            yield GpsSetting()
-            yield TargetCaptureSetting()
-            yield Checkbox(
-                "Automatically check for updates",
-                value=Config.auto_check_updates,
-                id="auto_check_updates",
+            yield Tabs(
+                Tab("General", id="tab-general"),
+                Tab("Scanner", id="tab-scanner"),
+                Tab("Safety", id="tab-safety"),
+                Tab("Captures", id="tab-captures"),
+                Tab("GPS", id="tab-gps"),
+                id="prefs-tabs",
             )
-            yield Checkbox(
-                "Confirm active wireless actions",
-                value=Config.confirm_active_actions,
-                id="confirm_active_actions",
-            )
-            yield Checkbox(
-                "WPS PBC automatic capture",
-                value=Config.auto_wps_pbc,
-                id="auto_wps_pbc",
-            )
-            yield Checkbox(
-                "Auto-lock saved targets",
-                value=Config.auto_lock_targets,
-                id="auto_lock_targets",
-            )
-            yield Checkbox("Save .pcap handshakes", value=Config.save_pcap, id="save_pcap")
+            with ContentSwitcher(id="prefs-panels", initial="panel-general"):
+                with VerticalScroll(id="panel-general", classes="pref-panel-scroll"):
+                    yield ThemeSetting()
+                    with Vertical(classes="pref-field"):
+                        yield _pref_tag("Application updates")
+                        yield Checkbox(
+                            "Check for updates on startup",
+                            value=Config.auto_check_updates,
+                            id="auto_check_updates",
+                        )
+                with VerticalScroll(id="panel-scanner", classes="pref-panel-scroll"):
+                    yield SortDelaySetting()
+                    yield ApExpirySetting()
+                with VerticalScroll(id="panel-safety", classes="pref-panel-scroll"):
+                    yield ActiveIntensitySetting()
+                    with Vertical(classes="pref-field"):
+                        yield _pref_tag("Confirmation before attacks")
+                        yield Checkbox(
+                            "Ask before deauth, twins, and similar actions",
+                            value=Config.confirm_active_actions,
+                            id="confirm_active_actions",
+                        )
+                    with Vertical(classes="pref-field"):
+                        yield _pref_tag("WPS Push Button")
+                        yield Checkbox(
+                            "Auto-capture when a PBC window is detected",
+                            value=Config.auto_wps_pbc,
+                            id="auto_wps_pbc",
+                        )
+                with VerticalScroll(id="panel-captures", classes="pref-panel-scroll"):
+                    yield CapturesDirSetting()
+                    with Vertical(classes="pref-field"):
+                        yield _pref_tag("Handshake archives")
+                        yield Checkbox(
+                            "Also write .pcap files for handshakes",
+                            value=Config.save_pcap,
+                            id="save_pcap",
+                        )
+                    yield TargetCaptureSetting()
+                    with Vertical(classes="pref-field"):
+                        yield _pref_tag("Target lock behavior")
+                        yield Checkbox(
+                            "Auto-lock when a saved target is seen",
+                            value=Config.auto_lock_targets,
+                            id="auto_lock_targets",
+                        )
+                    yield Label(
+                        "[dim]Targets library: [bold]t[/bold] here or "
+                        "[bold]Shift+T[/bold] from the scanner.[/dim]",
+                        markup=True,
+                    )
+                with VerticalScroll(id="panel-gps", classes="pref-panel-scroll"):
+                    yield GpsSetting()
             yield SaveFooter()
-        yield Footer()
+
+    @on(Tabs.TabActivated, "#prefs-tabs")
+    def prefs_tab_activated(self, event: Tabs.TabActivated) -> None:
+        tab_id = event.tab.id or "tab-general"
+        panel_id = self._TAB_PANELS.get(tab_id, "panel-general")
+        self.query_one("#prefs-panels", ContentSwitcher).current = panel_id
 
     def on_mount(self) -> None:
         self._original_theme = self.app.theme
@@ -335,5 +426,5 @@ class PreferencesModal(ModalScreen):
         self.app.action_about()
 
     def action_targets(self) -> None:
-        self.app.push_screen(TargetsModal())
+        self.app.push_screen(TargetsEditorDrawer())
 

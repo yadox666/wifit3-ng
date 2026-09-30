@@ -26,7 +26,7 @@ import usb.util
 from wifit3.chips import log_trace
 from wifit3.chips.driver import DeviceID, Driver, FakeMacSupport, ProgressCallback
 from wifit3.errors import BringUpError
-from wifit3.dot11.parser import WlanFrameParser
+from wifit3.wlan.channels import DUAL_BAND_SCAN_CHANNELS
 
 from wifit3.chips.rtw88_base.registers import (
     BIT_HCI_RXDMA_EN,
@@ -60,7 +60,7 @@ class RTL8814AUDriver(Driver):
 
     # 2.4 GHz 1..13 + non-DFS 5 GHz. Channel tune lands in M3; this advertises
     # the chip's reach for when WlanInterface.start_hopping consumes it.
-    SUPPORTED_CHANNELS = list(range(1, 15)) + [36, 40, 44, 48, 149, 153, 157, 161, 165]
+    SUPPORTED_CHANNELS = list(DUAL_BAND_SCAN_CHANNELS)
     FAKE_MAC = FakeMacSupport.UNIMPLEMENTED   # active-monitor not ported for this variant
 
     @classmethod
@@ -272,6 +272,9 @@ class RTL8814AUDriver(Driver):
         logger.debug("RTL8814AU M5: RX online (monitor) + DIG watchdog.")
         self._log_rx_dma_state("online")
         _progress(1.00, "RTL8814AU online (monitor RX; inject pending)")
+        from wifit3.wlan.regulatory import set_driver_regulatory_status
+
+        set_driver_regulatory_status(self, applies_per_channel=True)
         return True
 
     def _log_rx_dma_state(self, tag: str, crc_ok: int | None = None) -> None:

@@ -119,10 +119,9 @@ async def test_diagnostics_modal_shows_gps_fix():
         assert row[6].plain == "FIX"
         link = app.screen.query_one("#gps-map-link", Link)
         assert link.disabled is False
-        assert link.url == (
-            "https://www.google.com/maps/search/?api=1"
-            "&query=28.1293650%2C-15.4427150"
-        )
+        assert link.url.startswith("https://www.google.com/maps/place/")
+        assert "/@28.1293650,-15.4427150," in link.url
+        assert "place/28.1293650%2C-15.4427150/@" in link.url
 
 
 @pytest.mark.asyncio

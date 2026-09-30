@@ -5,9 +5,7 @@ from pathlib import Path
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import (
-    Static, ListView, ListItem, Label, Header, Footer, Button, SelectionList)
-from textual.widgets.selection_list import Selection
+from textual.widgets import Static, Label, Footer, Button, Checkbox
 from textual.containers import Vertical, Center, Horizontal
 from textual import events, work
 from rich.style import Style
@@ -21,10 +19,12 @@ from wifit3.ui.vault.global_tracker import GlobalJobTracker
 from wifit3.bluetooth import BluetoothScanError
 from wifit3.device.manager import Status
 from wifit3.id import oui_db
-from wifit3.ui.screens.clear_history import (
-    ClearHistoryModal,
-    HistoryClearSelection,
-)
+from wifit3.ui.notification_center import WifiteHeader
+from wifit3.ui.screens.bluetooth_picker import BluetoothPicker
+from wifit3.ui.screens.device_picker import DevicePicker
+from wifit3.ui.screens.gps_picker import GpsPicker
+from wifit3.ui.screens.os_ble_picker import OsBlePicker
+from wifit3.persist.config import Config
 
 if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
@@ -144,14 +144,19 @@ class SplashView(Screen):
 
     app: "WifiteApp"
 
+    DEFAULT_CSS = """
+    SplashView #bt-picker-slot,
+    SplashView #gps-picker-slot {
+        display: none;
+    }
+    """
+
     BINDINGS = [
-        ("w", "start", "Wi-Fi"),
-        ("b", "start_bluetooth", "BLE"),
-        ("d", "start_usb_bluetooth", "BT + BLE"),
-        ("o", "offline", "Offline DB"),
-        ("u", "update_oui", "Update OUI DB"),
-        Binding("c", "clear_db", "Clear-DB"),
-        Binding("enter", "enter", "Start", priority=True),
+        Binding("w", "start", "Wi-Fi"),
+        Binding("b", "start_bluetooth", "BLE"),
+        Binding("d", "start_usb_bluetooth", "BT + BLE"),
+        Binding("o", "offline", "Offline DB"),
+        Binding("u", "update_oui", "Update OUI DB"),
     ]
 
     def __init__(self):
@@ -160,9 +165,10 @@ class SplashView(Screen):
         # DeviceIDs from the last render (the app's DeviceWatch feeds them), indexed to the rows.
         self._devices = []
         self._usb_bluetooth_controllers = []
-
+        self._gps_status = None
+        self._last_optional_hardware_signature: tuple[tuple, tuple] | None = None
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
+        yield WifiteHeader(show_clock=False)
         with Vertical(id="splash-container"):
             with Center():
                 yield Static(self._logo(), id="ascii-art")
@@ -173,11 +179,13 @@ class SplashView(Screen):
                 # parked here survives the next device refresh (the status line gets overwritten).
                 yield Label("", id="error-label")
             with Center():
-                with Horizontal(id="device-row"):
-                    # One card: a plain highlighted list. 2+ cards: a checkbox list (default all
-                    # checked) so the user picks the subset to bring up. render_devices shows one.
-                    yield ListView(id="device-list")
-                    yield SelectionList(id="device-select")
+                yield DevicePicker(id="device-picker")
+            with Center():
+                yield OsBlePicker(id="os-ble-picker")
+            with Center(id="bt-picker-slot"):
+                yield BluetoothPicker(id="bluetooth-picker")
+            with Center(id="gps-picker-slot"):
+                yield GpsPicker(id="gps-picker")
             with Center():
                 with Horizontal(id="primary-actions"):
                     yield Button(
@@ -206,11 +214,97 @@ class SplashView(Screen):
         yield GlobalJobTracker()
         yield Footer()
 
-    def _both_lists(self):
-        """The (single_list, multi_list) pair: the ListView shown for one card, the SelectionList
-        checkbox list shown for 2+. render_devices displays exactly one at a time."""
-        return (self.query_one("#device-list", ListView),
-                self.query_one("#device-select", SelectionList))
+    def _picker(self) -> DevicePicker:
+        return self.query_one("#device-picker", DevicePicker)
+
+    def _bt_picker(self) -> BluetoothPicker:
+        return self.query_one("#bluetooth-picker", BluetoothPicker)
+
+    def _os_ble_picker(self) -> OsBlePicker:
+        return self.query_one("#os-ble-picker", OsBlePicker)
+
+    def _gps_picker(self) -> GpsPicker:
+        return self.query_one("#gps-picker", GpsPicker)
+
+    def _sync_adapter_widths(self) -> None:
+        """Keep all detected-hardware boxes the same width."""
+        shown = [
+            picker for picker in (
+                self._picker(), self._os_ble_picker(), self._bt_picker(),
+                self._gps_picker(),
+            )
+            if picker.display
+        ]
+        if not shown:
+            return
+        width = max(picker.preferred_width for picker in shown)
+        for picker in shown:
+            picker.styles.width = width
+
+    def _optional_action_button(self, button_id: str) -> Button | None:
+        matches = list(self.query(f"#{button_id}"))
+        return matches[0] if matches else None
+
+    def _ensure_primary_action_button(
+        self,
+        button_id: str,
+        *,
+        visible: bool,
+        factory: Button,
+    ) -> Button | None:
+        """Mount or remove a startup action button before Offline DB."""
+        button = self._optional_action_button(button_id)
+        if not visible:
+            if button is not None:
+                button.remove()
+            return None
+        if button is None:
+            bar = self.query_one("#primary-actions", Horizontal)
+            offline = self.query_one("#offline-btn", Button)
+            bar.mount(factory, before=offline)
+            button = self._optional_action_button(button_id)
+        return button
+
+    def _optional_hardware_signature(self) -> tuple[tuple, tuple]:
+        return (
+            tuple(c.instance_key for c in self._usb_bluetooth_controllers),
+            self._gps_status.instance_key if self._gps_status is not None else (),
+        )
+
+    def _sync_optional_hardware_ui(self) -> None:
+        """Panels, buttons, and footer keys for plug-in USB BT hardware."""
+        signature = self._optional_hardware_signature()
+        layout_changed = signature != self._last_optional_hardware_signature
+        controllers = self._usb_bluetooth_controllers
+        gps_status = self._gps_status
+
+        if layout_changed:
+            self._last_optional_hardware_signature = signature
+            self.query_one("#bt-picker-slot", Center).display = bool(controllers)
+            self.query_one("#gps-picker-slot", Center).display = gps_status is not None
+            self.refresh_bindings()
+
+        usb_button = self.query_one("#bluetooth-usb-btn", Button)
+        usb_button.display = bool(controllers)
+        if usb_button is not None:
+            selected = self._bt_picker().selected_controller()
+            usb_button.disabled = selected is None
+            if selected is not None:
+                usb_button.tooltip = (
+                    f"Use {selected.label} for Bluetooth Classic + BLE"
+                )
+            else:
+                usb_button.tooltip = "Select a Bluetooth adapter"
+
+        os_ble_status = self.app.bluetooth_manager.os_ble_status
+        ble_button = self.query_one("#bluetooth-btn", Button)
+        ble_button.disabled = not (
+            os_ble_status.enabled and os_ble_status.available is True
+        )
+        ble_button.tooltip = (
+            "Start discovery through the operating-system BLE layer"
+            if not ble_button.disabled else os_ble_status.detail
+        )
 
     def _logo(self) -> Text:
         theme = self.app.current_theme
@@ -241,22 +335,24 @@ class SplashView(Screen):
         """The 'pick a card' resting state."""
         self._is_initializing = False
         self._devices = []
+        self._last_optional_hardware_signature = None
         self.query_one("#error-label").display = False
-        single_list, multi_list = self._both_lists()
-        single_list.clear()
-        single_list.disabled = False
-        single_list.display = True
-        multi_list.clear_options()
-        multi_list.disabled = False
-        multi_list.display = False
+        picker = self._picker()
+        picker.clear_devices()
+        picker.disabled = False
+        self._bt_picker().disabled = False
+        self._os_ble_picker().disabled = False
+        self._os_ble_picker().set_status(self.app.bluetooth_manager.os_ble_status)
         self.query_one("#start-btn", Button).disabled = True
         self.query_one("#bluetooth-btn", Button).disabled = False
         self.query_one("#offline-btn", Button).disabled = False
-        usb_button = self.query_one("#bluetooth-usb-btn", Button)
-        usb_button.display = bool(self._usb_bluetooth_controllers)
-        usb_button.disabled = not self._usb_bluetooth_controllers
+        self._sync_optional_hardware_ui()
+        self._sync_adapter_widths()
         self.query_one("#uninstall-btn", Button).disabled = True
         self.query_one("#status-label", Label).update("Scanning for compatible hardware…")
+
+    def _collect_scan_band_plan(self) -> dict[tuple, str]:
+        return self._picker().collect_band_plan()
 
     async def on_mount(self) -> None:
         uninstall = self.query_one("#uninstall-btn", Button)
@@ -270,21 +366,40 @@ class SplashView(Screen):
         self._enter_scanning_mode()
         self.set_interval(1.0, self.refresh_usb_bluetooth_controllers)
         await self.refresh_usb_bluetooth_controllers()
+        self.probe_os_ble()
+
+    @work(exclusive=True, group="os-ble-probe")
+    async def probe_os_ble(self) -> None:
+        status = await self.app.bluetooth_manager.probe_os_ble()
+        if self.app.screen is self:
+            self._os_ble_picker().set_status(status)
+            self._sync_optional_hardware_ui()
+            self._sync_adapter_widths()
 
     async def refresh_usb_bluetooth_controllers(self) -> None:
         if self._is_initializing:
             return
         controllers = await asyncio.to_thread(
-            self.app.bluetooth_manager.available_usb_controllers
+            self.app.bluetooth_manager.available_usb_controllers,
+        )
+        bluetooth_changed = [c.instance_key for c in controllers] != [
+            c.instance_key for c in self._usb_bluetooth_controllers
+        ]
+        gps_status = self.app.gps_manager.status
+        gps_changed = (
+            gps_status.instance_key if gps_status is not None else None
+        ) != (
+            self._gps_status.instance_key if self._gps_status is not None else None
         )
         self._usb_bluetooth_controllers = controllers
-        button = self.query_one("#bluetooth-usb-btn", Button)
-        button.display = bool(controllers)
-        button.disabled = not controllers
-        button.tooltip = (
-            f"Use dedicated {controllers[0].label} for Bluetooth Classic + BLE discovery"
-            if controllers else None
-        )
+        self._gps_status = gps_status
+        if bluetooth_changed:
+            self._bt_picker().set_controllers(controllers)
+        self._gps_picker().set_status(gps_status, self.app.gps_manager.latest_fix)
+        self._os_ble_picker().set_status(self.app.bluetooth_manager.os_ble_status)
+        self._sync_optional_hardware_ui()
+        if bluetooth_changed or gps_changed:
+            self._sync_adapter_widths()
 
     def reset_for_reentry(self) -> None:
         """Returning to splash (adapter lost): the installed screen only resumes (on_mount doesn't
@@ -293,28 +408,27 @@ class SplashView(Screen):
         self._enter_scanning_mode()
         self.app.device_watch.resume()
         self.render_devices(self.app.device_watch.present())
+        array = getattr(self.app, "array", None)
+        if array is not None and array.members:
+            self._picker().refresh_regulatory_from_array(array.members)
+
+    def refresh_regulatory_subtitle(self) -> None:
+        """Re-read ``wifi_regulatory_country`` for the adapter panel (e.g. after Preferences)."""
+        picker = self._picker()
+        if picker._devices:
+            picker._refresh_regulatory_subtitle()
 
     def render_devices(self, devices) -> None:
-        """Render the current device list. Called by the app's DeviceWatch on plug/unplug. One card
-        shows a plain ListView; 2+ show a default-all-checked SelectionList so the user picks a subset."""
+        """Render the current device list. Called by the app's DeviceWatch on plug/unplug."""
         if self._is_initializing:
             return
         self._devices = devices
-        single_list, multi_list = self._both_lists()
-        labels = device_list_labels(devices)
-        multi = len(devices) >= 2
-        if multi:
-            multi_list.clear_options()
-            multi_list.add_options([Selection(labels[i], i, initial_state=True)
-                                    for i in range(len(devices))])
-            single_list.display = False
-            multi_list.display = True
-        else:
-            single_list.clear()
-            for i, label in enumerate(labels):
-                single_list.append(ListItem(Label(label), name=str(i)))
-            multi_list.display = False
-            single_list.display = True
+        picker = self._picker()
+        picker.set_devices(devices)
+        array = getattr(self.app, "array", None)
+        if array is not None and array.members:
+            picker.refresh_regulatory_from_array(array.members)
+        self._sync_adapter_widths()
 
         status = self.query_one("#status-label", Label)
         start_btn = self.query_one("#start-btn", Button)
@@ -323,15 +437,7 @@ class SplashView(Screen):
             status.update(self._ready_prompt())
             start_btn.disabled = False
             uninstall_btn.disabled = False
-            if multi:
-                if multi_list.highlighted is None:
-                    multi_list.highlighted = 0
-                multi_list.focus()
-            else:
-                # clear() reset index to None; re-arm the highlight so START has a target.
-                if single_list.index is None:
-                    single_list.index = 0
-                single_list.focus()
+            picker.focus_list()
         else:
             status.update("Scanning for compatible hardware…")
             start_btn.disabled = True
@@ -350,43 +456,23 @@ class SplashView(Screen):
         label.update("")
         label.display = False
 
-    def _using_multi(self) -> bool:
-        return len(self._devices) >= 2
-
     def _ready_prompt(self) -> str:
-        """The 'ready to go' status line: only 2+ cards need a 'select' step, one card is pre-armed."""
-        prefix = "Select card(s) and " if self._using_multi() else ""
-        return f"[bold $text-success]{prefix}Press START to begin scanning[/]"
+        if len(self._devices) > 1:
+            return "[bold $text-success]Check the card(s) to use, then press START[/]"
+        return "[bold $text-success]Press START to begin scanning[/]"
 
     def _start_targets(self) -> list:
-        """The DeviceIDs to bring up: the checked rows (2+ cards) or the single present card."""
-        if self._using_multi():
-            sl = self.query_one("#device-select", SelectionList)
-            return [self._devices[i] for i in sorted(sl.selected) if i < len(self._devices)]
-        return list(self._devices)
+        return self._picker().selected_devices()
 
     def _highlighted_device(self):
-        """The DeviceID of the cursor row (what Uninstall acts on), or None."""
-        if self._using_multi():
-            index = self.query_one("#device-select", SelectionList).highlighted
-        else:
-            index = self.query_one("#device-list", ListView).index
-        if index is None or index >= len(self._devices):
-            return None
-        return self._devices[index]
+        return self._picker().highlighted_device()
 
-    def action_enter(self) -> None:
-        """Enter dispatch: uninstall the highlighted card when the Uninstall button is focused, else
-        start the checked cards. Keeps Enter working from anywhere without stealing it from Uninstall."""
-        if self._is_initializing:
-            return
-        focused = self.app.focused
-        if focused is not None and focused.id == "uninstall-btn":
-            dev = self._highlighted_device()
-            if dev is not None:
-                self.perform_uninstall(dev)
-            return
-        self.action_start()
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        # Textual hides a footer key only when check_action returns False; None keeps
+        # it visible but disabled. So return False to drop optional-hardware keys entirely.
+        if action == "start_usb_bluetooth" and not self._usb_bluetooth_controllers:
+            return False
+        return True
 
     def action_start(self) -> None:
         """START: bring up the checked cards. Clicking a row only toggles it (no auto-start)."""
@@ -400,14 +486,31 @@ class SplashView(Screen):
         self.perform_start(targets)
 
     def on_click(self, event: events.Click) -> None:
-        """Double-click the single card to start it (a third way in, alongside Enter and START). A
-        single click only highlights. Multi-card uses checkboxes, so this is single-card only."""
-        if event.chain < 2 or self._is_initializing or self._using_multi():
+        """Double-click a row to start (single-card shortcut). One click only highlights."""
+        if event.chain < 2 or self._is_initializing:
             return
-        clicked = event.widget
-        single_list = self.query_one("#device-list", ListView)
-        if clicked is not None and single_list in clicked.ancestors_with_self:
+        if len(self._devices) == 1 and self._picker().row_index_at(event.widget) is not None:
             self.action_start()
+            return
+        if (
+            len(self._usb_bluetooth_controllers) == 1
+            and self._bt_picker().row_index_at(event.widget) is not None
+        ):
+            self.action_start_usb_bluetooth()
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        checkbox = event.checkbox
+        if checkbox.id == "os-ble-enabled":
+            Config.os_ble_enabled = checkbox.value
+            self.app.bluetooth_manager.set_os_ble_enabled(checkbox.value)
+            self.app.persist_config()
+            self._os_ble_picker().set_status(self.app.bluetooth_manager.os_ble_status)
+            self._sync_optional_hardware_ui()
+            if checkbox.value:
+                self.probe_os_ble()
+            return
+        if checkbox.id and checkbox.id.startswith("bt-chk-"):
+            self._sync_optional_hardware_ui()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if self._is_initializing:
@@ -425,86 +528,35 @@ class SplashView(Screen):
             if dev is not None:
                 self.perform_uninstall(dev)
 
-    def action_clear_db(self) -> None:
-        if self.app.history_deletion_available:
-            self.app.push_screen(ClearHistoryModal(), self._clear_history)
-
-    def check_action(self, action: str, parameters: tuple) -> bool | None:
-        if action == "clear_db" and not self.app.history_deletion_available:
-            return None
-        return True
-
-    def _clear_history(self, selection: HistoryClearSelection | None) -> None:
-        if selection is None:
-            return
-        cleared: list[str] = []
-        errors: list[str] = []
-        if selection.wifi:
-            for label, action in (
-                ("Wi-Fi database", self.app.ap_history_store.clear),
-                ("hidden SSIDs", self.app.hidden_ssid_store.clear),
-                ("association profiles", self.app.wifi_profile_store.clear),
-                ("Enterprise history", self.app.enterprise_session_store.clear),
-                (
-                    "Wi-Fi saved targets",
-                    lambda: self.app.target_store.clear_medium("wifi"),
-                ),
-            ):
-                try:
-                    action()
-                except Exception as exc:
-                    errors.append(f"{label}: {exc}")
-            if not errors:
-                cleared.append("Wi-Fi")
-        if selection.bluetooth:
-            bluetooth_errors = len(errors)
-            try:
-                self.app.bluetooth_history_store.clear()
-                self.app.bluetooth_manager.forget_devices()
-                self.app.target_store.clear_medium("bluetooth")
-            except Exception as exc:
-                errors.append(f"Bluetooth / BLE database: {exc}")
-            if len(errors) == bluetooth_errors:
-                cleared.append("Bluetooth / BLE")
-        if cleared:
-            self.notify(
-                f"Cleared {' and '.join(cleared)} history. Capture artifacts were kept.",
-                title="History databases",
-            )
-        if errors:
-            self.notify(
-                "\n".join(errors),
-                title="History deletion incomplete",
-                severity="error",
-            )
-
     def _enter_busy(self) -> None:
         self._is_initializing = True
         self.app.device_watch.pause()     # freeze the device watch so the list can't churn mid-bring-up
-        single_list, multi_list = self._both_lists()
-        single_list.disabled = True
-        multi_list.disabled = True
+        self._picker().disabled = True
+        self._bt_picker().disabled = True
+        self._os_ble_picker().disabled = True
         self.query_one("#start-btn", Button).disabled = True
         self.query_one("#bluetooth-btn", Button).disabled = True
-        self.query_one("#bluetooth-usb-btn", Button).disabled = True
+        for button_id in ("bluetooth-usb-btn",):
+            button = self._optional_action_button(button_id)
+            if button is not None:
+                button.disabled = True
         self.query_one("#offline-btn", Button).disabled = True
         self.query_one("#uninstall-btn", Button).disabled = True
 
     def _exit_busy(self) -> None:
         self._is_initializing = False
         self.app.device_watch.resume()
-        single_list, multi_list = self._both_lists()
-        single_list.disabled = False
-        multi_list.disabled = False
+        picker = self._picker()
+        picker.disabled = False
+        self._bt_picker().disabled = False
+        self._os_ble_picker().disabled = False
         self.query_one("#start-btn", Button).disabled = not self._devices
         self.query_one("#bluetooth-btn", Button).disabled = False
-        self.query_one("#bluetooth-usb-btn", Button).disabled = (
-            not self._usb_bluetooth_controllers
-        )
+        self._sync_optional_hardware_ui()
         self.query_one("#offline-btn", Button).disabled = False
         self.query_one("#uninstall-btn", Button).disabled = not self._devices
         if self._devices:
-            (multi_list if self._using_multi() else single_list).focus()
+            picker.focus_list()
         else:
             self.query_one("#bluetooth-btn", Button).focus()
 
@@ -530,9 +582,9 @@ class SplashView(Screen):
         if pooled > 0:
             if failures:
                 self.notify(f"{len(failures)} card(s) failed to start.", severity="warning")
+            self.app.scan_band_by_instance = self._collect_scan_band_plan()
             self.app.locked_target_id = None
             self.app.auto_lock_armed = True
-            self._disable_history_deletion()
             self.app.switch_screen("scanner")
         elif failures:
             self._show_error(failures[-1])
@@ -540,6 +592,13 @@ class SplashView(Screen):
             self.query_one("#status-label", Label).update(self._ready_prompt())
 
     def action_start_bluetooth(self) -> None:
+        status = self.app.bluetooth_manager.os_ble_status
+        if not status.enabled:
+            self.notify("Enable the OS BLE source first.", severity="warning")
+            return
+        if status.available is not True:
+            self.notify(status.detail, title="OS BLE unavailable", severity="warning")
+            return
         if not self._is_initializing:
             self.perform_bluetooth_start()
 
@@ -548,8 +607,14 @@ class SplashView(Screen):
             self.app.switch_screen("offline")
 
     def action_start_usb_bluetooth(self) -> None:
-        if not self._is_initializing and self._usb_bluetooth_controllers:
-            self.perform_usb_bluetooth_start(self._usb_bluetooth_controllers[0])
+        if self._is_initializing:
+            return
+        controller = self._bt_picker().selected_controller()
+        if controller is None:
+            if self._usb_bluetooth_controllers:
+                self.notify("Select a Bluetooth adapter.", severity="warning")
+            return
+        self.perform_usb_bluetooth_start(controller)
 
     @work(exclusive=True)
     async def perform_bluetooth_start(self) -> None:
@@ -564,7 +629,6 @@ class SplashView(Screen):
         self._exit_busy()
         self.app.locked_target_id = None
         self.app.auto_lock_armed = True
-        self._disable_history_deletion()
         self.app.switch_screen("bluetooth")
 
     @work(exclusive=True)
@@ -587,12 +651,7 @@ class SplashView(Screen):
         self._exit_busy()
         self.app.locked_target_id = None
         self.app.auto_lock_armed = True
-        self._disable_history_deletion()
         self.app.switch_screen("bluetooth")
-
-    def _disable_history_deletion(self) -> None:
-        """The destructive menu exists only before the first scanner starts."""
-        self.app.history_deletion_available = False
 
     @work(exclusive=True)
     async def perform_uninstall(self, device_id) -> None:

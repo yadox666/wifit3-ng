@@ -2,11 +2,12 @@ import asyncio
 import copy
 import os
 import time
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set
 
-from textual import work
+from textual import events, work
 from textual._two_way_dict import TwoWayDict
 from textual.app import ComposeResult, RenderResult
 from textual.binding import Binding
@@ -14,7 +15,9 @@ from textual.containers import Vertical
 from textual.reactive import Reactive
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, RichLog, Static
-from textual.widgets._header import HeaderClock, HeaderIcon, HeaderTitle
+from textual.widgets._header import HeaderClock
+
+from wifit3.ui.notification_center import WifiteHeader
 from textual.widgets.data_table import CellKey, ColumnKey, RowKey
 from rich.markup import escape
 from rich.text import Text
@@ -36,11 +39,26 @@ from wifit3.persist.config import Config
 from wifit3.persist.rsn_profiles import load_scan_rsn_profiles
 from wifit3.persist.targets import SavedTarget, TargetStoreError
 from wifit3.models import AccessPoint, Client, IdKey, IdSource
-from wifit3.targeting import TargetCandidate, ap_candidate, client_candidate
+from wifit3.targeting import (
+    TargetCandidate,
+    ap_candidate,
+    client_candidate,
+    is_target_entry,
+    is_whitelisted_entry,
+    iter_wifi_client_sightings,
+    match_access_point,
+    match_client,
+)
+from wifit3.ui.target_filter import ap_matches_target_filter, client_matches_target_filter
+from wifit3.ui.target_markers import target_row_prefix, whitelist_row_prefix
 from wifit3.wlan.enterprise_risk import enterprise_findings
 from wifit3.crack.handshake import pmkid_crackable
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
-from wifit3.ui.location_format import format_position
+from wifit3.ui.location_format import (
+    format_position_globe,
+    google_maps_search_url,
+    location_globe_cell,
+)
 from wifit3.ui.signal_bar import dbm_style
 from wifit3.ui.scan_export import export_scan_snapshot
 from wifit3.ui.screens.confirm_active import ConfirmActiveActionModal
@@ -51,10 +69,10 @@ from ..capture_events import (
 from .. import focus_model as fm
 from ..encryption_format import EncryptionType, format_encryption_markup, wep_key_ascii
 from wifit3.wlan.channels import band_ranges
+from wifit3.wlan.scan_plan import member_channels_for_scan, uses_per_card_scan_bands
 
 from .channel_filter import ChannelFilterDialog
 from .filter import EncryptionFilter, FilterBar, ScanFilter
-from .new_target import NewTargetModal, NewTargetResult
 from .open_probe_modal import OpenProbeSsidModal
 
 if TYPE_CHECKING:
@@ -82,6 +100,23 @@ def _format_age(seconds: int) -> str:
         return f"{minutes}m{remainder:02d}s"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h{minutes:02d}m"
+
+
+def format_ap_uptime(uptime_us: int | None) -> str:
+    """Compact beacon uptime for the scan table (AP timestamp field, microseconds)."""
+    if uptime_us is None:
+        return ""
+    seconds = uptime_us // 1_000_000
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if days:
+        return f"{days}d {hours:02d}h"
+    if hours:
+        return f"{hours}h {minutes:02}m"
+    if minutes:
+        return f"{minutes}m {seconds:02}s"
+    return f"{seconds}s"
 
 
 def _is_local_mac(mac: str) -> bool:
@@ -119,8 +154,11 @@ class _APRowState:
     channel: int = 0
     encryption: str = ""
     stations: str = ""
+    country_code: str = ""
+    uptime_us: int | None = None
     location: str = ""
     is_target: bool = False
+    is_whitelist: bool = False
     infrastructure_signature: tuple = ()
 
 
@@ -136,6 +174,7 @@ class _ClientRowState:
     location: str
     historical_aps: tuple[tuple[str, str], ...] = ()
     is_target: bool = False
+    is_whitelist: bool = False
 
 
 def device_scan_summary(members) -> Optional[str]:
@@ -158,7 +197,14 @@ def device_scan_summary(members) -> Optional[str]:
 
 class _ChannelReadout(HeaderClock):
     """Header right slot: active sort and live hopped channels."""
-    DEFAULT_CSS = "_ChannelReadout { width: auto; }"
+    DEFAULT_CSS = """
+    _ChannelReadout {
+        dock: right;
+        width: auto;
+        padding: 0 1;
+        content-align: right middle;
+    }
+    """
     # layout=True so a change re-sizes this auto-width slot; a plain repaint
     # leaves it 0-wide until the next resize.
     channels: Reactive[str] = Reactive("", layout=True)
@@ -173,18 +219,19 @@ class _ChannelReadout(HeaderClock):
         channel_text = " | ".join(f"CH:{m.current_channel:>3}" for m in members)
         sort_summary = getattr(self.screen, "_sort_summary", None)
         sort_text = sort_summary() if callable(sort_summary) else ""
-        self.channels = "  |  ".join(part for part in (sort_text, channel_text) if part)
+        body = "  |  ".join(part for part in (sort_text, channel_text) if part)
+        # Trailing separator is rendered here; NotificationBell shows only the icon.
+        self.channels = f"{body}  |  " if body else ""
 
     def render(self) -> RenderResult:
         return Text(self.channels)
 
 
-class _ScannerHeader(Header):
+class _ScannerHeader(WifiteHeader):
     """Header whose right slot shows the hopped channel(s) in place of the clock."""
-    def compose(self) -> ComposeResult:
-        yield HeaderIcon().data_bind(Header.icon)
-        yield HeaderTitle()
-        yield _ChannelReadout()
+
+    def __init__(self) -> None:
+        super().__init__(show_clock=False, trailing=_ChannelReadout)
 
 
 class _APScanTable(DataTable):
@@ -240,6 +287,24 @@ class _APScanTable(DataTable):
 
     def _release_scroll(self) -> None:
         self._suppress_scroll = False
+
+    def on_click(self, event: events.Click) -> None:
+        screen = self.screen
+        open_maps = getattr(screen, "_open_maps_from_table", None)
+        if not callable(open_maps):
+            return
+        coordinate = self.hover_coordinate
+        if coordinate is None:
+            return
+        try:
+            cell_key = self.coordinate_to_cell_key(coordinate)
+        except Exception:
+            return
+        if cell_key.column_key.value != "location":
+            return
+        if open_maps(cell_key.row_key.value):
+            screen._block_next_row_select = True
+            event.stop()
 
     def sort_aps(
         self,
@@ -334,7 +399,8 @@ class ScannerView(Screen):
         Binding("l", "toggle_log", "Toggle Log", show=True),
         Binding("t", "toggle_view", "APs/Clients", show=True),
         Binding("i", "toggle_infrastructure", "Infrastructure", show=True),
-        Binding("n", "new_target", "New Target", show=True),
+        Binding("n", "targets_editor", "Targets", show=True),
+        Binding("shift+t", "targets_editor", "Targets", show=True),
         Binding("a", "open_probe_ap", "Probe Honeypot", show=True),
         Binding("v", "open_vault", "Vault", show=True),
         Binding("x", "export_scan", "Export", show=True),
@@ -355,6 +421,8 @@ class ScannerView(Screen):
         ("encryption", "ENCRYPT"),
         ("wps", "WPS"),
         ("identity", "VENDOR/ID"),
+        ("country", "CC"),
+        ("uptime", "UPTIME"),
         ("stations", "CLIENT MFR"),
         ("location", "GPS"),
     ]
@@ -372,11 +440,11 @@ class ScannerView(Screen):
 
     # Columns whose values are right-aligned in display.
     _RIGHT_ALIGNED = {
-        "ssid", "channel", "signal", "beacons", "last_seen", "clients", "packets",
+        "ssid", "channel", "signal", "beacons", "last_seen", "clients", "packets", "uptime",
     }
 
     # Columns whose values are numeric for sorting.
-    _NUMERIC_COLS = {"channel", "signal", "beacons", "last_seen", "clients"}
+    _NUMERIC_COLS = {"channel", "signal", "beacons", "last_seen", "clients", "uptime"}
 
     # How long to flash the 🥓 cell when a beacon arrives.
     BEACON_FLASH_S = 0.2
@@ -418,6 +486,24 @@ class ScannerView(Screen):
         self._expanded_infrastructures: set[str] = set()
         self._expanded_member_ssids: dict[str, str] = {}
         self._secondary_member_bssids: set[str] = set()
+        self._table_map_urls: dict[str, str] = {}
+        self._block_next_row_select = False
+
+    def _sync_table_map_url(
+        self, row_key: str, positions, *, prefer_best: bool = False
+    ) -> None:
+        map_url = google_maps_search_url(positions, prefer_best=prefer_best)
+        if map_url:
+            self._table_map_urls[row_key] = map_url
+        else:
+            self._table_map_urls.pop(row_key, None)
+
+    def _open_maps_from_table(self, row_key: str) -> bool:
+        url = self._table_map_urls.get(row_key)
+        if not url:
+            return False
+        webbrowser.open(url)
+        return True
 
     # ----- Compose / mount ---------------------------------------------------
 
@@ -471,13 +557,49 @@ class ScannerView(Screen):
             self._schedule_oui_load(False)
 
     async def on_screen_resume(self) -> None:
-        # Restart channel hopper
+        if getattr(self.app, "resume_clients_view", False):
+            self.app.resume_clients_view = False
+            if self._view_mode != "clients":
+                self.action_toggle_view()
         array = self.app.array
         if not array:
             return
-        await array.start_hopping(
-            channels=self._channel_filter, interval=0.25
+        await self._start_scan_hopping()
+
+    async def _start_scan_hopping(self) -> None:
+        array = self.app.array
+        if not array:
+            return
+        plan = getattr(self.app, "scan_band_by_instance", None) or {}
+        member_channels = member_channels_for_scan(
+            array.members, self._channel_filter, plan
         )
+        await array.start_hopping(
+            channels=self._channel_filter,
+            interval=0.25,
+            member_channels=member_channels,
+        )
+        if uses_per_card_scan_bands(array.members, plan):
+            self._log_scan_band_plan(array, plan)
+
+    def _log_scan_band_plan(self, array, plan: dict) -> None:
+        log = self.query_one("#system-log", RichLog)
+        parts = []
+        for member in array.members:
+            band = plan.get(member.instance_key, "all")
+            if band == "2g":
+                label = "2.4 GHz"
+            elif band == "5g":
+                label = "5 GHz"
+            else:
+                label = "all bands"
+            parts.append(f"{member.name} → {label}")
+        if parts:
+            log.write(
+                "[dim]Per-card scan bands: "
+                + " · ".join(parts)
+                + " (Focus / campaigns unaffected)[/dim]"
+            )
 
     # ----- Column header / sort indicator ------------------------------------
 
@@ -553,6 +675,10 @@ class ScannerView(Screen):
                 if self._scan_filter.text and ap.ssid is None
                 else None
             )
+            if not ap.is_own_fake and not ap_matches_target_filter(
+                self._target_store(), ap, self._scan_filter.target_id,
+            ):
+                continue
             if not ap.is_own_fake and not self._scan_filter.matches(ap, ssid=guessed_ssid):
                 if ap.bssid in self.ap_cache:
                     self._forget_row(ap.bssid, drop_from_array=False)
@@ -597,7 +723,13 @@ class ScannerView(Screen):
             enc_markup = self._encryption_markup(ap)
             ident_summary = ap.identity.summary
             stations = self._station_labels.get(ap.bssid, "")
-            is_target = self._ap_is_saved_target(ap)
+            matched = self._match_wifi_ap(ap)
+            is_target = is_target_entry(matched)
+            is_whitelist = is_whitelisted_entry(matched)
+            if matched is not None:
+                self._notify_target_sighting(
+                    matched, f"AP {ap.ssid or ap.bssid}",
+                )
             infrastructure = self._infrastructure_members.get(ap.bssid)
             infrastructure_signature = (
                 tuple(
@@ -606,6 +738,8 @@ class ScannerView(Screen):
                 )
                 if infrastructure is not None else ()
             )
+
+            self._sync_table_map_url(ap.bssid, ap.positions, prefer_best=True)
 
             prev_state = self._row_states.get(ap.bssid)
             if prev_state is None:
@@ -625,8 +759,11 @@ class ScannerView(Screen):
                     channel=ap.channel,
                     encryption=enc_markup,
                     stations=stations,
-                    location=format_position(ap.positions),
+                    country_code=ap.country_code or "",
+                    uptime_us=ap.uptime_us,
+                    location=format_position_globe(ap.positions),
                     is_target=is_target,
+                    is_whitelist=is_whitelist,
                     infrastructure_signature=infrastructure_signature,
                 )
                 row_cells = [
@@ -653,10 +790,12 @@ class ScannerView(Screen):
                 if (
                     prev_state.is_stale != is_stale
                     or prev_state.is_target != is_target
+                    or prev_state.is_whitelist != is_whitelist
                     or prev_state.infrastructure_signature != infrastructure_signature
                 ):
                     prev_state.is_stale = is_stale
                     prev_state.is_target = is_target
+                    prev_state.is_whitelist = is_whitelist
                     prev_state.infrastructure_signature = infrastructure_signature
                     prev_state.signal = ap.signal
                     prev_state.beacons = shown_beacons
@@ -669,9 +808,11 @@ class ScannerView(Screen):
                     prev_state.chips_markup = chips_markup
                     prev_state.identity = ident_summary
                     prev_state.stations = stations
+                    prev_state.country_code = ap.country_code or ""
+                    prev_state.uptime_us = ap.uptime_us
                     prev_state.channel = ap.channel
                     prev_state.encryption = enc_markup
-                    prev_state.location = format_position(ap.positions)
+                    prev_state.location = format_position_globe(ap.positions)
                     for col_k, _ in self._COLUMNS:
                         cell = self._render_target_cell(
                             ap, col_k, is_stale, n_cli=n_cli,
@@ -729,11 +870,24 @@ class ScannerView(Screen):
                         prev_state.identity = ident_summary
                         table.update_cell(ap.bssid, "identity", self._render_target_cell(ap, "identity", is_stale))
 
+                    country = ap.country_code or ""
+                    if prev_state.country_code != country:
+                        prev_state.country_code = country
+                        table.update_cell(
+                            ap.bssid, "country", self._render_target_cell(ap, "country", is_stale),
+                        )
+
+                    if prev_state.uptime_us != ap.uptime_us:
+                        prev_state.uptime_us = ap.uptime_us
+                        table.update_cell(
+                            ap.bssid, "uptime", self._render_target_cell(ap, "uptime", is_stale),
+                        )
+
                     if prev_state.stations != stations:
                         prev_state.stations = stations
                         table.update_cell(ap.bssid, "stations", self._render_target_cell(ap, "stations", is_stale))
 
-                    location = format_position(ap.positions)
+                    location = format_position_globe(ap.positions)
                     if prev_state.location != location:
                         prev_state.location = location
                         table.update_cell(
@@ -856,6 +1010,14 @@ class ScannerView(Screen):
                 )
                 if record.bssid.casefold() != bssid.casefold()
             )
+            self._sync_table_map_url(client.mac, client.positions)
+            matched_client = self._match_wifi_client(client)
+            is_client_target = is_target_entry(matched_client)
+            is_client_whitelist = is_whitelisted_entry(matched_client)
+            store = self._target_store()
+            if store is not None:
+                for sighting, where in iter_wifi_client_sightings(store, client):
+                    self._notify_target_sighting(sighting, where)
             state = _ClientRowState(
                 manufacturer=manufacturer,
                 bssid=bssid,
@@ -864,9 +1026,10 @@ class ScannerView(Screen):
                 packets=client.packets,
                 last_seen=int(age),
                 probes=probes,
-                location=format_position(client.positions),
+                location=format_position_globe(client.positions),
                 historical_aps=historical_aps,
-                is_target=self._is_saved_target("client", client.mac),
+                is_target=is_client_target,
+                is_whitelist=is_client_whitelist,
             )
             cells = self._client_cells(client, state)
             previous = self._client_row_states.get(client.mac)
@@ -881,6 +1044,7 @@ class ScannerView(Screen):
         for mac in set(self._client_row_states) - visible:
             self._client_row_states.pop(mac, None)
             self._client_cache.pop(mac, None)
+            self._table_map_urls.pop(mac, None)
             try:
                 table.remove_row(mac)
                 rows_removed = True
@@ -901,6 +1065,10 @@ class ScannerView(Screen):
             )
 
     def _client_matches(self, client: Client, ap: AccessPoint | None) -> bool:
+        if not client_matches_target_filter(
+            self._target_store(), client, self._scan_filter.target_id,
+        ):
+            return False
         if client.signal < self._scan_filter.min_signal:
             return False
         if self._scan_filter.association == "connected" and not client.bssid:
@@ -967,20 +1135,55 @@ class ScannerView(Screen):
             Text(_format_age(state.last_seen), justify="right", style="dim"),
             manufacturer,
             probes,
-            Text(state.location, style=fg if state.location != "·" else "dim"),
+            location_globe_cell(
+                client.positions,
+                dim=state.last_seen > STALE_DURATION_S,
+            ),
         ]
         if state.last_seen > STALE_DURATION_S:
             for cell in cells:
                 cell.stylize("dim")
         if state.is_target:
-            cells[0] = Text("! ", style="bold red") + cells[0]
-            for cell in cells:
-                cell.stylize("bold red")
+            cells[0].stylize("bold red")
+            marked = target_row_prefix()
+            marked.append_text(cells[0])
+            cells[0] = marked
+        elif state.is_whitelist:
+            marked = whitelist_row_prefix()
+            marked.append_text(cells[0])
+            cells[0] = marked
         return cells
 
+    def _notify_target_sighting(self, target: SavedTarget, where: str) -> None:
+        self.app.record_target_sighting(target, where)
+
+    def _target_store(self):
+        return getattr(self.app, "target_store", None)
+
+    def _match_wifi_ap(self, ap: AccessPoint) -> SavedTarget | None:
+        store = self._target_store()
+        if store is None:
+            return None
+        members = self._infrastructure_members.get(ap.bssid)
+        if members is not None:
+            for member in members:
+                matched = match_access_point(store, member)
+                if matched is not None:
+                    return matched
+        return match_access_point(store, ap)
+
+    def _match_wifi_client(self, client: Client) -> SavedTarget | None:
+        store = self._target_store()
+        if store is None:
+            return None
+        return match_client(store, client)
+
     def _is_saved_target(self, kind: str, identifier: str) -> bool:
-        store = getattr(self.app, "target_store", None)
-        return store is not None and store.find("wifi", kind, identifier) is not None
+        store = self._target_store()
+        if store is None:
+            return False
+        entry = store.find("wifi", kind, identifier)
+        return is_target_entry(entry) or is_whitelisted_entry(entry)
 
     def _evict_expired_aps(self) -> None:
         if not self.app.array:
@@ -1014,6 +1217,7 @@ class ScannerView(Screen):
         self._prev_beacons.pop(bssid, None)
         self._beacon_flash_until.pop(bssid, None)
         self._row_states.pop(bssid, None)
+        self._table_map_urls.pop(bssid, None)
         try:
             self.query_one("#ap-table", DataTable).remove_row(bssid)
         except Exception:
@@ -1026,13 +1230,22 @@ class ScannerView(Screen):
         n_cli: int = 0, flash_bacon: bool = False,
         shown_beacons: Optional[int] = None, age: Optional[float] = None,
     ) -> Text:
-        if col_key == "ssid" and self._ap_is_saved_target(ap):
-            cell = self._ssid_cell(ap, target=True)
-            if is_stale:
-                cell.stylize("dim")
-            marked_cell = Text("! ", style="bold red", justify="right")
-            marked_cell.append_text(cell)
-            return marked_cell
+        if col_key == "ssid":
+            matched = self._match_wifi_ap(ap)
+            if is_target_entry(matched):
+                cell = self._ssid_cell(ap, target=True)
+                if is_stale:
+                    cell.stylize("dim")
+                marked_cell = target_row_prefix()
+                marked_cell.append_text(cell)
+                return marked_cell
+            if is_whitelisted_entry(matched):
+                cell = self._ssid_cell(ap, target=False)
+                if is_stale:
+                    cell.stylize("dim")
+                marked_cell = whitelist_row_prefix()
+                marked_cell.append_text(cell)
+                return marked_cell
         cell = self._render_cell(
             ap,
             col_key,
@@ -1045,10 +1258,7 @@ class ScannerView(Screen):
         return cell
 
     def _ap_is_saved_target(self, ap: AccessPoint) -> bool:
-        members = self._infrastructure_members.get(ap.bssid)
-        if members is not None:
-            return any(self._is_saved_target("ap", member.bssid) for member in members)
-        return self._is_saved_target("ap", ap.bssid)
+        return is_target_entry(self._match_wifi_ap(ap))
 
     def _render_cell(
         self, ap: AccessPoint, col_key: str, is_stale: bool,
@@ -1115,16 +1325,33 @@ class ScannerView(Screen):
                     style=f"{dim}cyan",
                 )
             return self._identity_cell(ap, is_stale)
+        if col_key == "country":
+            if infrastructure is not None:
+                codes = sorted({
+                    member.country_code for member in infrastructure if member.country_code
+                })
+                if len(codes) == 1:
+                    code = codes[0]
+                elif codes:
+                    code = "≠"
+                else:
+                    code = ""
+            else:
+                code = ap.country_code or ""
+            return Text(code if code else "·", style=f"{dim}{fg}" if code else "dim")
+        if col_key == "uptime":
+            if infrastructure is not None:
+                uptimes = [member.uptime_us for member in infrastructure if member.uptime_us is not None]
+                uptime_us = max(uptimes) if uptimes else ap.uptime_us
+            else:
+                uptime_us = ap.uptime_us
+            text = format_ap_uptime(uptime_us)
+            return Text(text if text else "·", justify="right", style=f"{dim}{fg}" if text else "dim")
         if col_key == "stations":
             label = self._station_labels.get(ap.bssid, "")
             return Text(_clip(label, _CLIENT_MFR_MAX), style=f"{dim}{fg}")
         if col_key == "location":
-            location = format_position(ap.positions)
-            return Text(
-                location,
-                style=f"{dim}{fg}" if location != "·" else f"{dim}dim",
-                no_wrap=True,
-            )
+            return location_globe_cell(ap.positions, dim=is_stale)
         return Text("")
 
     def _encryption_markup(self, ap: AccessPoint) -> str:
@@ -1450,6 +1677,18 @@ class ScannerView(Screen):
                 sentinel = int(is_empty != reverse)
                 return (sentinel, ident.lower(), sec_sig, bssid)
 
+            if sort_key == "country":
+                cc = (ap.country_code or "") if ap else ""
+                is_empty = not cc
+                sentinel = int(is_empty != reverse)
+                return (sentinel, cc, sec_sig, bssid)
+
+            if sort_key == "uptime":
+                up = ap.uptime_us if ap and ap.uptime_us is not None else -1
+                is_empty = up < 0
+                sentinel = int(is_empty != reverse)
+                return (sentinel, up, sec_sig, bssid)
+
             if isinstance(val, Text):
                 val = val.plain
             s = str(val).strip() if val is not None else ""
@@ -1723,7 +1962,7 @@ class ScannerView(Screen):
             self._pbc_capturing = False
             if self.app.screen is self:
                 # Resume hopping only if we're still the foreground screen (not Focus).
-                await array.start_hopping(channels=self._channel_filter, interval=0.25)
+                await self._start_scan_hopping()
 
     def action_open_vault(self) -> None:
         self.app.action_toggle_vault()
@@ -2101,38 +2340,16 @@ class ScannerView(Screen):
         except Exception:
             pass
 
-    def action_new_target(self) -> None:
+    def action_targets_editor(self) -> None:
         selected = self._selected_target_candidate()
         if selected is None:
-            self.notify("Select an AP or client first", severity="warning")
+            self.app.open_targets_editor()
             return
-        candidate, subject = selected
-        existing = self.app.target_store.find(
-            candidate.medium, candidate.kind, candidate.identifier
-        )
-        if existing is not None:
-            self.lock_target(existing, candidate, subject)
-            return
+        candidate, _subject = selected
+        self.app.open_targets_editor(prefill=candidate)
 
-        def completed(result: NewTargetResult | None) -> None:
-            if result is None:
-                return
-            try:
-                target = self.app.target_store.upsert(
-                    alias=result.alias,
-                    medium=candidate.medium,
-                    kind=candidate.kind,
-                    identifier=candidate.identifier,
-                    details=candidate.details,
-                )
-            except TargetStoreError as exc:
-                self.notify(str(exc), title="Targets", severity="error")
-                return
-            self.notify(f"Target {target.alias} saved", title="Targets")
-            if result.lock:
-                self.lock_target(target, candidate, subject)
-
-        self.app.push_screen(NewTargetModal(candidate), completed)
+    def action_new_target(self) -> None:
+        self.action_targets_editor()
 
     def _selected_target_candidate(
         self,
@@ -2197,12 +2414,12 @@ class ScannerView(Screen):
             return
         observed: list[tuple[float, SavedTarget, TargetCandidate, AccessPoint | Client]] = []
         for ap in array.get_access_points(include_eviltwin=False):
-            target = target_store.find("wifi", "ap", ap.bssid)
-            if target is not None and target.enabled:
+            target = match_access_point(target_store, ap)
+            if is_target_entry(target):
                 observed.append((ap.first_seen, target, ap_candidate(ap), ap))
         for client in array.clients.values():
-            target = target_store.find("wifi", "client", client.mac)
-            if target is not None and target.enabled:
+            target = match_client(target_store, client)
+            if is_target_entry(target):
                 ap = array.access_points.get(client.bssid) if client.bssid else None
                 observed.append((
                     client.first_seen,
@@ -2417,7 +2634,7 @@ class ScannerView(Screen):
         self._channel_filter = None if full_band else channels
         await array.stop_hopping()
         dropped = self._prune_aps_outside(channels)
-        await array.start_hopping(channels=self._channel_filter, interval=0.25)
+        await self._start_scan_hopping()
 
         log = self.query_one("#system-log", RichLog)
         pieces = [
@@ -2459,6 +2676,9 @@ class ScannerView(Screen):
     async def on_data_table_row_selected(
         self, event: DataTable.RowSelected
     ) -> None:
+        if self._block_next_row_select:
+            self._block_next_row_select = False
+            return
         if self._open_probe_campaign is not None and not self._open_probe_campaign.done:
             self.notify("Stop the active OPEN probe test before leaving", severity="warning")
             return
@@ -2468,11 +2688,21 @@ class ScannerView(Screen):
             return
         if self._view_mode == "clients":
             client = self._client_cache.get(row_key)
-            bssid = client.bssid if client else None
-            target_ap = self.app.array.access_points.get(bssid) if self.app.array and bssid else None
-        else:
-            bssid = row_key
-            target_ap = self.ap_cache.get(bssid)
+            if client is None:
+                return
+            if self.app.array:
+                await self.app.array.stop_hopping()
+            self.app.target_client = client
+            bssid = client.bssid
+            self.app.target_ap = (
+                self.app.array.access_points.get(bssid)
+                if self.app.array and bssid
+                else None
+            )
+            self.app.push_screen("client-focus")
+            return
+        bssid = row_key
+        target_ap = self.ap_cache.get(bssid)
         if target_ap is not None and target_ap.is_own_fake:
             state = "active" if target_ap.own_fake_active else "stopped"
             self.notify(
@@ -2483,6 +2713,7 @@ class ScannerView(Screen):
         if target_ap:
             if self.app.array:
                 await self.app.array.stop_hopping()
+            self.app.target_client = None
             self.app.target_ap = target_ap
             self.app.push_screen("focus")
 

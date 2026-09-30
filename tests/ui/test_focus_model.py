@@ -363,6 +363,22 @@ def test_router_identity_details_odm_wsc_beacon_with_branded_oui():
     ])
 
 
+def test_has_stored_wps_identity_requires_wps_and_wsc_evidence():
+    ap = build_ap(wps=True)
+    assert fm.has_stored_wps_identity(ap) is False
+    ap.identity.set(IdSource.WSC_M1, IdKey.MANUFACTURER, "Netgear")
+    ap.identity.set(IdSource.WSC_M1, IdKey.MODEL_NAME, "R7000")
+    assert fm.has_stored_wps_identity(ap) is True
+
+    beacon_only = build_ap(wps=True)
+    beacon_only.identity.set(IdSource.WSC_BEACON, IdKey.DEVICE_NAME, "RT-AC66U")
+    assert fm.has_stored_wps_identity(beacon_only) is True
+
+    no_wps = build_ap(wps=False)
+    no_wps.identity.set(IdSource.WSC_M1, IdKey.MANUFACTURER, "Netgear")
+    assert fm.has_stored_wps_identity(no_wps) is False
+
+
 def test_router_identity_details_includes_device_type():
     ap = AccessPoint(bssid="02:00:00:00:00:01")
     ap.identity.set(IdSource.WSC_M1, IdKey.MANUFACTURER, "HP")

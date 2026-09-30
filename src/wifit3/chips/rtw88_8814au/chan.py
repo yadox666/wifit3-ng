@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import logging
 
+from wifit3.wlan.channels import CHANNELS_5G
+
 from . import constants as C
 from . import rf
 from .transport import RTL8814AUTransport
@@ -31,7 +33,7 @@ from .transport import RTL8814AUTransport
 logger = logging.getLogger(__name__)
 
 SUPPORTED_CHANNELS_2G = list(range(1, 15))
-SUPPORTED_CHANNELS_5G = [36, 40, 44, 48, 149, 153, 157, 161, 165]
+SUPPORTED_CHANNELS_5G = list(CHANNELS_5G)
 
 
 def _set_rfe_reg_24g(transport: RTL8814AUTransport, rfe: int) -> None:

@@ -12,19 +12,32 @@ from textual.containers import Horizontal, Vertical
 from textual.reactive import Reactive
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, Input, RichLog, Select
-from textual.widgets._header import HeaderClock, HeaderIcon, HeaderTitle
+from textual.widgets._header import HeaderClock
+
+from wifit3.ui.notification_center import WifiteHeader
 
 from wifit3.bluetooth.assigned_numbers import manufacturer_label, service_label, service_name
 from wifit3.bluetooth.classification import device_classification
 from wifit3.models import BluetoothDevice
 from wifit3.persist.config import Config
 from wifit3.persist.targets import SavedTarget, TargetStoreError
-from wifit3.targeting import TargetCandidate, bluetooth_candidate
+from wifit3.targeting import (
+    TargetCandidate,
+    bluetooth_candidate,
+    is_target_entry,
+    is_whitelisted_entry,
+    match_bluetooth_device,
+)
 from wifit3.ui.bluetooth_export import export_bluetooth_bundle, export_btsnoop
 from wifit3.ui.location_format import format_position
 from wifit3.ui.signal_bar import dbm_style
+from wifit3.ui.target_filter import (
+    bluetooth_matches_target_filter,
+    build_target_select_options,
+    refresh_target_select,
+)
+from wifit3.ui.target_markers import target_row_prefix, whitelist_row_prefix
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
-from wifit3.ui.screens.new_target import NewTargetModal, NewTargetResult
 
 if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
@@ -124,14 +137,15 @@ class _BluetoothSortReadout(HeaderClock):
     summary: Reactive[str] = Reactive("", layout=True)
 
     def render(self) -> RenderResult:
-        return Text(self.summary)
+        body = (self.summary or "").strip()
+        if body:
+            return Text(f"{body}  |  ")
+        return Text("")
 
 
-class _BluetoothScannerHeader(Header):
-    def compose(self) -> ComposeResult:
-        yield HeaderIcon().data_bind(Header.icon)
-        yield HeaderTitle()
-        yield _BluetoothSortReadout()
+class _BluetoothScannerHeader(WifiteHeader):
+    def __init__(self) -> None:
+        super().__init__(show_clock=False, trailing=_BluetoothSortReadout)
 
 
 class BluetoothScannerView(Screen):
@@ -145,7 +159,8 @@ class BluetoothScannerView(Screen):
         Binding("a", "toggle_apple_group", "random dev-Ids"),
         Binding("s", "cycle_sort", "Sort Col"),
         Binding("o", "toggle_sort_dir", "Sort Asc/Desc"),
-        Binding("n", "new_target", "New Target"),
+        Binding("n", "targets_editor", "Targets"),
+        Binding("shift+t", "targets_editor", "Targets"),
         Binding("x", "export_scan", "Export"),
         Binding("f", "focus_filter", "Filter"),
         Binding("l", "toggle_log", "Toggle Log"),
@@ -155,6 +170,7 @@ class BluetoothScannerView(Screen):
     #bluetooth-filters { height: 3; padding: 0 1; }
     #bluetooth-filter-power { width: 14; margin-right: 1; }
     #bluetooth-filter-type { width: 14; margin-right: 1; }
+    #bluetooth-filter-target { width: 18; margin-right: 1; }
     #bluetooth-filter-text { width: 1fr; }
     """
 
@@ -197,6 +213,7 @@ class BluetoothScannerView(Screen):
         self._filter_text = ""
         self._min_signal = -100
         self._category = "All"
+        self._target_filter_id = ""
         self._target_navigation_pending = False
 
     def compose(self) -> ComposeResult:
@@ -218,6 +235,13 @@ class BluetoothScannerView(Screen):
                     value="All", allow_blank=False, compact=True,
                     id="bluetooth-filter-type",
                 )
+                yield Select(
+                    build_target_select_options(None),
+                    value="",
+                    allow_blank=False,
+                    compact=True,
+                    id="bluetooth-filter-target",
+                )
                 yield Input(
                     placeholder="device, manufacturer, service, address…",
                     compact=True,
@@ -232,6 +256,10 @@ class BluetoothScannerView(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
+        refresh_target_select(
+            self.query_one("#bluetooth-filter-target", Select),
+            getattr(self.app, "target_store", None),
+        )
         self._update_column_headers()
         self._update_sort_readout()
         self.query_one("#bluetooth-table", DataTable).focus()
@@ -466,19 +494,31 @@ class BluetoothScannerView(Screen):
         if is_stale:
             for cell in cells:
                 cell.stylize("dim")
-        store = getattr(self.app, "target_store", None)
-        is_target = (
-            not device.approximate_group
-            and store is not None
-            and store.find("bluetooth", "device", device.identifier) is not None
-        )
-        if is_target:
-            cells[0] = Text("! ", style="bold red") + cells[0]
-            for cell in cells:
-                cell.stylize("bold red")
+        matched = None
+        if not device.approximate_group:
+            store = getattr(self.app, "target_store", None)
+            if store is not None:
+                matched = match_bluetooth_device(store, device)
+                if matched is not None:
+                    self.app.record_target_sighting(
+                        matched,
+                        f"Bluetooth {device.name or device.identifier}",
+                    )
+        if is_target_entry(matched):
+            cells[0].stylize("bold red")
+            marked = target_row_prefix()
+            marked.append_text(cells[0])
+            cells[0] = marked
+        elif is_whitelisted_entry(matched):
+            marked = whitelist_row_prefix()
+            marked.append_text(cells[0])
+            cells[0] = marked
         return tuple(cells)
 
     def _matches_filter(self, device: BluetoothDevice) -> bool:
+        store = getattr(self.app, "target_store", None)
+        if not bluetooth_matches_target_filter(store, device, self._target_filter_id):
+            return False
         if device.rssi < self._min_signal:
             return False
         classification = device_classification(device)
@@ -666,10 +706,10 @@ class BluetoothScannerView(Screen):
             return
         self.connect_device(device)
 
-    def action_new_target(self) -> None:
+    def action_targets_editor(self) -> None:
         device = self._selected_device()
         if device is None:
-            self.notify("Select a Bluetooth device first", severity="warning")
+            self.app.open_targets_editor()
             return
         if device.approximate_group:
             self.notify(
@@ -677,33 +717,10 @@ class BluetoothScannerView(Screen):
                 severity="warning",
             )
             return
-        candidate = bluetooth_candidate(device)
-        existing = self.app.target_store.find(
-            candidate.medium, candidate.kind, candidate.identifier
-        )
-        if existing is not None:
-            self.lock_target(existing, candidate, device)
-            return
+        self.app.open_targets_editor(prefill=bluetooth_candidate(device))
 
-        def completed(result: NewTargetResult | None) -> None:
-            if result is None:
-                return
-            try:
-                target = self.app.target_store.upsert(
-                    alias=result.alias,
-                    medium=candidate.medium,
-                    kind=candidate.kind,
-                    identifier=candidate.identifier,
-                    details=candidate.details,
-                )
-            except TargetStoreError as exc:
-                self.notify(str(exc), title="Targets", severity="error")
-                return
-            self.notify(f"Target {target.alias} saved", title="Targets")
-            if result.lock:
-                self.lock_target(target, candidate, device)
-
-        self.app.push_screen(NewTargetModal(candidate), completed)
+    def action_new_target(self) -> None:
+        self.action_targets_editor()
 
     def _maybe_auto_lock_target(self) -> None:
         if (
@@ -717,10 +734,8 @@ class BluetoothScannerView(Screen):
         for device in self.app.bluetooth_manager.devices():
             if device.approximate_group or not device.is_connectable_with_bleak:
                 continue
-            target = self.app.target_store.find(
-                "bluetooth", "device", device.identifier,
-            )
-            if target is not None and target.enabled:
+            target = match_bluetooth_device(self.app.target_store, device)
+            if is_target_entry(target):
                 matches.append((device.first_seen, target, device))
         if matches:
             _seen, target, device = min(matches, key=lambda item: item[0])
@@ -858,6 +873,9 @@ class BluetoothScannerView(Screen):
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "bluetooth-filter-power":
             self._min_signal = int(event.value)
+        elif event.select.id == "bluetooth-filter-target":
+            self._target_filter_id = str(event.value or "")
+            self.refresh_table()
         elif event.select.id == "bluetooth-filter-type":
             self._category = str(event.value)
         else:

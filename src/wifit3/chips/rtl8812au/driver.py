@@ -50,7 +50,6 @@ from wifit3.dot11.parser import WlanFrameParser
 
 from .chan import (
     CHANNELS_5G_ALL,
-    CHANNELS_5G_NON_DFS,
     channel_band_is_2g,
     set_channel_2g_20mhz,
     set_channel_5g_20mhz,
@@ -125,7 +124,7 @@ class RTL8812AUDriver(Driver):
 
     # 2.4 GHz channels 1..14 + non-DFS 5 GHz (UNII-1 + UNII-3). DFS channels
     # are excluded by default to avoid the regulator-required clearance.
-    SUPPORTED_CHANNELS = list(range(1, 15)) + list(CHANNELS_5G_NON_DFS)
+    SUPPORTED_CHANNELS = list(range(1, 15)) + list(CHANNELS_5G_ALL)
     FAKE_MAC = FakeMacSupport.UNIMPLEMENTED   # active-monitor not ported for this variant
 
     @classmethod

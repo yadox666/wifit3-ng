@@ -3,6 +3,7 @@ into the pool. The real WifiteApp / DeviceManager / prompter run; only wlan_ifac
 from unittest.mock import AsyncMock
 
 import pytest
+from textual.widgets import Static
 
 import wifit3.device.manager as manager
 from wifit3.chips.driver import DeviceID
@@ -59,8 +60,9 @@ async def test_arrival_on_splash_updates_the_list_not_a_prompt():
         app._on_devices_changed([dev], [dev], [])
         await pilot.pause(0)
         assert isinstance(app.screen, SplashView)     # no prompt on Splash
-        labels = [str(i.query_one("Label").render()) for i in app.screen.query("ListView > ListItem")]
-        assert any("RT5370 (test)" in text for text in labels)
+        row = app.screen.query_one("#device-row-0")
+        label = str(row.query_one(".device-name", Static).render())
+        assert "RT5370 (test)" in label
 
 
 @pytest.mark.asyncio

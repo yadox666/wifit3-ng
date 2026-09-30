@@ -64,9 +64,11 @@ from wifit3.dot11.parser import WlanFrameParser
 
 from .bbp import init_bbp, prepare_bbp
 from .chan import (
-    CHANNELS_5G_NON_DFS, default_power as _default_power, is_xtal_40mhz,
+    default_power as _default_power,
+    is_xtal_40mhz,
     set_channel as _set_channel,
 )
+from wifit3.wlan.channels import DUAL_BAND_SCAN_CHANNELS
 from .eeprom import parse_eeprom, read_eeprom_efuse, resolve_rf_chip
 from .firmware import load_firmware, load_firmware_blob
 from .link_tuner import LINK_TUNE_SECONDS, LinkTuner, compute_link_vgc, set_vgc
@@ -97,12 +99,12 @@ class RT2800USBDriver(Driver):
 
     #     0x3572 silicon (RT3572 / AWUS051NH v2) → 2.4 + 5 GHz non-DFS
     _CHANNELS_BY_CHIP: dict = {
-        "rt3572": list(range(1, 15)) + list(CHANNELS_5G_NON_DFS),
+        "rt3572": list(DUAL_BAND_SCAN_CHANNELS),
     }
     # Class-level fallback = union of all variants. Used only if a hint is
     # missing (e.g. test code instantiates without going through
     # from_usb_device). Instance __init__ overlays the per-chip list.
-    SUPPORTED_CHANNELS = list(range(1, 15)) + list(CHANNELS_5G_NON_DFS)
+    SUPPORTED_CHANNELS = list(DUAL_BAND_SCAN_CHANNELS)
     FAKE_MAC = FakeMacSupport.SPOOFABLE
 
     @classmethod

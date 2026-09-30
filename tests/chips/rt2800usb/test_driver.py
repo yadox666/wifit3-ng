@@ -90,13 +90,12 @@ def test_supported_ids_cover_all_variants():
     assert hints == {"rt3572"}
 
 
-def test_supported_channels_covers_2g_plus_5g_non_dfs():
-    """M-A2 extends to 5 GHz non-DFS channels. RT5392 will fail-soft on
-    these (driver.set_channel returns False); RT3572 + RT5572 use them."""
-    from wifit3.chips.rt2800usb.chan import CHANNELS_5G_NON_DFS
-    expected = list(range(1, 15)) + list(CHANNELS_5G_NON_DFS)
-    assert RT2800USBDriver.SUPPORTED_CHANNELS == expected
-    # Spot-check that the canonical non-DFS UNII channels are all present.
+def test_supported_channels_covers_2g_plus_5g_including_dfs():
+    """Scanner hop list includes DFS primaries (passive RX only)."""
+    from wifit3.wlan.channels import DUAL_BAND_SCAN_CHANNELS
+
+    assert RT2800USBDriver.SUPPORTED_CHANNELS == list(DUAL_BAND_SCAN_CHANNELS)
+    assert 60 in RT2800USBDriver.SUPPORTED_CHANNELS
     for ch in (36, 40, 44, 48, 149, 153, 157, 161, 165):
         assert ch in RT2800USBDriver.SUPPORTED_CHANNELS
 

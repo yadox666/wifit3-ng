@@ -99,6 +99,9 @@ class WlanInterface:
             connected = await self.driver.connect(progress_cb=progress_cb)
             if connected:
                 self.connected_at = time.time()
+                from wifit3.wlan.regulatory import finalize_driver_regulatory_status
+
+                finalize_driver_regulatory_status(self.driver)
             return connected
         except BringUpError as e:
             if is_permission_error(e):
@@ -332,8 +335,8 @@ class WlanInterface:
             if not channels:
                 channels = self.supported_channels or [1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 5, 10]
 
-            # Hop busy channels (1/6/11) first so the AP list fills before the scanner's
-            # first sort tick. SUPPORTED_CHANNELS stays sequential for the filter UI.
+            # Visit every channel, but jump across overlapping 2.4 GHz spectrum instead
+            # of walking 1..14. SUPPORTED_CHANNELS stays sequential for the filter UI.
             channels = scan_hop_order(channels)
 
             await self._cancel_hop_task()

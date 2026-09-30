@@ -29,7 +29,7 @@ async def test_single_card_channel_is_visible_on_first_paint():
     async with app.run_test() as pilot:
         await pilot.pause(0)
         readout = app.query_one(_ChannelReadout)
-        assert readout.channels == "CH:  1"
+        assert readout.channels == "CH:  1  |  "
         assert readout.region.width > 0
 
 
@@ -45,7 +45,7 @@ async def channel_readout():
 async def test_multi_card_joined_and_width_padded(channel_readout):
     channel_readout.app.array = _array(9, 149)
     channel_readout._poll()
-    assert channel_readout.channels == "CH:  9 | CH:149"
+    assert channel_readout.channels == "CH:  9 | CH:149  |  "
 
 
 @pytest.mark.asyncio(loop_scope="module")

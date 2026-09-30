@@ -49,13 +49,12 @@ async def test_layout_geometry():
                 return scr.query_one(sel).region
 
             card, dash, router = reg("#card"), reg("#dashboard"), reg("#router")
-            # Endpoints pinned at the art width (20); dashboard fills the middle. On wide
-            # terminals the mid row gets symmetric side padding (none at 80 cols).
+            # Card column is 20 cells (one dongle) or 40 (two); dashboard fills the middle.
             pad = max(0, round((w - 80) * 0.4))
-            assert card.width == 20 and router.width == 20
+            assert card.width in (20, 40) and router.width == 20
             assert card.x == pad and card.right == dash.x
             assert dash.right == router.x and router.right == w - pad
-            assert dash.width == w - 2 * pad - 40
+            assert dash.width == w - 2 * pad - card.width - router.width
 
             log, clients = reg("#log"), reg("#clients")
             # Clients is a fixed exact-fit column; log takes the rest; no overlap.

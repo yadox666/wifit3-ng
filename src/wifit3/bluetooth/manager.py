@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import platform
 import sys
 import threading
 import time
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from bleak import BleakClient, BleakScanner
@@ -45,6 +46,43 @@ class BluetoothScanError(RuntimeError):
     """The platform Bluetooth backend could not start scanning."""
 
 
+@dataclass(frozen=True, slots=True)
+class OsBleSourceStatus:
+    enabled: bool
+    available: bool | None
+    state: str
+    backend: str
+    operating_system: str
+    manufacturer: str
+    adapter: str
+    detail: str
+
+    @property
+    def instance_key(self) -> tuple:
+        return (
+            self.enabled,
+            self.available,
+            self.state,
+            self.backend,
+            self.adapter,
+            self.detail,
+        )
+
+
+def _os_ble_backend_info(scanner) -> tuple[str, str, str]:
+    backend = getattr(scanner, "_backend", scanner)
+    backend_type = type(backend)
+    identity = f"{backend_type.__module__}.{backend_type.__name__}".casefold()
+    if "corebluetooth" in identity:
+        return "CoreBluetooth", "Apple", "System adapter"
+    if "bluez" in identity:
+        adapter = str(getattr(backend, "_adapter", "") or "System adapter")
+        return "BlueZ", "", adapter
+    if "winrt" in identity:
+        return "WinRT", "Microsoft", "System adapter"
+    return backend_type.__name__, "", "System adapter"
+
+
 class BluetoothManager:
     """Owns either system BLE or dedicated USB discovery and its latest observations."""
 
@@ -61,6 +99,7 @@ class BluetoothManager:
         fix_provider: Callable[[], LocationFix | None] | None = None,
         movement_provider: Callable[[], float] | None = None,
         accuracy_provider: Callable[[], float] | None = None,
+        os_ble_enabled: bool = True,
     ) -> None:
         self._scanner_factory = scanner_factory
         self._client_factory = client_factory
@@ -71,6 +110,19 @@ class BluetoothManager:
         self.fix_provider = fix_provider
         self.movement_provider = movement_provider
         self.accuracy_provider = accuracy_provider
+        self.os_ble_enabled = os_ble_enabled
+        self.os_ble_status = self._disabled_os_ble_status() if not os_ble_enabled else (
+            OsBleSourceStatus(
+                True,
+                None,
+                "CHECKING",
+                "Bleak",
+                platform.system(),
+                "",
+                "System adapter",
+                "Checking operating-system BLE availability",
+            )
+        )
         self._scanner = None
         self._usb_scanner = None
         self._usb_reservations: dict[tuple, Any] = {}
@@ -228,6 +280,83 @@ class BluetoothManager:
             self._reserve_macos_classic_controllers(controllers)
         return controllers
 
+    def _disabled_os_ble_status(self) -> OsBleSourceStatus:
+        return OsBleSourceStatus(
+            False,
+            None,
+            "APP-DISABLED",
+            "Bleak",
+            platform.system(),
+            "",
+            "System adapter",
+            "Disabled for wifit3 on the startup screen",
+        )
+
+    def set_os_ble_enabled(self, enabled: bool) -> None:
+        self.os_ble_enabled = enabled
+        if not enabled:
+            self.os_ble_status = self._disabled_os_ble_status()
+        elif self.os_ble_status.state == "APP-DISABLED":
+            self.os_ble_status = replace(
+                self.os_ble_status,
+                enabled=True,
+                available=None,
+                state="CHECKING",
+                detail="Checking operating-system BLE availability",
+            )
+
+    async def probe_os_ble(self) -> OsBleSourceStatus:
+        if not self.os_ble_enabled:
+            self.os_ble_status = self._disabled_os_ble_status()
+            return self.os_ble_status
+        if self._scanner is not None:
+            self.os_ble_status = replace(
+                self.os_ble_status,
+                enabled=True,
+                available=True,
+                state="OS-ACTIVE",
+                detail="Operating-system BLE discovery is active",
+            )
+            return self.os_ble_status
+        scanner = self._scanner_factory(
+            detection_callback=lambda _device, _advertisement: None,
+        )
+        backend, manufacturer, adapter = _os_ble_backend_info(scanner)
+        started = False
+        try:
+            await asyncio.wait_for(scanner.start(), timeout=3.0)
+            started = True
+        except Exception as exc:
+            detail = str(exc).strip() or type(exc).__name__
+            self.os_ble_status = OsBleSourceStatus(
+                True,
+                False,
+                "OS-DISABLED",
+                backend,
+                platform.system(),
+                manufacturer,
+                adapter,
+                detail,
+            )
+        else:
+            self.os_ble_status = OsBleSourceStatus(
+                True,
+                True,
+                "OS-READY",
+                backend,
+                platform.system(),
+                manufacturer,
+                adapter,
+                "Operating-system BLE scanning is available",
+            )
+        finally:
+            if started:
+                try:
+                    await scanner.stop()
+                except Exception:
+                    pass
+        return self.os_ble_status
+
     def register_advertisement_callback(
         self, callback: Callable[[BluetoothDevice], None],
     ) -> None:
@@ -249,6 +378,8 @@ class BluetoothManager:
             self._inspection_callbacks.remove(callback)
 
     async def start(self) -> None:
+        if not self.os_ble_enabled:
+            raise BluetoothScanError("OS BLE source is disabled on the startup screen")
         if self.is_scanning:
             return
         scanner = self._scanner_factory(detection_callback=self._on_advertisement)
@@ -256,12 +387,30 @@ class BluetoothManager:
             await scanner.start()
         except Exception as exc:
             self.scan_failures += 1
+            self.os_ble_status = replace(
+                self.os_ble_status,
+                enabled=True,
+                available=False,
+                state="OS-DISABLED",
+                detail=str(exc).strip() or type(exc).__name__,
+            )
             try:
                 await scanner.stop()
             except Exception:
                 pass
             raise BluetoothScanError(str(exc) or type(exc).__name__) from exc
         self._scanner = scanner
+        backend, manufacturer, adapter = _os_ble_backend_info(scanner)
+        self.os_ble_status = OsBleSourceStatus(
+            True,
+            True,
+            "OS-ACTIVE",
+            backend,
+            platform.system(),
+            manufacturer,
+            adapter,
+            "Operating-system BLE discovery is active",
+        )
         self._resume_usb_controller = None
         self.scan_started_at = time.time()
 
@@ -269,7 +418,7 @@ class BluetoothManager:
         if self.is_scanning:
             return
         system_scanner = None
-        if not controller.supports_le:
+        if not controller.supports_le and self.os_ble_enabled:
             system_scanner = self._scanner_factory(detection_callback=self._on_advertisement)
         with self._usb_reservation_lock:
             usb_scanner = self._usb_reservations.pop(controller.instance_key, None)
@@ -295,6 +444,18 @@ class BluetoothManager:
             raise BluetoothScanError(str(exc) or type(exc).__name__) from exc
         self._scanner = system_scanner
         self._usb_scanner = usb_scanner
+        if system_scanner is not None:
+            backend, manufacturer, adapter = _os_ble_backend_info(system_scanner)
+            self.os_ble_status = OsBleSourceStatus(
+                True,
+                True,
+                "OS-ACTIVE",
+                backend,
+                platform.system(),
+                manufacturer,
+                adapter,
+                "Operating-system BLE discovery is active",
+            )
         self._resume_usb_controller = controller
         self.scan_started_at = time.time()
 
@@ -312,6 +473,13 @@ class BluetoothManager:
                 await scanner.stop()
             except Exception:
                 logger.debug("Bluetooth scanner stop failed", exc_info=True)
+            if self.os_ble_enabled:
+                self.os_ble_status = replace(
+                    self.os_ble_status,
+                    available=True,
+                    state="OS-READY",
+                    detail="Operating-system BLE scanning is available",
+                )
         if usb_scanner is None:
             return
         keep_reserved = (

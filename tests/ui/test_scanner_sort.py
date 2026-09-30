@@ -41,6 +41,7 @@ class _FakeIface:
         self.supported_channels = supported
         self.current_channel = supported[0] if supported else 1
         self.chipset = "test"
+        self.instance_key = ("test",)
         self._is_hopping = True
 
     async def stop_hopping(self) -> None:
@@ -61,7 +62,7 @@ class _FakeArray:
     def get_access_points(self, include_eviltwin: bool = True) -> List[AccessPoint]:
         return list(self.access_points.values())
 
-    async def start_hopping(self, channels=None, interval=0.25) -> None:
+    async def start_hopping(self, channels=None, interval=0.25, **kwargs) -> None:
         pass
 
     async def stop_hopping(self) -> None:

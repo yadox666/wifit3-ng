@@ -78,6 +78,8 @@ from .tx import inject_frame as tx_inject_frame, stamp_seq_ctrl
 from .skey import shared_key_table_clear
 from .wcid import wcid_table_clear
 
+from wifit3.wlan.channels import DUAL_BAND_SCAN_CHANNELS
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,14 +90,7 @@ class MT76x2UDriver(Driver):
     firmware upload.
     """
 
-    # 2.4 GHz channels 1..14 + non-DFS 5 GHz (UNII-1 + UNII-3).
-    # DFS bands (52..144) are PHY-capable on this chip but require radar
-    # detection support we won't ship; left out until that lands.
-    SUPPORTED_CHANNELS = (
-        list(range(1, 15))
-        + [36, 40, 44, 48]
-        + [149, 153, 157, 161, 165]
-    )
+    SUPPORTED_CHANNELS = list(DUAL_BAND_SCAN_CHANNELS)
     FAKE_MAC = FakeMacSupport.SPOOFABLE
     LINUX_REPLUG_AFTER_MODPROBE = False   # self-colds: force_power_cycle → cold-equivalent, no replug
 
@@ -486,6 +481,9 @@ class MT76x2UDriver(Driver):
 
         if progress_cb:
             progress_cb(1.0, f"MT7612U RX live on ch {self.current_channel}")
+        from wifit3.wlan.regulatory import set_driver_regulatory_status
+
+        set_driver_regulatory_status(self, applies_per_channel=True)
         return True
 
     def _on_decoded_rx(self, decoded: dict) -> None:

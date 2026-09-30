@@ -23,8 +23,8 @@ async def test_app_layout_and_boot():
         # Check Splash Screen Components
         ascii_art = pilot.app.screen.query_one("#ascii-art")
         assert ascii_art is not None
-        device_list = pilot.app.screen.query_one("#device-list")
-        assert device_list is not None
+        device_picker = pilot.app.screen.query_one("#device-picker")
+        assert device_picker is not None
         offline_button = pilot.app.screen.query_one("#offline-btn", Button)
         assert not offline_button.disabled
         assert "offline" in pilot.app._installed_screens

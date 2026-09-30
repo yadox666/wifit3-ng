@@ -63,6 +63,7 @@ class ClientWidget(Horizontal):
         )
         self._power = client.signal
         self._packets = client.packets
+        self._ipv4_hint = ""
 
     def compose(self) -> ComposeResult:
         badge = (
@@ -126,7 +127,30 @@ class ClientWidget(Horizontal):
         )
         if manufacturer != self._manufacturer:
             self._manufacturer = manufacturer
-            self._mfr_label.update(manufacturer)
+            self._repaint_mfr_label()
+
+    def _repaint_mfr_label(self) -> None:
+        ipv4 = self._ipv4_hint
+        if ipv4 and self._manufacturer:
+            self._mfr_label.update(f"{self._manufacturer}  {ipv4}")
+        elif ipv4:
+            self._mfr_label.update(ipv4)
+        else:
+            self._mfr_label.update(self._manufacturer)
+
+    def set_ipv4_hint(self, ipv4: str) -> None:
+        """Show a swept/observed IPv4 beside the vendor when known."""
+        if self._is_fake:
+            return
+        ipv4 = ipv4.strip()
+        if ipv4 == self._ipv4_hint:
+            return
+        self._ipv4_hint = ipv4
+        self._repaint_mfr_label()
+        if ipv4:
+            base_tip = self._mac_label.tooltip or self._mac
+            if ipv4 not in base_tip:
+                self._mac_label.tooltip = f"{base_tip} · IPv4 {ipv4}"
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
@@ -272,6 +296,7 @@ class ClientsList(Vertical):
         self._website_facts: list[NetworkFact] = []
         self._network_revision = -1
         self._search_text = ""
+        self._associated_ap = None
 
     def compose(self) -> ComposeResult:
         search_box = Horizontal(
@@ -290,6 +315,9 @@ class ClientsList(Vertical):
         search_box.display = False
         yield search_box
         with Vertical(id="client-pane"):
+            ap_banner = Static("", id="associated-ap-banner", classes="associated-ap-banner")
+            ap_banner.display = False
+            yield ap_banner
             yield Button("Deauth all", id="deauth-all", classes="bcast-btn",
                          tooltip="Deauthenticate all clients (Broadcast)")
             with Horizontal(classes="client-columns"):
@@ -343,6 +371,7 @@ class ClientsList(Vertical):
                 self._rows_host().mount(widget)
             else:
                 row.update_stats(c.signal, c.packets)
+        self._apply_client_ipv4_hints()
         self._apply_client_filter()
         self._update_title()
 
@@ -356,6 +385,20 @@ class ClientsList(Vertical):
         for row in self._rows.values():
             row.set_deauth_enabled(enabled)
 
+    def set_associated_ap(self, ap) -> None:
+        """Show the live associated access point above client rows (Client Focus)."""
+        self._associated_ap = ap
+        if not self.is_mounted:
+            return
+        banner = self.query_one("#associated-ap-banner", Static)
+        if ap is None:
+            banner.display = False
+            banner.update("")
+            return
+        ssid = ap.ssid or "‹hidden›"
+        banner.update(f"🛜 AP  {ssid}  ·  {ap.bssid}")
+        banner.display = True
+
     def set_open_network_metadata(
         self,
         metadata: NetworkMetadata | None,
@@ -363,25 +406,29 @@ class ClientsList(Vertical):
         enabled: bool,
     ) -> None:
         self._open_network_mode = enabled
-        self._network_metadata = metadata if enabled else None
+        self._network_metadata = metadata
         self.query_one("#client-web-search-box").display = enabled
         self.query_one("#website-pane").display = enabled
         self.query_one("#client-pane").styles.height = "1fr"
         if not enabled:
             self._website_facts = []
-            self._network_revision = -1
             self._search_text = ""
             search = self.query_one("#client-web-search", Input)
             if search.value:
                 search.value = ""
-        elif metadata is not None and metadata.revision != self._network_revision:
-            with metadata.lock:
-                self._website_facts = sorted(
-                    metadata.facts.get("websites", ()),
-                    key=lambda fact: fact.last_seen,
-                    reverse=True,
-                )
-                self._network_revision = metadata.revision
+        if metadata is not None and metadata.revision != self._network_revision:
+            if enabled:
+                with metadata.lock:
+                    self._website_facts = sorted(
+                        metadata.facts.get("websites", ()),
+                        key=lambda fact: fact.last_seen,
+                        reverse=True,
+                    )
+            self._network_revision = metadata.revision
+            self._apply_client_ipv4_hints()
+        elif metadata is None:
+            self._network_revision = -1
+            self._apply_client_ipv4_hints()
         self._apply_filter()
         self._update_title()
 
@@ -404,10 +451,28 @@ class ClientsList(Vertical):
         self._apply_client_filter()
         self._paint_websites()
 
+    def _ipv4_hint_for_mac(self, mac: str) -> str:
+        metadata = self._network_metadata
+        if metadata is None:
+            return ""
+        with metadata.lock:
+            client = metadata.clients.get(mac.casefold())
+            if client is None:
+                return ""
+            addresses = client.facts.get("ipv4_addresses", ())
+            if not addresses:
+                return ""
+            return addresses[-1].value
+
+    def _apply_client_ipv4_hints(self) -> None:
+        for mac, row in self._rows.items():
+            row.set_ipv4_hint(self._ipv4_hint_for_mac(mac))
+
     def _apply_client_filter(self) -> None:
         tokens = self._search_tokens()
         for row in self._rows.values():
-            searchable = f"{row._mac} {row._manufacturer}".casefold()
+            ipv4 = self._ipv4_hint_for_mac(row._mac)
+            searchable = f"{row._mac} {row._manufacturer} {ipv4}".casefold()
             row.display = all(token in searchable for token in tokens)
 
     def _paint_websites(self) -> None:

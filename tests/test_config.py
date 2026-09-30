@@ -14,6 +14,7 @@ _DEFAULTS = {n: getattr(Config, n)
                  "target_reacquire_timeout", "target_capture_max_mb",
                  "target_capture_max_parts", "gps_port",
                  "gps_movement_threshold_m", "gps_max_accuracy_m",
+                 "os_ble_enabled",
                  "wifi_regulatory_country")}
 
 
@@ -161,6 +162,14 @@ def test_update_preference_save_load_roundtrip(config_path):
     Config.auto_check_updates = False
     Config.load()
     assert Config.auto_check_updates is True
+
+
+def test_os_ble_enabled_save_load_roundtrip(config_path):
+    Config.os_ble_enabled = False
+    Config.save()
+    Config.os_ble_enabled = True
+    Config.load()
+    assert Config.os_ble_enabled is False
 
 
 def test_active_action_preferences_save_load_roundtrip(config_path):

@@ -31,6 +31,18 @@ def vendor_for_mac(mac: str) -> str | None:
     return canonical_vendor(lookup_oui(mac))
 
 
+def is_locally_administered_mac(mac: str) -> bool:
+    """Whether the address uses the locally administered (randomized) bit."""
+    normalized = hex_mac(mac)
+    if len(normalized) != 12:
+        return False
+    try:
+        first_octet = int(normalized[:2], 16)
+    except ValueError:
+        return False
+    return bool(first_octet & 0b10)
+
+
 def is_manufacturer_mac(mac: str) -> bool:
     """Whether a unicast MAC is globally assigned and has a known manufacturer."""
     normalized = hex_mac(mac)

@@ -14,6 +14,7 @@ from wifit3.ui.screens.focus_v2.art import display_name
 from wifit3.campaigns.eviltwin import (
     EvilTwinInput, PuntMode, default_punt_modes, csa_target_channel,
 )
+from wifit3.dot11.mac import increment_mac_address
 
 _MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
 
@@ -25,7 +26,7 @@ _DEFAULT_CYCLE = 5
 
 
 def _plus_one(bssid: str) -> str:
-    return bssid[:-1] + format((int(bssid[-1], 16) + 1) % 16, "x")
+    return increment_mac_address(bssid)
 
 
 def _random_bssid() -> str:
@@ -190,7 +191,9 @@ class EvilTwinInputModal(ModalScreen[Optional[EvilTwinInput]]):
         if bid == "bssid-same":
             bssid.value = self.target.bssid
         elif bid == "bssid-plus1":
-            bssid.value = _plus_one(self.target.bssid)
+            current = bssid.value.strip().lower()
+            base = current if _MAC_RE.match(current) else self.target.bssid.lower()
+            bssid.value = increment_mac_address(base)
         elif bid == "bssid-random":
             bssid.value = _random_bssid()
         elif bid == "btn-start":

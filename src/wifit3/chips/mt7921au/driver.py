@@ -16,7 +16,7 @@ from wifit3.chips.driver import DeviceID, Driver, FakeMacSupport, ProgressCallba
 from wifit3.chips.products import ALFA, Panda
 from wifit3.errors import BringUpError
 from wifit3.dot11.parser import WlanFrameParser
-from wifit3.wlan.channels import ChannelSpec
+from wifit3.wlan.channels import ChannelSpec, DUAL_BAND_SCAN_CHANNELS
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +35,7 @@ class MT7921AUDriver(Driver):
     re-sync the channel. Cold chips take the full _cold_boot path.
     """
 
-    # Dual-band Wi-Fi 6 radio. 2.4 GHz (1-14) + the 5 GHz primary channels of
-    # the world regulatory domain (regdomain.CHANNELS_5GHZ).
-    SUPPORTED_CHANNELS = list(range(1, 15)) + [
-        36, 40, 44, 48, 149, 153, 157, 161, 165,
-    ]
+    SUPPORTED_CHANNELS = list(DUAL_BAND_SCAN_CHANNELS)
     SUPPORTED_CHANNEL_WIDTHS = (20, 40)
     # Bench (rx_autoack, 2026-07-16): auto-ACKs a spoofed MAC via active monitor on both
     # bands (2G 102/100, 5G 100/100); does NOT ACK its own silicon MAC. Behaves SPOOFABLE.
@@ -196,6 +192,9 @@ class MT7921AUDriver(Driver):
         await chip_init.enter_monitor(self.transport, self._channel)
 
         self.is_warm = False
+        from wifit3.wlan.regulatory import set_driver_regulatory_status
+
+        set_driver_regulatory_status(self, domain_pushed=True)
         if progress_cb:
             progress_cb(1.0, "Done")
         logger.info("MT7921AU monitor mode ready (cold boot) on channel %d.", self._channel)
@@ -271,6 +270,9 @@ class MT7921AUDriver(Driver):
             progress_cb(0.9, "Tuning...")
         await self.set_channel(self._channel)
         self.is_warm = True
+        from wifit3.wlan.regulatory import set_driver_regulatory_status
+
+        set_driver_regulatory_status(self, warm_skip=True)
         if progress_cb:
             progress_cb(1.0, "Done")
         logger.info("MT7921AU warm reattach ready on channel %d.", self._channel)

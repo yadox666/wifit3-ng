@@ -297,6 +297,18 @@ async def test_start_hopping_spread_partitions_channels():
     assert five.hop_calls == [[36, 44]]
 
 
+async def test_start_hopping_member_channels_overrides_spread():
+    two4 = FakeIface("wlan0", [1, 6, 11])
+    five = FakeIface("wlan1", [36, 44])
+    a = _pool(two4, five)
+    await a.start_hopping(
+        [1, 6, 11, 36, 44],
+        member_channels={two4: [1, 6], five: [44]},
+    )
+    assert two4.hop_calls[0] == [1, 6]
+    assert five.hop_calls[0] == [44]
+
+
 async def test_start_hopping_balances_across_equal_cards():
     x = FakeIface("wlan0", [1, 6, 11])
     y = FakeIface("wlan1", [1, 6, 11])
@@ -439,6 +451,22 @@ async def test_claim_multicard_repartitions_remaining_card_and_restores():
     # After exit, both resume hopping with full partition
     assert len(m1.hop_calls) > before_m1
     assert len(m2.hop_calls) > before_m2
+
+
+async def test_set_channel_skips_claimed_member():
+    """Focus re-pin must not yank a campaign-held card off its lease channel."""
+    a = WlanArray()
+    m1 = FakeIface("wlan0", [1, 4, 6, 8, 11])
+    m2 = FakeIface("wlan1", [1, 4, 6, 8, 11])
+    m1.current_channel = 6
+    m2.current_channel = 4
+    a.attach(m1)
+    a.attach(m2)
+    a._claimed.add(m2)
+    await a.set_channel(8)
+    assert m1.current_channel == 8
+    assert m2.current_channel == 4
+    assert m2.tuned == []
 
 
 async def test_claim_when_not_hopping_is_inert():

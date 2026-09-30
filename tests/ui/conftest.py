@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import patch
 
 from wifit3.persist.config import Config
+from wifit3.bluetooth.manager import OsBleSourceStatus
 
 
 @pytest.fixture(autouse=True)
@@ -14,6 +15,24 @@ def _isolate_config(tmp_path, monkeypatch):
         tmp_path / "location_history.sqlite3",
     )
     monkeypatch.setattr("wifit3.gps.manager.list_ports.comports", lambda: [])
+
+    async def ready_os_ble(manager):
+        manager.os_ble_status = OsBleSourceStatus(
+            True,
+            True,
+            "OS-READY",
+            "TestBleak",
+            "TestOS",
+            "Test vendor",
+            "Test adapter",
+            "Operating-system BLE scanning is available",
+        )
+        return manager.os_ble_status
+
+    monkeypatch.setattr(
+        "wifit3.bluetooth.manager.BluetoothManager.probe_os_ble",
+        ready_os_ble,
+    )
     Config.theme = "wifit3-green-dark"
     Config.scanner_sort = "signal"
     Config.scanner_sort_reverse = True
@@ -26,6 +45,7 @@ def _isolate_config(tmp_path, monkeypatch):
     Config.gps_port = ""
     Config.gps_movement_threshold_m = 20.0
     Config.gps_max_accuracy_m = 20.0
+    Config.os_ble_enabled = True
     Config.silenced_bssids = []
     yield
 

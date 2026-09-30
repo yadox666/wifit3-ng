@@ -56,6 +56,7 @@ class WlanArray:
         # while hopping re-invokes it so the SPREAD tracks the live pool. Nothing outside drives it.
         self._hopping = False
         self._hop_channels: Optional[List[int]] = None
+        self._hop_member_channels: Optional[dict] = None
         self._hop_interval = 0.5
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._rehop_tasks: Set[asyncio.Task] = set()
@@ -69,6 +70,10 @@ class WlanArray:
     @property
     def members(self) -> List[WlanInterface]:
         return list(self._members)
+
+    def is_claimed(self, iface: WlanInterface) -> bool:
+        """True while a campaign holds this card on a fixed channel (lease / claim)."""
+        return iface in self._claimed
 
     def contains(self, device_id) -> bool:
         """Whether the exact card (bus, address) named by ``device_id`` is already attached."""
@@ -372,6 +377,8 @@ class WlanArray:
         tuned_any = False
         tasks = []
         for m in self._members:
+            if m in self._claimed:
+                continue                            # campaign holds a different channel
             if channel not in m.supported_channels:
                 continue
             if m.current_channel == channel:
@@ -391,6 +398,8 @@ class WlanArray:
         tuned_any = False
         tasks = []
         for member in self._members:
+            if member in self._claimed:
+                continue                            # campaign holds a different channel/width
             if spec.primary not in member.supported_channels:
                 continue
             current = getattr(member, "current_channel_spec", None)
@@ -446,28 +455,53 @@ class WlanArray:
         if was_hopping:
             remaining = [m for m in self._members if m is not iface]
             if remaining:
-                chans = hop_channels or self.supported_channels
-                assignment = self._partition(chans, members=remaining)
-                await asyncio.gather(*(
-                    m.start_hopping(channels=subset, interval=hop_interval)
-                    for m, subset in assignment.items() if subset
-                ))
+                await self.start_hopping(
+                    channels=hop_channels,
+                    interval=hop_interval,
+                    member_channels=self._hop_member_channels,
+                )
         try:
             yield iface
         finally:
             self._claimed.discard(iface)
             if was_hopping and self._hopping:
-                await self.start_hopping(channels=hop_channels, interval=hop_interval)
+                await self.start_hopping(
+                    channels=hop_channels,
+                    interval=hop_interval,
+                    member_channels=self._hop_member_channels,
+                )
 
-    async def start_hopping(self, channels: Optional[List[int]] = None,
-                            interval: float = 0.5) -> None:
+    async def start_hopping(
+        self,
+        channels: Optional[List[int]] = None,
+        interval: float = 0.5,
+        member_channels: Optional[dict] = None,
+    ) -> None:
         """SPREAD hop: partition the channel list across members; each hops only its subset. Records
-        the config + running loop so a later membership change can re-partition on its own."""
+        the config + running loop so a later membership change can re-partition on its own.
+
+        When ``member_channels`` maps each interface to its hop list (scanner per-card band plan),
+        that assignment is used instead of SPREAD."""
+        from wifit3.wlan.channels import scan_hop_order
+
         self._hopping = True
         self._hop_channels = channels
+        self._hop_member_channels = member_channels
         self._hop_interval = interval
         self._loop = asyncio.get_running_loop()
         chans = channels or self.supported_channels
+        allowed = set(chans)
+        pool = [m for m in self._members if m not in self._claimed]
+        if member_channels is not None:
+            await asyncio.gather(*(
+                m.start_hopping(channels=subset, interval=interval)
+                for m in pool
+                for subset in [
+                    scan_hop_order([c for c in member_channels.get(m, ()) if c in allowed])
+                ]
+                if subset
+            ))
+            return
         assignment = self._partition(chans)
         await asyncio.gather(*(
             m.start_hopping(channels=subset, interval=interval)
@@ -506,7 +540,11 @@ class WlanArray:
 
     async def _rehop(self) -> None:
         try:
-            await self.start_hopping(self._hop_channels, self._hop_interval)
+            await self.start_hopping(
+                self._hop_channels,
+                self._hop_interval,
+                member_channels=self._hop_member_channels,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:

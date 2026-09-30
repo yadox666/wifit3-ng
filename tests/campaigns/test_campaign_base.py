@@ -99,6 +99,7 @@ async def test_crash_in_run_is_contained_and_releases_radio(caplog):
     await c._task                        # does NOT raise: backstop swallows it
     assert c.tore_down                   # teardown still ran
     assert Campaign.active is None       # mutex released
+    assert c.abort_reason == "kaboom"
     assert "crashed in _loop()" in caplog.text
 
 

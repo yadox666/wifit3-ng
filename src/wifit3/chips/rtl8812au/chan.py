@@ -197,9 +197,7 @@ def set_channel_2g_20mhz(
     _set_channel_rf_20mhz(transport)
 
 
-# 5 GHz channels — non-DFS subset exposed by default. DFS channels need
-# regulator clearance and are off-limits without dynamic-frequency-selection
-# infrastructure that wifit3 doesn't implement.
+# 5 GHz — full primary grid for passive tune (DFS included in SUPPORTED_CHANNELS).
 CHANNELS_5G_NON_DFS = (36, 40, 44, 48, 149, 153, 157, 161, 165)
 CHANNELS_5G_DFS = (
     52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,

@@ -14,6 +14,14 @@ def mac_to_str(mac: bytes) -> str:
     return ":".join(f"{b:02x}" for b in mac)
 
 
+def increment_mac_address(mac: str, delta: int = 1) -> str:
+    """Add ``delta`` to a colon-separated 48-bit MAC (wraps at 2**48)."""
+    value = int(mac.replace(":", "").replace("-", ""), 16)
+    value = (value + delta) & ((1 << 48) - 1)
+    hex48 = format(value, "012x")
+    return ":".join(hex48[i : i + 2] for i in range(0, 12, 2))
+
+
 def mac_header(fc: bytes, addr1: bytes, addr2: bytes, addr3: bytes, duration: bytes = b"\x00\x00") -> bytes:
     """Build a 24-byte 802.11 MAC header with a zero sequence-control field."""
     return fc + duration + addr1 + addr2 + addr3 + b"\x00\x00"

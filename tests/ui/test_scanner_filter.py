@@ -18,6 +18,7 @@ class _FakeIface:
         self.supported_channels = supported
         self.current_channel = supported[0] if supported else 1
         self.chipset = "test"
+        self.instance_key = ("test",)
         self._is_hopping = True
         self.stop_calls = 0
         self.start_calls = 0
@@ -47,7 +48,7 @@ class _FakeArray:
     def select_iface(self, channel):
         return next((iface for iface in self.members if channel in iface.supported_channels), None)
 
-    async def start_hopping(self, channels=None, interval=0.25):
+    async def start_hopping(self, channels=None, interval=0.25, **kwargs):
         self.start_calls += 1
 
     async def stop_hopping(self):

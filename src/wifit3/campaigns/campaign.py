@@ -49,6 +49,7 @@ class Campaign:
         self._iface = None                 # elected radio, resolved lazily by the `iface` property
         self.stopped = False
         self._task: Optional[asyncio.Task] = None
+        self.abort_reason: Optional[str] = None   # set when ``_loop()`` or ``teardown()`` crashes
 
     @property
     def iface(self):
@@ -80,14 +81,17 @@ class Campaign:
                     await self._loop()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                self.abort_reason = str(exc)
                 logger.exception("campaign %r crashed in _loop()", self.key)
             finally:
                 try:
                     await self.teardown()
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
+                    if self.abort_reason is None:
+                        self.abort_reason = str(exc)
                     logger.exception("campaign %r crashed in teardown()", self.key)
         finally:
             # Only release the slot if WE still hold it

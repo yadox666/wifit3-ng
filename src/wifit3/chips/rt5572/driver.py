@@ -26,8 +26,10 @@ from .constants import (
 from wifit3.dot11.parser import WlanFrameParser
 
 from .chan import (
-    CHANNELS_5G_NON_DFS, default_power as _default_power, hop_channel,
+    default_power as _default_power,
+    hop_channel,
 )
+from wifit3.wlan.channels import DUAL_BAND_SCAN_CHANNELS
 from .eeprom import resolve_rf_chip
 from .link_tuner import LINK_TUNE_SECONDS, LinkTuner, compute_link_vgc, set_vgc
 from .mac import (
@@ -50,7 +52,7 @@ logger = logging.getLogger(__name__)
 class RT5572Driver(Driver):
     """Driver for the Panda PAU09 N600 (silicon RT5592 / RF5592), 2.4 + 5 GHz 2T2R."""
 
-    SUPPORTED_CHANNELS = list(range(1, 15)) + list(CHANNELS_5G_NON_DFS)
+    SUPPORTED_CHANNELS = list(DUAL_BAND_SCAN_CHANNELS)
     FAKE_MAC = FakeMacSupport.SPOOFABLE
 
     @classmethod

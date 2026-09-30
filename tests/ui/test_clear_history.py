@@ -5,17 +5,19 @@ from textual.widgets import Button, Checkbox, Input
 
 from wifit3.ui.app import WifiteApp
 from wifit3.ui.screens.clear_history import ClearHistoryModal, HistoryClearSelection
+from wifit3.ui.screens.offline import OfflineDatabaseView
 from wifit3.ui.screens.splash import SplashView
 
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
-async def test_history_menu_exists_only_on_startup_and_requires_exact_phrase():
+async def test_history_menu_on_offline_screen_requires_exact_phrase():
     app = WifiteApp()
     async with app.run_test(size=(100, 40)) as pilot:
-        splash = app.screen
-        assert isinstance(splash, SplashView)
-        assert len(splash.query("#clear-history-btn")) == 0
+        assert isinstance(app.screen, SplashView)
+        await pilot.press("o")
+        await pilot.pause()
+        assert isinstance(app.screen, OfflineDatabaseView)
         await pilot.press("c")
         await pilot.pause()
         assert isinstance(app.screen, ClearHistoryModal)
@@ -48,6 +50,8 @@ async def test_confirmed_menu_can_clear_wifi_and_bluetooth_independently():
     app.target_store.clear_medium = Mock()
 
     async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.press("o")
+        await pilot.pause()
         await pilot.press("c")
         await pilot.pause()
         modal = app.screen
@@ -61,7 +65,7 @@ async def test_confirmed_menu_can_clear_wifi_and_bluetooth_independently():
         app.bluetooth_manager.forget_devices.assert_called_once_with()
         app.target_store.clear_medium.assert_called_once_with("bluetooth")
         app.ap_history_store.clear.assert_not_called()
-        assert isinstance(app.screen, SplashView)
+        assert isinstance(app.screen, OfflineDatabaseView)
 
         app.screen._clear_history(HistoryClearSelection(wifi=True, bluetooth=False))
         app.ap_history_store.clear.assert_called_once_with()
@@ -70,6 +74,3 @@ async def test_confirmed_menu_can_clear_wifi_and_bluetooth_independently():
         app.enterprise_session_store.clear.assert_called_once_with()
         app.bluetooth_history_store.clear.assert_called_once_with()
         assert app.target_store.clear_medium.call_args_list[-1].args == ("wifi",)
-
-        app.screen._disable_history_deletion()
-        assert app.screen.check_action("clear_db", ()) is None

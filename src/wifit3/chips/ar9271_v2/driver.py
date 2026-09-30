@@ -132,6 +132,14 @@ class AR9271V2Driver(Driver):
         self._refine_product_name()
         self._init_tx(res.endpoints)
         self._log_detected_config(res.hw)
+        from wifit3.wlan.regulatory import set_driver_regulatory_status
+
+        set_driver_regulatory_status(
+            self,
+            domain_pushed=not self.is_warm,
+            warm_skip=self.is_warm,
+            applies_per_channel=True,
+        )
 
     def _log_detected_config(self, hw) -> None:
         """One-line EEPROM-config summary: the board discriminators that pick the runtime-gated
@@ -507,6 +515,8 @@ class AR9271V2Driver(Driver):
         conversation (WPS/EAP/PMKID), where the AP retransmits and abandons the session if we don't
         ACK. Reversed by exit_active_monitor. ``bssid`` is unused (register-MAC ACK is a pure RA
         match). Mirrors the v1 driver + the Realtek siblings."""
+        if self.hw is None:
+            raise RuntimeError("ar9271_v2: radio not initialized (cannot arm HW-ACK for the twin)")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._write_sta_id, bytes(mac))
         return bytes(mac)

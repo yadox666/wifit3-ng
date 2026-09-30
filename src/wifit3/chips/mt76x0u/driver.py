@@ -48,6 +48,8 @@ from . import rx as rx_mod
 from .transport import MT76x0UTransport
 from .wire_log import WIRE_LOG
 
+from wifit3.wlan.channels import DUAL_BAND_SCAN_CHANNELS
+
 logger = logging.getLogger(__name__)
 
 # FW lives next to this module in assets/.
@@ -59,14 +61,7 @@ FW_FILE_FALLBACK = ASSETS_DIR / "mt7610u_linux-firmware.bin"
 class MT76x0UDriver(Driver):
     """Driver for MT7610U-family USB cards (e.g. Alfa AWUS036ACHM). WIRE-verified on 0e8d:7610."""
 
-    # Same channel-set assumption as mt76x2u: 2.4 GHz 1..14 + non-DFS 5 GHz.
-    # The MT7610U is single-stream (1T1R) but covers both bands. Refine when
-    # M2 channel tuning lands; for now the list only matters for the UI.
-    SUPPORTED_CHANNELS = (
-        list(range(1, 15))
-        + [36, 40, 44, 48]
-        + [149, 153, 157, 161, 165]
-    )
+    SUPPORTED_CHANNELS = list(DUAL_BAND_SCAN_CHANNELS)
     FAKE_MAC = FakeMacSupport.SPOOFABLE
     LINUX_REPLUG_AFTER_MODPROBE = False   # self-colds: modprobe -r cold-re-enumerates the card
 

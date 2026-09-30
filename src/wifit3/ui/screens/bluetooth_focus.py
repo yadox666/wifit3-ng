@@ -12,7 +12,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, DataTable, Footer, Header, Static
+from textual.widgets import Button, DataTable, Footer, Static
+
+from wifit3.ui.notification_center import WifiteHeader
 
 from wifit3.bluetooth.assigned_numbers import manufacturer_label
 from wifit3.bluetooth.exposure import (
@@ -61,10 +63,71 @@ def gatt_ascii(value_hex: str) -> str | None:
     return text.decode("ascii")
 
 
+def gatt_payload_hex(value_hex: str) -> str | None:
+    """When the characteristic holds an ASCII hex string, return decoded binary (spaced hex)."""
+    ascii_text = gatt_ascii(value_hex)
+    if not ascii_text or len(ascii_text) % 2:
+        return None
+    if any(ch not in "0123456789abcdefABCDEF" for ch in ascii_text):
+        return None
+    try:
+        return bytes.fromhex(ascii_text).hex(" ")
+    except ValueError:
+        return None
+
+
+def gatt_payload_text(payload_hex: str) -> str | None:
+    """Printable ASCII view of decoded payload bytes ('.' for non-printable)."""
+    parts = payload_hex.split(" ")
+    if not parts or any(len(part) != 2 for part in parts):
+        return None
+    try:
+        raw = bytes(int(part, 16) for part in parts)
+    except ValueError:
+        return None
+    if raw.hex(" ") != payload_hex:
+        return None
+    if not raw:
+        return None
+    return "".join(
+        chr(byte) if 0x20 <= byte <= 0x7E else "." for byte in raw
+    )
+
+
+def gatt_value_detail_markup(value: str, value_hex: str) -> str:
+    """Detail panel: distinguish payload hex, printable text, and on-wire raw bytes."""
+    if not value:
+        return "[dim]not read[/dim]"
+    if value_hex and value != value_hex:
+        return (
+            f"[dim]Decoded[/dim]\n{escape(value)}\n\n"
+            f"[dim]Raw bytes[/dim]\n{escape(value_hex)}"
+        )
+    wire = value_hex or value
+    ascii_text = gatt_ascii(wire)
+    payload = gatt_payload_hex(wire)
+    if payload is not None and ascii_text is not None:
+        payload_text = gatt_payload_text(payload) or ""
+        return (
+            f"[dim]Payload (hex)[/dim]\n{escape(payload)}\n\n"
+            f"[dim]ASCII (from payload)[/dim]\n{escape(payload_text)}\n\n"
+            f"[dim]Raw bytes[/dim]\n{escape(wire)}"
+        )
+    if ascii_text is not None:
+        return (
+            f"[dim]ASCII[/dim]\n{escape(ascii_text)}\n\n"
+            f"[dim]Raw bytes[/dim]\n{escape(wire)}"
+        )
+    return escape(value)
+
+
 def gatt_display_value(value: str, value_hex: str, *, ascii_mode: bool) -> str:
     """Characteristic text, using ASCII only for an undecoded printable dump."""
     if not ascii_mode or not value_hex or value != value_hex:
         return value
+    payload = gatt_payload_hex(value_hex)
+    if payload is not None:
+        return payload
     return gatt_ascii(value_hex) or value
 
 
@@ -295,6 +358,7 @@ class BluetoothFocusView(Screen):
         Binding("escape", "go_back", "Back"),
         Binding("r", "read_selected", "Read selected"),
         Binding("a", "toggle_ascii", "ASCII"),
+        Binding("shift+t", "targets_editor", "Targets"),
     ]
 
     CSS = """
@@ -330,7 +394,7 @@ class BluetoothFocusView(Screen):
         self._show_ascii = False
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
+        yield WifiteHeader(show_clock=False)
         with Horizontal(id="bt-top"):
             yield Button("‹ Bluetooth", id="bt-back")
             yield Static("", id="bt-status")
@@ -547,6 +611,9 @@ class BluetoothFocusView(Screen):
         if event.button.id == "bt-back":
             self.action_go_back()
 
+    def action_targets_editor(self) -> None:
+        self.app.open_targets_editor()
+
     def action_go_back(self) -> None:
         self.disconnect_and_return()
 
@@ -581,18 +648,9 @@ class BluetoothFocusView(Screen):
         )
 
     def _value_markup(self, characteristic) -> str:
-        if not characteristic.value:
-            return "[dim]not read[/dim]"
-        ascii_value = (
-            gatt_ascii(characteristic.value_hex)
-            if characteristic.value == characteristic.value_hex
-            else None
-        )
-        if ascii_value is None:
-            return escape(characteristic.value)
-        return (
-            f"[dim]ASCII[/dim]\n{escape(ascii_value)}\n\n"
-            f"[dim]Hex[/dim]\n{escape(characteristic.value)}"
+        return gatt_value_detail_markup(
+            characteristic.value or "",
+            characteristic.value_hex or "",
         )
 
     @work(exclusive=True, group="target-reconnect")

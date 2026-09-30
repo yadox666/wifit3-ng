@@ -3,6 +3,7 @@ import struct
 import time
 
 import pytest
+import usb.core
 
 from wifit3.bluetooth.classic_sdp import (
     L2CAP_CONFIGURATION_REQUEST,
@@ -32,11 +33,26 @@ from wifit3.bluetooth.usb_hci import (
 )
 
 
+def _hci_usb_device(**fields):
+    hci = SimpleNamespace(
+        bInterfaceClass=0xE0,
+        bInterfaceSubClass=0x01,
+        bInterfaceProtocol=0x01,
+        bInterfaceNumber=0,
+    )
+    configuration = (hci,)
+    return SimpleNamespace(
+        get_active_configuration=lambda configuration=configuration: configuration,
+        set_configuration=lambda: None,
+        **fields,
+    )
+
+
 def test_controller_discovery_lists_supported_csr_and_rtl8761bu(monkeypatch):
     devices = [
-        SimpleNamespace(idVendor=0x0A12, idProduct=0x0001, bus=1, address=1),
-        SimpleNamespace(idVendor=0x0BDA, idProduct=0x8771, bus=1, address=2),
-        SimpleNamespace(idVendor=0x0B05, idProduct=0x190E, bus=1, address=4),
+        _hci_usb_device(idVendor=0x0A12, idProduct=0x0001, bus=1, address=1),
+        _hci_usb_device(idVendor=0x0BDA, idProduct=0x8771, bus=1, address=2),
+        _hci_usb_device(idVendor=0x0B05, idProduct=0x190E, bus=1, address=4),
         SimpleNamespace(idVendor=0x1234, idProduct=0x5678, bus=1, address=3),
     ]
     monkeypatch.setattr(
@@ -64,6 +80,29 @@ def test_controller_discovery_lists_supported_csr_and_rtl8761bu(monkeypatch):
             supports_classic=True, supports_le=True,
         ),
     ]
+
+
+def test_controller_discovery_ignores_supported_vid_pid_without_hci(monkeypatch):
+    devices = [
+        SimpleNamespace(
+            idVendor=0x0BDA,
+            idProduct=0x8771,
+            bus=1,
+            address=2,
+            get_active_configuration=lambda: (_ for _ in ()).throw(usb.core.USBError("busy")),
+            set_configuration=lambda: None,
+        ),
+    ]
+    monkeypatch.setattr(
+        "wifit3.bluetooth.usb_hci.libusb_package.get_libusb1_backend",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        "wifit3.bluetooth.usb_hci.usb.core.find",
+        lambda **_kwargs: devices,
+    )
+
+    assert find_usb_bluetooth_controllers() == []
 
 
 def test_bluecore4_starts_classic_without_sending_le_commands():

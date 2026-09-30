@@ -6,6 +6,193 @@ build compared with the original
 
 ## Unreleased
 
+## 0.3.11 - 2026-09-30
+
+### Added
+
+
+- **Startup Wi‑Fi adapter picker** (`DevicePicker`, first screen): one compact
+  row per USB card — checkbox, chipset/product name, and inline **All | 2.4 | 5G**
+  band chips. Dual-band adapters can pin AP/Clients scanner hopping to one band;
+  single-band hardware shows a fixed band label from the driver `SUPPORTED_CHANNELS`
+  list. Choices are remembered per physical device and apply **only** to scanner
+  hopping (Focus, campaigns, and injection are unchanged). Panel width hugs content.
+  Works with scanner **Channel Lock** (`c`), which further narrows the hop set.
+
+- **Offline DB search** (startup **`O`** / **OFFLINE DB**, no radio required):
+  tab-specific filter row above the AP, client, and Bluetooth history tables.
+  Access points: encryption, WPS, client presence, Wi-Fi band (2.4 / 5 / 6 GHz),
+  GPS, and free text (SSID, BSSID, vendor, channel, client MACs, identity
+  evidence). Clients: association state, GPS, and text (MAC, vendor, linked
+  SSID/BSSID). Bluetooth/BLE: device category, radio posture (BLE only, Classic
+  only, or dual), and text (name, address, manufacturer, services, protocol).
+  Token rules match the live scanner filter bar; **`f`** / **`/`** focus search;
+  the table border shows **matched / total** record counts when narrowed.
+  Filter controls use a single-line row (no wrapped dropdown labels).
+
+
+- **Client Focus** now uses the spatial AP-Focus layout: adapter card, packet
+  sparklines, and a station endpoint (USB-dongle art, RSSI meter, identity).
+  Pressing Enter on a client row opens it; Escape returns to the Clients view.
+  It shows the event log and a clients panel (with the associated AP banner and
+  per-client deauth), an enabled/disabled **Probe Honeypot** button when the
+  client has directed probes, and **Deauth client** / **Deauth AP** controls
+  when the client is associated. A running honeypot lists the origin client and
+  any others that connect.
+- Scanner **GPS** column (AP and client tables) now shows a clickable globe
+  icon instead of raw coordinates. Clicking it (or **Open position in Google
+  Maps** in `Ctrl+D`) opens the stored fix in the default browser; coordinates
+  are sent to Google only after that click.
+
+- **GPS location history** (with a valid USB NMEA fix): observed **access points**
+  keep one position cluster per BSSID. **Portable Wi-Fi clients** and
+  **Bluetooth/BLE devices** keep multiple clusters; a **new cluster** is recorded
+  when an observation is farther than the configured movement distance
+  (Preferences, default and minimum 20 m) from every existing cluster. Within a
+  cluster, updates require a meaningful improvement in signal and/or GPS
+  accuracy (see **Changed**).
+
+- **Startup Bluetooth adapter picker** (`BluetoothPicker`): supported USB HCI
+  dongles appear in a second panel below Wi‑Fi with checkboxes and **BT+BLE** /
+  **BT** / **BLE** tags. **`D`** / **BT/BLE Scan** starts direct Classic (+ BLE
+  where supported) on the selected dongle; unchecked rows are ignored.
+
+
+
+- **Startup SDR and GPS/GNSS panels:** HackRF devices and confirmed NMEA
+  receivers appear alongside Wi-Fi and Bluetooth hardware. The GPS row shows
+  manufacturer/product metadata, serial port, baud rate, NMEA/fix state,
+  satellites, and accuracy; hovering any truncated row shows the complete
+  text. Both panels are removed from layout when their hardware is absent.
+
+- **Targets & whitelist library** (**`Shift+T`** globally, **`n`** / **Targets**
+  on the Wi‑Fi or Bluetooth scanner with an optional row selection, **`t`** from
+  Preferences): centered editor with category tabs (All, AP, STA, BLE, BT,
+  Whitelist), search, a detail pane (alias, role, match mode, identifier), and
+  **Add manual** for entries matched by BSSID/MAC/UUID or by SSID / Bluetooth
+  name. Selecting a row that is not yet saved opens a draft with observed fields
+  prefilled (alias required). Existing entries open for edit, role change, or
+  delete. Storage uses `targets.sqlite3` schema v2 (`role`: target vs whitelist,
+  `match_mode`: id vs name).
+
+- **Whitelist:** devices on the whitelist are marked in live scans with a green
+  **`◇`** (saved **targets** keep red **`!`**). The first time each enabled
+  target or whitelist entry is seen in range during a session, a toast reports the
+  alias and where it was observed (AP, client, or Bluetooth row).
+
+- **Focus leave confirmation:** **Escape** / Back from AP Focus or Client Focus
+  while campaigns, WPS/enterprise probes, honeypots, focused PCAP, or passive
+  network-metadata capture are still active opens a dialog listing what is
+  running; **Stop and leave** tears everything down and returns to the scanner
+  (or client list); **Stay** cancels.
+
+### Changed
+
+- **Clear-DB** (`c`): moved from the startup device-selection footer to the
+  **Offline DB** screen footer, where history is browsed. The same confirmation
+  modal and `DELETE NOW!` phrase apply; tables reload after a successful clear.
+
+- **Targets library** (`Shift+T`): removed from global app bindings; it is
+  registered only on Wi-Fi/BLE scanners, Offline DB, and Focus screens (not on
+  startup device selection).
+
+- **Startup footer:** removed redundant **Enter · Start** (same as **`W`**
+  / **START WI-FI**). **Enter** still activates the focused button (e.g.
+  Uninstall).
+
+- **Startup optional hardware:** **BT/BLE Scan**, **`D` · BT + BLE**, and the
+  Bluetooth panel are **omitted** from the layout and footer until matching
+  hardware is detected (not merely hidden). The GPS/GNSS panel follows the
+  same space-saving behavior and is mounted only after valid NMEA traffic
+  confirms a receiver.
+
+- **GPS connection reporting:** removed the redundant “GPS detected” toast.
+  Connection details and live fix quality now remain visible in the conditional
+  startup GPS/GNSS panel and in `Ctrl+D` diagnostics.
+
+- **5 GHz scanner hop includes DFS channels** (52–64, 100–144): dual-band
+  drivers now advertise the full 5 GHz primary grid in `SUPPORTED_CHANNELS`
+  (`wlan.channels.DUAL_BAND_SCAN_CHANNELS`), so AP/Clients hopping and **Channel
+  Lock** (`c`) can visit DFS slots such as **60** for passive beacon capture.
+  This is receive-only tuning — no radar CAC or DFS transmit infrastructure.
+  **Preferences → Wi‑Fi regulatory country** still governs TX power limits where
+  the driver applies regdb; it does not separately gate the hop list. 2.4-only
+  adapters are unchanged.
+
+- **Channel hop order** (`wlan.channels.scan_hop_order`): every channel on each
+  card is still visited, but 2.4 GHz uses a coprime stride (for example
+  1→6→11→2→7…) and 5 GHz channels are spread the same way after the 2.4 block,
+  instead of sequential 1–14, so overlapping AP visibility improves without
+  dropping channels. When startup per-card bands pin one adapter to 2.4 GHz and
+  another to 5 GHz (`wlan.scan_plan`), each card hops only its assigned subset;
+  when every card stays on **All bands**, the pool still SPREAD-partitions channels.
+
+- AP Focus with **two or more adapters** shows a left **cards column**: both
+  dongles, live tuned channel, and campaign role (AP host, deauth, or lock). When
+  the on-air channel differs from the campaign's configured channel, the label
+  shows both (for example `CH 8 ≠ 4`).
+
+- Focus and scanner **event logs** (`SelectableRichLog`) follow the tail only
+  when you are already scrolled to the bottom; reading or selecting older lines
+  no longer jumps away when new events arrive.
+
+- **GPS cluster update policy:** within a cluster, a stored fix is replaced only
+  when the new observation dominates the old one (at least as good on RSSI and
+  GPS error radius, strictly better on at least one). A stronger signal with a
+  worse accuracy radius no longer overwrites a more precise position.
+  **Hysteresis** (2 dB signal / 1 m accuracy) ignores sub-margin jitter so
+  positions stay stable instead of rewriting on every hop.
+- **Google Maps links:** AP table rows use the **best** stored fix (strongest
+  RSSI, then best accuracy, then recency). Client and Bluetooth rows use the
+  **latest** fix in the relevant cluster (last place the device was seen).
+- WPA2/WPA2-PSK APs now keep a network-metadata store in Focus, so Fake-Connect
+  DHCP, connectivity, and ARP-sweep evidence reaches each client's **NETWORK**
+  popup (previously created only for open APs). Swept IPv4s also appear beside
+  the vendor in the Clients panel.
+
+- **Preferences** (`Ctrl+P`) is a centered, tabbed modal (**General**, **Scanner**,
+  **Safety**, **Captures**, **GPS**, **Radio**) with a descriptive label above
+  each control instead of one long scrolling form. **About** (`a`) and the
+  targets library (`t`) remain available from Preferences.
+
+- Wi‑Fi / Bluetooth scanner **`n`** opens the **targets library** (label
+  **Targets**); the legacy New Target-only dialog is replaced by the editor
+  flow. Auto-lock still resolves APs by BSSID or a saved SSID-name rule and
+  clients by MAC.
+
+- Manual **deauth** in AP Focus and Client Focus is refused for whitelisted AP
+  BSSIDs and client MACs (warning toast). Other campaigns are not yet gated.
+
+### Fixed
+
+- **BLE Focus GATT reads:** characteristics that store binary data as an ASCII
+  hex string (common for keys and UUID-like blobs) no longer swap labels — wire
+  octets were shown as “Hex” while the hex digit text was shown as “ASCII”. The
+  Value detail now shows **Payload (hex)** (parsed binary), **ASCII (from
+  payload)** (printable view of those bytes, `.` elsewhere), and **Raw bytes**
+  (on-air encoding). **`A`** toggles the GATT table value column between raw
+  bytes and parsed payload hex where applicable.
+
+- **MT7921AU / MT7925U warm attach:** when another driver left MediaTek firmware
+  running (foreign WFDMA latch), the app now fails bring-up with an explicit USB
+  **replug** instruction instead of attempting a broken warm reattach (ported
+  from upstream [wifit3 v0.3.4](https://github.com/derv82/wifit3/compare/v0.3.3...v0.3.4)).
+
+- Returning to the splash adapter picker (**Escape** from the scanner) no longer
+  crashes with Textual `DuplicateIds` on `device-row-*` / `bt-row-*`: picker
+  rows detach synchronously before remount when the Wi‑Fi or Bluetooth lists are
+  rebuilt.
+
+- Splash startup no longer raises `NoMatches` for `#bluetooth-usb-btn` when
+  optional USB Bluetooth hardware is absent: the action is always composed on
+  the startup bar and toggled with `display` when matching devices are
+  detected, so `_enter_scanning_mode` can sync state on first paint.
+
+- `WlanArray.set_channel` / `set_channel_spec` no longer retune cards **claimed**
+  by an active campaign, so a EvilTwin lease channel is not undone when
+  Focus retargets other pool members.
+
+
 ## 0.3.10 - 2026-09-28
 
 ### Added

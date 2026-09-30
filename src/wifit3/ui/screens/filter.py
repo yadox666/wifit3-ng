@@ -14,6 +14,7 @@ from textual.widgets import Button, Input, Label, Select
 from wifit3.models import AccessPoint
 from wifit3.id import vendor_for_mac
 from wifit3.ui.encryption_format import EncryptionType
+from wifit3.ui.target_filter import build_target_select_options, refresh_target_select
 from wifit3.wlan.channels import band_ranges
 
 
@@ -67,6 +68,7 @@ class ScanFilter:
     min_signal: int = -100
     wps: Optional[bool] = None
     association: str = "all"
+    target_id: str = ""
 
     def matches(self, ap: AccessPoint, *, ssid: Optional[str] = None) -> bool:
         """``ssid`` overrides ap.ssid so a hidden AP is searchable by its guessed name."""
@@ -101,6 +103,7 @@ class FilterBar(Horizontal):
     FilterBar > Select { width: 12; margin-right: 1; }
     FilterBar > #filter-wps { width: 10; }
     FilterBar > #filter-association { width: 14; }
+    FilterBar > #filter-target { width: 18; margin-right: 1; }
     FilterBar > #filter-channels { margin-right: 1; }
     FilterBar > Input { width: 1fr; min-width: 18; }
     FilterBar Select.-expanded SelectOverlay { border: round $primary !important; background: $surface; }
@@ -147,8 +150,22 @@ class FilterBar(Horizontal):
         )
         association.display = False
         yield association
+        yield Select(
+            build_target_select_options(None),
+            value="",
+            allow_blank=False,
+            id="filter-target",
+            compact=True,
+        )
         yield Button(self._channels_text(None), id="filter-channels", compact=True)
         yield Input(placeholder="SSID, vendor, country…", id="filter-text", compact=True)
+
+    def on_mount(self) -> None:
+        self.refresh_target_options()
+
+    def refresh_target_options(self) -> None:
+        store = getattr(self.app, "target_store", None)
+        refresh_target_select(self.query_one("#filter-target", Select), store)
 
     def focus_text(self) -> None:
         self.query_one("#filter-text", Input).focus()
@@ -215,6 +232,7 @@ class FilterBar(Horizontal):
         raw_wps = self.query_one("#filter-wps", Select).value
         wps = None if raw_wps == "all" else raw_wps == "yes"
         association = str(self.query_one("#filter-association", Select).value)
+        target_id = str(self.query_one("#filter-target", Select).value or "")
         self.post_message(self.ScanFilterChanged(
             ScanFilter(
                 text=text,
@@ -222,6 +240,7 @@ class FilterBar(Horizontal):
                 min_signal=min_signal,
                 wps=wps,
                 association=association,
+                target_id=target_id,
             )
         ))
 

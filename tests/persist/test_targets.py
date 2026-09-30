@@ -65,6 +65,21 @@ def test_target_store_requires_alias_and_supports_mixed_target_types(tmp_path):
     assert TargetStore(store.path).get(bluetooth.id).enabled is False
 
 
+def test_target_store_whitelist_and_name_match(tmp_path):
+    store = TargetStore(tmp_path / "targets.sqlite3")
+    entry = store.upsert(
+        alias="Do not touch",
+        medium="wifi",
+        kind="client",
+        identifier="11:22:33:44:55:66",
+        details={},
+        role="whitelist",
+        match_mode="id",
+    )
+    assert entry.role == "whitelist"
+    assert store.find("wifi", "client", "11:22:33:44:55:66") == entry
+
+
 def test_target_store_delete_reorders_priorities(tmp_path):
     store = TargetStore(tmp_path / "targets.sqlite3")
     first = store.upsert(

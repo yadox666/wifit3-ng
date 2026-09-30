@@ -35,6 +35,7 @@ class Config:
     gps_port: str = ""
     gps_movement_threshold_m: float = 20.0
     gps_max_accuracy_m: float = 20.0
+    os_ble_enabled: bool = True
     silenced_bssids: list[str] = []
     # ISO 3166-1 alpha-2; ``""``, ``00``, and ``world`` (any case) all mean cfg80211 world.
     wifi_regulatory_country: str = "00"
@@ -98,6 +99,7 @@ class Config:
         except (ValueError, TypeError):
             pass
         cls.gps_port = str(data.get("gps_port", cls.gps_port)).strip()
+        cls.os_ble_enabled = bool(data.get("os_ble_enabled", cls.os_ble_enabled))
         try:
             cls.gps_movement_threshold_m = max(
                 20.0,
@@ -144,6 +146,7 @@ class Config:
             f"gps_port = {_fmt(cls.gps_port)}\n"
             f"gps_movement_threshold_m = {_fmt(cls.gps_movement_threshold_m)}\n"
             f"gps_max_accuracy_m = {_fmt(cls.gps_max_accuracy_m)}\n"
+            f"os_ble_enabled = {_fmt(cls.os_ble_enabled)}\n"
             f"silenced_bssids = {_fmt(cls.silenced_bssids)}\n"
             f"wifi_regulatory_country = {_fmt_regulatory_country(cls.wifi_regulatory_country)}\n"
         )

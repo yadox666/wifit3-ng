@@ -1,6 +1,7 @@
 """802.11 channel helpers: scan-hop ordering and per-band label/range compression."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -43,23 +44,65 @@ def channel_spec_for_ap(ap) -> ChannelSpec:
     return ChannelSpec(ap.channel)
 
 
-# The non-overlapping 2.4 GHz trio nearly every router parks on (FCC 1/6/11); visiting
-# these first front-loads most 2.4 GHz targets into the first three hops.
+# 1/6/11 are where most 2.4 GHz routers sit. The cycle opens on the first of these
+# that the card can tune, then keeps going through every other channel.
 _PRIORITY_2G = (1, 6, 11)
 
 
-def scan_hop_order(channels: list[int]) -> list[int]:
-    """Reorder a channel set into scan-priority order: the busy 2.4 GHz trio (1/6/11) first,
-    then the rest of 2.4 GHz, then 5 GHz.
+def _cycle_gaps(order: list[int]) -> list[int]:
+    count = len(order)
+    return [abs(order[index] - order[(index + 1) % count]) for index in range(count)]
 
-    Front-loads popular channels so the AP table is mostly populated before the first sort
-    tick. Pure reordering: same channels; non-priority 2.4 GHz and 5 GHz keep the caller's
-    original order.
+
+def _spread(channels: list[int]) -> list[int]:
+    """Order one band so the next hop is as far as possible from the one just visited.
+
+    A 2.4 GHz AP is 20 MHz wide on centers only 5 MHz apart, so it is still decodable
+    a few channel numbers away. Walking 1, 2, 3, 4 re-hears that same AP. A coprime
+    stride visits every channel exactly once per cycle and keeps consecutive dwells
+    (including the wrap back to the start) on non-overlapping spectrum.
     """
-    priority = [c for c in _PRIORITY_2G if c in channels]
-    rest_2g = [c for c in channels if c <= 14 and c not in _PRIORITY_2G]
-    band_5g = [c for c in channels if c > 14]
-    return priority + rest_2g + band_5g
+    chans = sorted(set(channels))
+    count = len(chans)
+    if count <= 2:
+        return chans
+    best = chans
+    best_key: tuple | None = None
+    for step in range(1, count):
+        if math.gcd(step, count) != 1:
+            continue
+        order = [chans[(index * step) % count] for index in range(count)]
+        pivot = order.index(chans[0])
+        order = order[pivot:] + order[:pivot]
+        gaps = _cycle_gaps(order)
+        key = (min(gaps), sum(gaps), tuple(sorted(gaps, reverse=True)))
+        if best_key is None or key > best_key:
+            best_key = key
+            best = order
+    return best
+
+
+def _rotate_to_priority(order: list[int]) -> list[int]:
+    for channel in _PRIORITY_2G:
+        if channel in order:
+            index = order.index(channel)
+            return order[index:] + order[:index]
+    return order
+
+
+def scan_hop_order(channels: list[int]) -> list[int]:
+    """Visit every channel, but not in number order.
+
+    2.4 GHz hops jump across the band so each dwell hears a different slice; the
+    cycle still returns to every channel, because a weak AP may only decode on its
+    own channel. 5 GHz follows, spread the same way across its own grid. Same
+    channels in as out.
+    """
+    if not channels:
+        return []
+    band_24 = _rotate_to_priority(_spread([channel for channel in channels if channel <= 14]))
+    band_5 = _spread([channel for channel in channels if channel > 14])
+    return band_24 + band_5
 
 
 def _split_bands(channels: list[int]) -> tuple[list[int], list[int]]:
@@ -100,6 +143,17 @@ def band_label(channels: list[int]) -> str:
     if ch_5:
         parts.append("5 GHz")
     return " + ".join(parts)
+
+
+# Passive monitor hop / channel-lock UI: every 5 GHz primary the stack can tune to.
+# DFS slots (52–144) are included - scanning is RX-only and does not need radar CAC.
+CHANNELS_5G_NON_DFS: tuple[int, ...] = (36, 40, 44, 48, 149, 153, 157, 161, 165)
+CHANNELS_5G_DFS: tuple[int, ...] = (
+    52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
+)
+CHANNELS_5G: tuple[int, ...] = CHANNELS_5G_NON_DFS + CHANNELS_5G_DFS
+CHANNELS_2G: tuple[int, ...] = tuple(range(1, 15))
+DUAL_BAND_SCAN_CHANNELS: list[int] = list(CHANNELS_2G) + list(CHANNELS_5G)
 
 
 def band_ranges(channels: list[int]) -> list[tuple[str, str]]:

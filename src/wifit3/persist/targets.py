@@ -19,9 +19,11 @@ TARGETS_PATH = Path(user_data_dir("wifit3", appauthor=False)) / "targets.sqlite3
 LEGACY_TARGETS_PATH = (
     Path(user_config_dir("wifit3", appauthor=False)) / "targets.json"
 )
-TARGETS_VERSION = 1
+TARGETS_VERSION = 2
 _VALID_MEDIA = {"wifi", "bluetooth"}
 _VALID_KINDS = {"ap", "client", "device"}
+_VALID_ROLES = {"target", "whitelist"}
+_VALID_MATCH_MODES = {"id", "name", "probe"}
 
 
 class TargetStoreError(RuntimeError):
@@ -41,6 +43,8 @@ class SavedTarget:
     last_locked_at: float | None = None
     priority: int = 0
     enabled: bool = True
+    role: str = "target"
+    match_mode: str = "id"
 
 
 def _fill_empty(existing: dict[str, Any], incoming: dict[str, Any]) -> bool:
@@ -85,9 +89,9 @@ class TargetStore:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA secure_delete = ON")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version > 1:
+            if version > 2:
                 raise TargetStoreError(
-                    f"Targets database schema {version} is newer than supported 1",
+                    f"Targets database schema {version} is newer than supported 2",
                 )
             connection.execute(
                 """
@@ -102,7 +106,9 @@ class TargetStore:
                     updated_at REAL NOT NULL,
                     last_locked_at REAL,
                     priority INTEGER NOT NULL,
-                    enabled INTEGER NOT NULL
+                    enabled INTEGER NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'target',
+                    match_mode TEXT NOT NULL DEFAULT 'id'
                 )
                 """
             )
@@ -113,7 +119,21 @@ class TargetStore:
                 """
             )
             if version == 0:
-                connection.execute("PRAGMA user_version = 1")
+                connection.execute("PRAGMA user_version = 2")
+            elif version == 1:
+                columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(targets)").fetchall()
+                }
+                if "role" not in columns:
+                    connection.execute(
+                        "ALTER TABLE targets ADD COLUMN role TEXT NOT NULL DEFAULT 'target'"
+                    )
+                if "match_mode" not in columns:
+                    connection.execute(
+                        "ALTER TABLE targets ADD COLUMN match_mode TEXT NOT NULL DEFAULT 'id'"
+                    )
+                connection.execute("PRAGMA user_version = 2")
             connection.commit()
             try:
                 os.chmod(self.path, 0o600)
@@ -158,9 +178,18 @@ class TargetStore:
                     ),
                     priority=int(row["priority"]),
                     enabled=bool(row["enabled"]),
+                    role=str(row["role"]) if "role" in row.keys() else "target",
+                    match_mode=(
+                        str(row["match_mode"])
+                        if "match_mode" in row.keys() else "id"
+                    ),
                 )
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
+            if target.role not in _VALID_ROLES:
+                target.role = "target"
+            if target.match_mode not in _VALID_MATCH_MODES:
+                target.match_mode = "id"
             if (
                 target.medium in _VALID_MEDIA
                 and target.kind in _VALID_KINDS
@@ -182,8 +211,9 @@ class TargetStore:
                     """
                     INSERT INTO targets (
                         id, alias, medium, kind, identifier, details_json,
-                        created_at, updated_at, last_locked_at, priority, enabled
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, last_locked_at, priority, enabled,
+                        role, match_mode
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -193,6 +223,7 @@ class TargetStore:
                             target.created_at, target.updated_at,
                             target.last_locked_at, target.priority,
                             int(target.enabled),
+                            target.role, target.match_mode,
                         )
                         for target in self.targets
                     ],
@@ -208,7 +239,8 @@ class TargetStore:
         except (OSError, json.JSONDecodeError) as exc:
             self.errors.append(f"Could not migrate targets.json: {exc}")
             return
-        if not isinstance(payload, dict) or payload.get("version") != TARGETS_VERSION:
+        legacy_version = payload.get("version") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or legacy_version not in (1, TARGETS_VERSION):
             self.errors.append("Unsupported targets.json version")
             return
         connection = self._connection
@@ -247,6 +279,37 @@ class TargetStore:
                 target for target in self.targets
                 if target.medium == medium
                 and target.kind == kind
+                and target.match_mode == "id"
+                and target.identifier.casefold() == normalized
+            ),
+            None,
+        )
+
+    def find_by_name(self, medium: str, kind: str, name: str) -> SavedTarget | None:
+        normalized = name.strip().casefold()
+        if not normalized:
+            return None
+        return next(
+            (
+                target for target in self.targets
+                if target.medium == medium
+                and target.kind == kind
+                and target.match_mode == "name"
+                and target.identifier.casefold() == normalized
+            ),
+            None,
+        )
+
+    def find_by_probe(self, ssid: str) -> SavedTarget | None:
+        normalized = ssid.strip().casefold()
+        if not normalized:
+            return None
+        return next(
+            (
+                target for target in self.targets
+                if target.medium == "wifi"
+                and target.kind == "client"
+                and target.match_mode == "probe"
                 and target.identifier.casefold() == normalized
             ),
             None,
@@ -266,6 +329,8 @@ class TargetStore:
         kind: str,
         identifier: str,
         details: dict[str, Any],
+        role: str = "target",
+        match_mode: str = "id",
     ) -> SavedTarget:
         alias = alias.strip()
         if not alias:
@@ -274,9 +339,23 @@ class TargetStore:
             raise TargetStoreError("Alias must be 64 characters or fewer")
         if medium not in _VALID_MEDIA or kind not in _VALID_KINDS:
             raise TargetStoreError("Unsupported target type")
+        if role not in _VALID_ROLES:
+            raise TargetStoreError("Unsupported target role")
+        if match_mode not in _VALID_MATCH_MODES:
+            raise TargetStoreError("Unsupported match mode")
         if not identifier.strip():
             raise TargetStoreError("Target identifier is required")
-        target = self.find(medium, kind, identifier)
+        identifier = identifier.strip()
+        if match_mode == "id":
+            target = self.find(medium, kind, identifier)
+        elif match_mode == "name":
+            target = self.find_by_name(medium, kind, identifier)
+        elif match_mode == "probe":
+            if medium != "wifi" or kind != "client":
+                raise TargetStoreError("Probe match applies only to Wi-Fi STA entries")
+            target = self.find_by_probe(identifier)
+        else:
+            raise TargetStoreError("Unsupported match mode")
         now = time.time()
         if target is None:
             target = SavedTarget(
@@ -289,11 +368,17 @@ class TargetStore:
                 created_at=now,
                 updated_at=now,
                 priority=len(self.targets),
+                role=role,
+                match_mode=match_mode,
             )
             self.targets.append(target)
         else:
             target.alias = alias
+            target.role = role
+            target.match_mode = match_mode
             if _fill_empty(target.details, details):
+                target.updated_at = now
+            else:
                 target.updated_at = now
         self.save()
         return target

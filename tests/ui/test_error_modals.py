@@ -58,13 +58,12 @@ async def test_reset_for_reentry_clears_a_frozen_splash():
     app = WifiteApp()
     async with app.run_test() as pilot:
         splash = app.get_screen("splash", SplashView)
-        device_list = splash.query_one("#device-list", ListView)
+        picker = splash.query_one("#device-picker")
 
         # Freeze splash the way a bring-up leaves it (initializing latched, START disabled, a stale
         # card listed) before it navigated to the scanner.
         splash._is_initializing = True
-        await device_list.append(ListItem(Label("Stale Card"), name="0"))
-        device_list.disabled = True
+        picker.disabled = True
         splash.query_one("#start-btn", Button).disabled = True
         resumed = MagicMock()
         app.device_watch.resume = resumed      # spy the device-watch resume
@@ -74,7 +73,7 @@ async def test_reset_for_reentry_clears_a_frozen_splash():
         await pilot.pause(0)
 
         assert splash._is_initializing is False
-        assert len(device_list.children) == 0
-        assert device_list.disabled is False
+        assert picker.display is False
+        assert picker.disabled is False
         assert splash.query_one("#start-btn", Button).disabled is True
         resumed.assert_called_once()

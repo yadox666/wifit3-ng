@@ -57,7 +57,7 @@ def _load_firmware() -> bytes:
 
 
 class Rtl8821auDkmsDriver(Driver):
-    SUPPORTED_CHANNELS: ClassVar[List[int]] = CHANNELS_2G + CHANNELS_5G_NON_DFS
+    SUPPORTED_CHANNELS: ClassVar[List[int]] = CHANNELS_2G + CHANNELS_5G
     FAKE_MAC = FakeMacSupport.SPOOFABLE
 
     def __init__(self, transport: RTL8821AUDkmsTransport):

@@ -212,11 +212,21 @@ class AdapterDiagnosticsModal(ModalScreen[None]):
         accuracy = f"{fix.accuracy_m:.1f} m" if fix is not None else "-"
         last_fix = _age(fix.observed_at) if fix is not None else "waiting"
         if fix is not None:
+            from wifit3.models.location import SignalPosition
+            from wifit3.ui.location_format import google_maps_search_url
+
             map_link.text = "Open position in Google Maps ↗"
-            map_link.url = (
-                "https://www.google.com/maps/search/?api=1"
-                f"&query={fix.latitude:.7f}%2C{fix.longitude:.7f}"
-            )
+            map_link.url = google_maps_search_url([
+                SignalPosition(
+                    fix.latitude,
+                    fix.longitude,
+                    fix.altitude_m,
+                    fix.accuracy_m,
+                    fix.observed_at,
+                    fix.source,
+                    None,
+                ),
+            ]) or ""
             map_link.disabled = False
         else:
             map_link.text = "Google Maps unavailable"

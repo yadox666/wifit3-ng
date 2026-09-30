@@ -1,14 +1,41 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from rich.console import RenderableType
 from rich.segment import Segment
 from rich.style import Style
 from textual.selection import Selection
 from textual.strip import Strip
 from textual.widgets import RichLog
 
+if TYPE_CHECKING:
+    from typing_extensions import Self
+
 
 class SelectableRichLog(RichLog):
     """RichLog supporting text selection and coordinate mapping."""
+
+    def write(
+        self,
+        content: RenderableType | object,
+        width: int | None = None,
+        expand: bool = False,
+        shrink: bool = True,
+        scroll_end: bool | None = None,
+        animate: bool = False,
+    ) -> Self:
+        """Append a line without yanking scroll position when the user is reading up."""
+        if scroll_end is None:
+            scroll_end = self.is_vertical_scroll_end
+        return super().write(
+            content,
+            width=width,
+            expand=expand,
+            shrink=shrink,
+            scroll_end=scroll_end,
+            animate=animate,
+        )
 
     def text_select_all(self) -> None:
         pass

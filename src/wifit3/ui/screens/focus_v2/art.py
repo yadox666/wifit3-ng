@@ -244,3 +244,12 @@ def display_name(iface) -> str:
     return (getattr(getattr(iface, "driver", None), "product_name", None)
             or getattr(iface, "product_name", None)
             or getattr(iface, "chipset", None) or "card")
+
+
+# Station endpoint art: USB-dongle silhouette (not the AP/router .ans).
+_CLIENT_STATION = _GENERIC
+
+
+def client_art_name(mac: str) -> str:
+    """Pick station ASCII art (USB Wi‑Fi dongle by default, not router art)."""
+    return _CLIENT_STATION

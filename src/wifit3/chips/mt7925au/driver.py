@@ -14,7 +14,7 @@ from .constants import *
 from wifit3.chips.driver import DeviceID, Driver, FakeMacSupport, ProgressCallback
 from wifit3.dot11.parser import WlanFrameParser
 from wifit3.errors import BringUpError
-from wifit3.wlan.channels import ChannelSpec
+from wifit3.wlan.channels import ChannelSpec, DUAL_BAND_SCAN_CHANNELS
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +27,7 @@ class MT7925AUDriver(Driver):
     RX decode and TX are in progress.
     """
 
-    # Dual-band Wi-Fi 7 radio. 2.4 GHz (1-14) + the 5 GHz primary channels the
-    # capture sweeps (main.log: 36..165).
-    SUPPORTED_CHANNELS = list(range(1, 15)) + [
-        36, 40, 44, 48, 149, 153, 157, 161, 165,
-    ]
+    SUPPORTED_CHANNELS = list(DUAL_BAND_SCAN_CHANNELS)
     SUPPORTED_CHANNEL_WIDTHS = (20, 40)
     FAKE_MAC = FakeMacSupport.SPOOFABLE
     LINUX_REPLUG_AFTER_MODPROBE = True
@@ -127,6 +123,9 @@ class MT7925AUDriver(Driver):
                            "continuing MAC-less (the card is still usable).")
         await self.set_channel(self._channel)
         self.is_warm = True
+        from wifit3.wlan.regulatory import set_driver_regulatory_status
+
+        set_driver_regulatory_status(self, warm_skip=True)
         if progress_cb:
             progress_cb(1.0, "Done")
         logger.info("MT7925AU warm reattach ready on channel %d (MAC %s).",
@@ -159,6 +158,10 @@ class MT7925AUDriver(Driver):
         if progress_cb:
             progress_cb(0.9, "Enabling monitor mode...")
         await chip_init.enter_monitor(self.transport, self._channel, state.caps.has_6ghz)
+        self.is_warm = False
+        from wifit3.wlan.regulatory import set_driver_regulatory_status
+
+        set_driver_regulatory_status(self, domain_pushed=True)
         if progress_cb:
             progress_cb(1.0, "Done")
         logger.info("MT7925AU monitor mode ready on channel %d (MAC %s).",

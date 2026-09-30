@@ -98,3 +98,13 @@ def test_clamp_realtek_txagc_lowers_when_country_cap_below_world():
     Config.wifi_regulatory_country = "CF"
     idx = reg.clamp_realtek_txagc_index(40, 36)
     assert idx == 34  # world 20 dBm vs CF UNII-1 17 dBm -> drop 6 index steps
+
+
+def test_splash_regulatory_subtitle_before_and_after_bringup():
+    Config.wifi_regulatory_country = "US"
+    assert reg.splash_regulatory_subtitle() == "US (reg)"
+    status = reg.RegulatoryStatus(configured="US", domain_pushed=True)
+    iface = type("Iface", (), {"chipset": "MT7921AU", "driver": type("D", (), {})()})()
+    iface.driver.regulatory_status = status
+    subtitle = reg.splash_regulatory_subtitle([iface])
+    assert subtitle == "US (reg) · MT7921AU: applied"

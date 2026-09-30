@@ -79,6 +79,7 @@ class Driver(ABC):
         self._ack_detect_on: bool = False           # is the tally armed?
         self._our_tx_macs: set[bytes] = set()       # source MACs whose returning ACKs we count
         self._ack_counts: dict[bytes, int] = {}     # MAC -> ACKs seen since the last reset
+        self.regulatory_status: Any = None          # RegulatoryStatus after connect()
 
     @classmethod
     @abstractmethod

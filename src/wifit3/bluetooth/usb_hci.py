@@ -158,6 +158,28 @@ class UsbBluetoothController:
         return f"{self.chipset} · {brand}" if brand else self.chipset
 
 
+def _device_exposes_bluetooth_hci(device) -> bool:
+    """True when the USB device presents a Bluetooth primary HCI interface."""
+    try:
+        configuration = device.get_active_configuration()
+    except (usb.core.USBError, AttributeError, ValueError):
+        try:
+            device.set_configuration()
+            configuration = device.get_active_configuration()
+        except (usb.core.USBError, AttributeError, ValueError):
+            return False
+    try:
+        interfaces = tuple(configuration)
+    except TypeError:
+        return False
+    return any(
+        intf.bInterfaceClass == 0xE0
+        and intf.bInterfaceSubClass == 0x01
+        and intf.bInterfaceProtocol == 0x01
+        for intf in interfaces
+    )
+
+
 def find_usb_bluetooth_controllers() -> list[UsbBluetoothController]:
     backend = libusb_package.get_libusb1_backend()
     try:
@@ -168,6 +190,8 @@ def find_usb_bluetooth_controllers() -> list[UsbBluetoothController]:
     for device in devices or ():
         identity = _SUPPORTED_CONTROLLERS.get((device.idVendor, device.idProduct))
         if identity is None:
+            continue
+        if not _device_exposes_bluetooth_hci(device):
             continue
         chipset, vendor, product, supports_classic, supports_le = identity
         controllers.append(UsbBluetoothController(

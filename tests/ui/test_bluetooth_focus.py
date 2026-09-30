@@ -13,6 +13,9 @@ from wifit3.ui.app import WifiteApp
 from wifit3.ui.screens.bluetooth_focus import (
     BluetoothFocusView,
     gatt_ascii,
+    gatt_payload_hex,
+    gatt_payload_text,
+    gatt_value_detail_markup,
     gatt_display_value,
 )
 
@@ -114,6 +117,24 @@ async def test_bluetooth_focus_keeps_remote_art_visible_while_disconnected():
         assert "DISCONNECTED" in str(link)
 
 
+def test_gatt_payload_hex_decodes_ascii_hex_strings():
+    wire = "45 30 41 38 38 42 38 39"
+    payload = "e0 a8 8b 89"
+    assert gatt_payload_hex(wire) == payload
+    assert gatt_payload_text(payload) == "...."
+    assert "Payload (hex)" in gatt_value_detail_markup(wire, wire)
+    assert payload in gatt_value_detail_markup(wire, wire)
+    assert "ASCII (from payload)" in gatt_value_detail_markup(wire, wire)
+    assert "...." in gatt_value_detail_markup(wire, wire)
+    assert "Text (hex string)" not in gatt_value_detail_markup(wire, wire)
+    assert "E0A88B89" not in gatt_value_detail_markup(wire, wire)
+    hello_on_wire = " ".join(f"{b:02x}" for b in b"48454C4C4F")
+    hello_payload = gatt_payload_hex(hello_on_wire)
+    assert hello_payload == "48 45 4c 4c 4f"
+    assert gatt_payload_text(hello_payload) == "HELLO"
+    assert gatt_payload_hex("45 50 41 38") is None  # "EPA8" is not valid fromhex length/content
+
+
 def test_gatt_ascii_converts_only_printable_hex_dumps():
     assert gatt_ascii("45 50 41 38") == "EPA8"
     assert gatt_ascii("45 50 00") == "EP"
@@ -202,7 +223,7 @@ async def test_bluetooth_focus_toggles_ascii_for_printable_values():
         detail = screen.query_one("#gatt-detail")
         assert "ASCII" in str(detail.render())
         assert "EPA8XB89" in str(detail.render())
-        assert "Hex" in str(detail.render())
+        assert "Raw bytes" in str(detail.render())
 
         await pilot.press("a")
         await pilot.pause(0)

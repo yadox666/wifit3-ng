@@ -14,7 +14,7 @@ from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
-# ieee80211_channel_flags (cfg80211.h) — shared by MT7921/MT7925 MCU domain payloads.
+# ieee80211_channel_flags (cfg80211.h) - shared by MT7921/MT7925 MCU domain payloads.
 CHAN_NO_IR = 0x00000002
 CHAN_RADAR = 0x00000008
 CHAN_NO_HT40PLUS = 0x00000010
@@ -332,3 +332,80 @@ def _regdb() -> dict[str, tuple[RegRule, ...]]:
 
 def _rules_for_country(code: str) -> tuple[RegRule, ...]:
     return _regdb().get(code, ())
+
+
+@dataclass(frozen=True, slots=True)
+class RegulatoryStatus:
+    """How ``wifi_regulatory_country`` relates to this card after bring-up."""
+
+    configured: str
+    domain_pushed: bool = False
+    warm_skip: bool = False
+    applies_per_channel: bool = False
+
+    def chip_hint(self, chip: str) -> str:
+        """One short fragment for the splash adapter panel (after bring-up)."""
+        if self.domain_pushed:
+            return f"{chip}: applied"
+        if self.warm_skip:
+            return f"{chip}: warm (replug if country changed)"
+        if self.applies_per_channel:
+            return f"{chip}: on tune"
+        return f"{chip}: config only"
+
+
+def display_country(code: str) -> str:
+    """User-facing label for a normalized or raw country code."""
+    normalized = normalize_country(code)
+    return "World" if normalized == "00" else normalized
+
+
+def set_driver_regulatory_status(
+    driver: object,
+    *,
+    domain_pushed: bool = False,
+    warm_skip: bool = False,
+    applies_per_channel: bool = False,
+) -> RegulatoryStatus:
+    """Record what happened during ``connect()`` for splash / diagnostics."""
+    status = RegulatoryStatus(
+        configured=configured_country(),
+        domain_pushed=domain_pushed,
+        warm_skip=warm_skip,
+        applies_per_channel=applies_per_channel,
+    )
+    driver.regulatory_status = status
+    return status
+
+
+def finalize_driver_regulatory_status(driver: object) -> RegulatoryStatus:
+    """Default status when the driver did not record one explicitly."""
+    existing = getattr(driver, "regulatory_status", None)
+    if isinstance(existing, RegulatoryStatus):
+        return existing
+    return set_driver_regulatory_status(driver)
+
+
+def splash_regulatory_subtitle(
+    attached: Iterable[object] | None = None,
+) -> str:
+    """Subtitle for the splash Wi‑Fi adapter panel."""
+    base = f"{display_country(configured_country())} (reg)"
+    if not attached:
+        return base
+    hints: list[str] = []
+    for iface in attached:
+        driver = getattr(iface, "driver", None)
+        status = getattr(driver, "regulatory_status", None) if driver else None
+        if not isinstance(status, RegulatoryStatus):
+            continue
+        chip = (
+            getattr(iface, "chipset", None)
+            or getattr(iface, "product_name", None)
+            or getattr(iface, "name", None)
+            or "card"
+        )
+        hints.append(status.chip_hint(str(chip)))
+    if hints:
+        return f"{base} · " + " · ".join(hints)
+    return base

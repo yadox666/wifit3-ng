@@ -11,8 +11,7 @@ import usb.util
 
 from wifit3.chips.driver import DeviceID, Driver, FakeMacSupport, ProgressCallback
 from wifit3.errors import BringUpError
-from wifit3.dot11.parser import WlanFrameParser
-from wifit3.chips.rx_reader import RxReaderThread
+from wifit3.wlan.channels import DUAL_BAND_SCAN_CHANNELS
 
 from .cal import DackState, odm_dm_init
 from .kfree import PowerTrimState
@@ -71,7 +70,7 @@ _DEFAULT_CHANNEL = 1
 
 
 class RTL8822CUDriver(Driver):
-    SUPPORTED_CHANNELS: ClassVar[list[int]] = list(range(1, 15)) + [36, 40, 44, 48, 149, 153, 157, 161, 165]
+    SUPPORTED_CHANNELS: ClassVar[list[int]] = list(DUAL_BAND_SCAN_CHANNELS)
     FAKE_MAC = FakeMacSupport.SPOOFABLE
 
     def __init__(self, dev: usb.core.Device):

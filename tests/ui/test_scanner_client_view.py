@@ -40,6 +40,9 @@ class _Host(App):
     def persist_config(self):
         pass
 
+    def record_target_sighting(self, target, where: str) -> None:
+        pass
+
     def on_mount(self):
         self.push_screen(ScannerView())
 
@@ -99,8 +102,9 @@ async def test_scanner_switches_between_ap_and_client_tables():
         assert "Probe Honeypot" not in _footer_descriptions(scanner)
         assert table.row_count == 1
         assert _plain(table.get_cell(ap.bssid, "last_seen")) == "now / 30s"
-        assert _plain(table.get_cell(ap.bssid, "location")) == (
-            "51.50100, -0.14200 ±4m"
+        assert _plain(table.get_cell(ap.bssid, "location")) == "🌐"
+        assert scanner._table_map_urls[ap.bssid].startswith(
+            "https://www.google.com/maps/place/"
         )
 
         scanner.action_toggle_pause()
@@ -128,8 +132,14 @@ async def test_scanner_switches_between_ap_and_client_tables():
         assert _plain(table.get_cell(connected.mac, "ssid")) == f"Office  ·  {ap.bssid}"
         assert _plain(table.get_cell(connected.mac, "probes")) == "CoffeeShop  ·  Home"
         assert _plain(table.get_cell(connected.mac, "last_seen")) == "now"
-        assert _plain(table.get_cell(connected.mac, "location")) == (
-            "51.50200, -0.14300 ±6m"
+        assert _plain(table.get_cell(connected.mac, "location")) == "🌐"
+        assert scanner._table_map_urls[connected.mac].startswith(
+            "https://www.google.com/maps/place/"
+        )
+        assert "/@51.5020000,-0.1430000," in scanner._table_map_urls[connected.mac]
+        assert (
+            "place/51.5020000%2C-0.1430000/@"
+            in scanner._table_map_urls[connected.mac]
         )
         assert _plain(table.get_cell(roaming.mac, "ssid")) == "‹unassociated›"
         assert _plain(table.get_cell(roaming.mac, "client")).startswith("~ ")
@@ -294,8 +304,7 @@ async def test_saved_targets_mark_only_ap_ssid_and_full_client_row_red(tmp_path)
         scanner._forget_row(ap.bssid, drop_from_array=False)
         scanner.refresh_table()
         ap_cell = table.get_cell(ap.bssid, "ssid")
-        assert ap_cell.plain.startswith("! ")
-        assert ap_cell.justify == "right"
+        assert ap_cell.plain.startswith("⌖ ")
         red_spans = [
             span for span in ap_cell.spans if "red" in str(span.style)
         ]
@@ -315,7 +324,7 @@ async def test_saved_targets_mark_only_ap_ssid_and_full_client_row_red(tmp_path)
         scanner.action_toggle_view()
         await pilot.pause(0)
         client_cell = table.get_cell(client.mac, "ssid")
-        assert client_cell.plain.startswith("! ")
+        assert client_cell.plain.startswith("⌖ ")
         assert any("red" in str(span.style) for span in client_cell.spans)
 
 

@@ -13,22 +13,36 @@ from wifit3.wlan.channels import (
 )
 
 
-def test_scan_hop_order_front_loads_busy_24ghz():
-    # Sequential SUPPORTED_CHANNELS → 1/6/11 first, then rest of 2.4, then 5 GHz.
-    got = scan_hop_order(list(range(1, 14)) + [36, 40, 44, 48, 149])
-    assert got == [1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13, 36, 40, 44, 48, 149]
+def _min_cycle_gap(order: list[int]) -> int:
+    gaps = [abs(order[i] - order[(i + 1) % len(order)]) for i in range(len(order))]
+    return min(gaps)
 
 
-def test_scan_hop_order_is_a_permutation():
-    # Pure reorder: same channels in, same channels out (no adds/drops).
-    src = list(range(1, 14)) + [36, 40, 44, 48, 149, 153, 157, 161, 165]
+def test_scan_hop_order_visits_every_channel_once():
+    src = list(range(1, 15)) + [36, 40, 44, 48, 149, 153, 157, 161, 165]
     assert sorted(scan_hop_order(src)) == sorted(src)
 
 
-def test_scan_hop_order_partial_priority_set():
-    # Only the priority channels actually present are front-loaded.
-    assert scan_hop_order([1, 2, 3, 4, 5]) == [1, 2, 3, 4, 5]
-    assert scan_hop_order([2, 3, 6, 4]) == [6, 2, 3, 4]
+def test_scan_hop_order_24ghz_does_not_walk_neighbors():
+    # 1..14 still all get a dwell, but consecutive hops stay at least 5 apart:
+    # that is the non-overlapping stride (channel 1 does not overlap channel 6).
+    order = scan_hop_order(list(range(1, 15)))
+    assert order[0] == 1
+    assert _min_cycle_gap(order) >= 5
+    assert order != list(range(1, 15))
+
+
+def test_scan_hop_order_keeps_5ghz_after_24ghz_and_spreads_both():
+    got = scan_hop_order(list(range(1, 15)) + [36, 40, 44, 48, 149])
+    assert got[:14] == scan_hop_order(list(range(1, 15)))
+    assert sorted(got[14:]) == [36, 40, 44, 48, 149]
+    assert got[14:] != [36, 40, 44, 48, 149]
+
+
+def test_scan_hop_order_partial_band_still_spreads():
+    # Five adjacent channels cannot all be 5 apart; the cycle still avoids a 1,2,3,4,5 walk.
+    assert scan_hop_order([1, 2, 3, 4, 5]) == [1, 3, 5, 2, 4]
+    assert scan_hop_order([2, 3, 6, 4])[0] == 6
 
 
 def test_channel_spec_for_40mhz_ap_uses_secondary_and_center():
@@ -99,3 +113,9 @@ def test_band_ranges_always_per_band():
         ("2.4 GHz", "1-6, 11"),
         ("5 GHz", "44"),
     ]
+
+
+def test_dual_band_scan_includes_dfs_channel_60():
+    from wifit3.wlan.channels import DUAL_BAND_SCAN_CHANNELS
+
+    assert 60 in DUAL_BAND_SCAN_CHANNELS
