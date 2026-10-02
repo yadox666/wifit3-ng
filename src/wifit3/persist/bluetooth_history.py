@@ -20,7 +20,7 @@ from wifit3.persist.scan_sessions import ScanSession
 BLUETOOTH_HISTORY_PATH = (
     Path(user_data_dir("wifit3", appauthor=False)) / "bluetooth_history.sqlite3"
 )
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 _MAX_DEVICES = 50_000
 _WRITE_INTERVAL_SECONDS = 5.0
 
@@ -223,6 +223,38 @@ class BluetoothHistoryStore:
                 """
             )
             connection.commit()
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 8:
+            connection.executescript(
+                """
+                ALTER TABLE devices
+                    ADD COLUMN model_number TEXT NOT NULL DEFAULT '';
+                ALTER TABLE devices
+                    ADD COLUMN serial_number TEXT NOT NULL DEFAULT '';
+                ALTER TABLE devices
+                    ADD COLUMN firmware_revision TEXT NOT NULL DEFAULT '';
+                ALTER TABLE devices
+                    ADD COLUMN hardware_revision TEXT NOT NULL DEFAULT '';
+                ALTER TABLE devices
+                    ADD COLUMN software_revision TEXT NOT NULL DEFAULT '';
+                PRAGMA user_version = 9;
+                """
+            )
+            connection.commit()
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 9:
+            connection.executescript(
+                """
+                ALTER TABLE devices
+                    ADD COLUMN manufacturer_name TEXT NOT NULL DEFAULT '';
+                ALTER TABLE devices
+                    ADD COLUMN gatt_device_name TEXT NOT NULL DEFAULT '';
+                ALTER TABLE devices
+                    ADD COLUMN pnp_id TEXT NOT NULL DEFAULT '';
+                PRAGMA user_version = 10;
+                """
+            )
+            connection.commit()
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS legacy_event_imports (
@@ -329,6 +361,9 @@ class BluetoothHistoryStore:
             changed = True
         for field in (
             "modalias", "hardware_vendor", "hardware_product", "hardware_source",
+            "model_number", "serial_number", "firmware_revision",
+            "hardware_revision", "software_revision",
+            "manufacturer_name", "gatt_device_name", "pnp_id",
         ):
             if not getattr(device, field) and row[field]:
                 setattr(device, field, str(row[field]))
@@ -408,6 +443,14 @@ class BluetoothHistoryStore:
             "hardware_vendor": device.hardware_vendor,
             "hardware_product": device.hardware_product,
             "hardware_source": device.hardware_source,
+            "model_number": device.model_number,
+            "serial_number": device.serial_number,
+            "firmware_revision": device.firmware_revision,
+            "hardware_revision": device.hardware_revision,
+            "software_revision": device.software_revision,
+            "manufacturer_name": device.manufacturer_name,
+            "gatt_device_name": device.gatt_device_name,
+            "pnp_id": device.pnp_id,
             "analysis": analysis,
             "protocol": {
                 "category": device.protocol_category,
@@ -434,10 +477,13 @@ class BluetoothHistoryStore:
                         class_of_device, address_type, profile_fingerprint,
                         payload_fingerprint, appearance, analysis_json,
                         protocol_json, modalias, hardware_vendor,
-                        hardware_product, hardware_source
+                        hardware_product, hardware_source,
+                        model_number, serial_number, firmware_revision,
+                        hardware_revision, software_revision,
+                        manufacturer_name, gatt_device_name, pnp_id
                     ) VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     ON CONFLICT(identifier) DO UPDATE SET
                         name = COALESCE(excluded.name, devices.name),
@@ -487,6 +533,46 @@ class BluetoothHistoryStore:
                             WHEN excluded.hardware_source = ''
                             THEN devices.hardware_source
                             ELSE excluded.hardware_source
+                        END,
+                        model_number = CASE
+                            WHEN excluded.model_number = ''
+                            THEN devices.model_number
+                            ELSE excluded.model_number
+                        END,
+                        serial_number = CASE
+                            WHEN excluded.serial_number = ''
+                            THEN devices.serial_number
+                            ELSE excluded.serial_number
+                        END,
+                        firmware_revision = CASE
+                            WHEN excluded.firmware_revision = ''
+                            THEN devices.firmware_revision
+                            ELSE excluded.firmware_revision
+                        END,
+                        hardware_revision = CASE
+                            WHEN excluded.hardware_revision = ''
+                            THEN devices.hardware_revision
+                            ELSE excluded.hardware_revision
+                        END,
+                        software_revision = CASE
+                            WHEN excluded.software_revision = ''
+                            THEN devices.software_revision
+                            ELSE excluded.software_revision
+                        END,
+                        manufacturer_name = CASE
+                            WHEN excluded.manufacturer_name = ''
+                            THEN devices.manufacturer_name
+                            ELSE excluded.manufacturer_name
+                        END,
+                        gatt_device_name = CASE
+                            WHEN excluded.gatt_device_name = ''
+                            THEN devices.gatt_device_name
+                            ELSE excluded.gatt_device_name
+                        END,
+                        pnp_id = CASE
+                            WHEN excluded.pnp_id = ''
+                            THEN devices.pnp_id
+                            ELSE excluded.pnp_id
                         END
                     """,
                     (
@@ -514,6 +600,14 @@ class BluetoothHistoryStore:
                         snapshot["hardware_vendor"],
                         snapshot["hardware_product"],
                         snapshot["hardware_source"],
+                        snapshot["model_number"],
+                        snapshot["serial_number"],
+                        snapshot["firmware_revision"],
+                        snapshot["hardware_revision"],
+                        snapshot["software_revision"],
+                        snapshot["manufacturer_name"],
+                        snapshot["gatt_device_name"],
+                        snapshot["pnp_id"],
                     ),
                 )
                 if self._active_session_id is not None:

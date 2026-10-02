@@ -639,7 +639,6 @@ class SplashView(Screen):
             self.action_start_usb_bluetooth()
         elif event.button.id == "spectrum-btn":
             self.action_start_spectrum()
-        elif event.button.id == "rf-lab-btn":
         elif event.button.id == "offline-btn":
             self.action_offline()
         elif event.button.id == "uninstall-btn":

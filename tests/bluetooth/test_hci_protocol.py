@@ -1,9 +1,16 @@
 from wifit3.bluetooth.hci_protocol import (
+    CLASSIC_INQUIRY_LENGTH_FULL,
+    CLASSIC_INQUIRY_LENGTH_SHORT,
+    classic_inquiry_parameters,
+    classic_inquiry_timeout_ms,
+    LE_EVENT_MASK_SCAN_AND_CONNECT,
     EVENT_EXTENDED_INQUIRY_RESULT,
     EVENT_INQUIRY_RESULT_WITH_RSSI,
     EVENT_LE_META,
     LE_ADVERTISING_REPORT,
+    classic_connect_retryable,
     command_packet,
+    hci_status_message,
     parse_discovery_event,
     parse_remote_name_event,
 )
@@ -11,6 +18,15 @@ from wifit3.bluetooth.hci_protocol import (
 
 def _ad(*fields: bytes) -> bytes:
     return b"".join(bytes([len(field)]) + field for field in fields)
+
+
+def test_classic_inquiry_parameters_respect_length_byte():
+    short = classic_inquiry_parameters(CLASSIC_INQUIRY_LENGTH_SHORT)
+    full = classic_inquiry_parameters(CLASSIC_INQUIRY_LENGTH_FULL)
+    assert short[:3] == full[:3] == bytes((0x33, 0x8B, 0x9E))
+    assert short[3] == CLASSIC_INQUIRY_LENGTH_SHORT
+    assert full[3] == CLASSIC_INQUIRY_LENGTH_FULL
+    assert classic_inquiry_timeout_ms(CLASSIC_INQUIRY_LENGTH_FULL) >= 14_000
 
 
 def test_command_packet_uses_usb_hci_command_layout():
@@ -134,3 +150,43 @@ def test_le_report_recognizes_apple_proximity_pairing_protocol():
     assert observed.protocol_category == "Audio"
     assert observed.protocol_type == "Apple Proximity Pairing audio"
     assert observed.protocol_confidence == "high"
+
+
+def test_le_event_mask_includes_connection_complete():
+    assert LE_EVENT_MASK_SCAN_AND_CONNECT[0] & 0x01
+
+
+def test_le_event_mask_includes_extended_advertising():
+    assert LE_EVENT_MASK_SCAN_AND_CONNECT[0] & 0x20
+
+
+def test_hci_status_message_page_timeout_is_actionable():
+    message = hci_status_message(0x04)
+    assert "Page timeout" in message
+    assert "HCI 0x04" in message
+    assert "BLE-only" in message
+
+
+def test_hci_status_message_decodes_extended_controller_errors_and_unknowns():
+    assert "MIC failure" in hci_status_message(0x3D)
+    assert "Unacceptable connection parameters" in hci_status_message(0x3B)
+    assert "Insufficient channels" in hci_status_message(0x48)
+    unknown = hci_status_message(0x7E)
+    assert "Reserved or unknown" in unknown
+    assert "HCI 0x7e" in unknown
+
+
+def test_classic_connect_exception_retriable_on_event_timeout():
+    from wifit3.bluetooth.hci_protocol import classic_connect_exception_retriable
+    from wifit3.bluetooth.usb_hci import UsbBluetoothError
+
+    assert classic_connect_exception_retriable(
+        UsbBluetoothError("HCI event 0x03 timed out"),
+    )
+
+
+def test_hci_status_0x0d_limited_resources_hint():
+    message = hci_status_message(0x0D)
+    assert "limited resources" in message.lower()
+    assert "pairing" in message.lower()
+    assert classic_connect_retryable(0x0D)

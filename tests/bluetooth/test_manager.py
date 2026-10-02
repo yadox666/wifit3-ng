@@ -1,11 +1,18 @@
 import asyncio
 import inspect
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from wifit3.bluetooth.hci_protocol import DiscoveryObservation
-from wifit3.bluetooth.manager import BluetoothManager, BluetoothScanError
+from wifit3.bluetooth.manager import (
+    BluetoothManager,
+    BluetoothScanError,
+    _advertised_connectable,
+    _ble_mac_privacy_pattern,
+    _platform_ble_identity,
+)
 from wifit3.bluetooth.usb_hci import UsbBluetoothController
 from wifit3.persist.bluetooth_history import BluetoothHistoryStore
 
@@ -164,6 +171,35 @@ def test_manager_collects_bluez_class_appearance_and_address_type():
     assert observed.class_of_device == 0x240418
     assert observed.address_type == "resolvable-private"
     assert observed.protocol_type == "Apple Proximity Pairing audio"
+
+
+def test_corebluetooth_metadata_exposes_connectable_and_mac_when_available():
+    peripheral = object()
+
+    class _Central:
+        def retrieveAddressForPeripheral_(self, candidate):
+            assert candidate is peripheral
+            return bytes.fromhex("AABBCCDDEEFF")
+
+    platform_device = SimpleNamespace(
+        address="356CF960-45E2-5E8F-DE3B-EDA564085A97",
+        details=(peripheral, SimpleNamespace(central_manager=_Central())),
+    )
+    identity, mac = _platform_ble_identity(platform_device)
+
+    assert mac == "AA:BB:CC:DD:EE:FF"
+    assert "CoreBluetooth UUID=356CF960-45E2-5E8F-DE3B-EDA564085A97" in identity
+    assert "MAC=AA:BB:CC:DD:EE:FF" in identity
+    assert "reserved random-address bit pattern" in identity
+    assert _advertised_connectable(
+        (peripheral, {"kCBAdvDataIsConnectable": False}, -66),
+    ) is False
+
+
+def test_ble_mac_privacy_pattern_marks_rpa_as_private_rotating():
+    assert _ble_mac_privacy_pattern(
+        "66:E9:13:C3:FC:3C",
+    ) == "RPA/private-rotating bit pattern"
 
 
 def test_manager_keeps_private_devices_live_without_persisting_them(tmp_path):
@@ -407,7 +443,7 @@ async def test_usb_scanner_is_separate_and_marks_classic_observations():
         async def stop(self):
             self.stopped = True
 
-    manager = BluetoothManager(usb_scanner_factory=UsbScanner)
+    manager = BluetoothManager(usb_scanner_factory=UsbScanner, os_ble_enabled=False)
     await manager.start_usb(controller)
     scanner.callback(DiscoveryObservation(
         identifier="AA:BB:CC:DD:EE:FF",
@@ -432,6 +468,52 @@ async def test_usb_scanner_is_separate_and_marks_classic_observations():
 
     await manager.stop()
     assert scanner.stopped
+
+
+@pytest.mark.asyncio
+async def test_dual_mode_usb_pairs_os_ble_and_defers_usb_le_scan():
+    controller = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+        supports_classic=True, supports_le=True,
+    )
+    system_scanner = None
+    usb_scanner = None
+
+    def system_factory(**kwargs):
+        nonlocal system_scanner
+        system_scanner = _Scanner(**kwargs)
+        return system_scanner
+
+    class UsbScanner:
+        def __init__(self, selected, callback):
+            nonlocal usb_scanner
+            usb_scanner = self
+            self.controller = selected
+            self.callback = callback
+            self.started = False
+            self.stopped = False
+            self._usb_le_scan_enabled = True
+
+        def use_os_ble_for_le_discovery(self):
+            self._usb_le_scan_enabled = False
+
+        async def start(self):
+            self.started = True
+
+        async def stop(self):
+            self.stopped = True
+
+    manager = BluetoothManager(
+        scanner_factory=system_factory,
+        usb_scanner_factory=UsbScanner,
+    )
+    await manager.start_usb(controller)
+
+    assert system_scanner.started
+    assert usb_scanner.started
+    assert usb_scanner._usb_le_scan_enabled is False
+    assert manager.backend_name == "RTL8761BU + OS BLE"
+    await manager.stop()
 
 
 @pytest.mark.asyncio
@@ -487,6 +569,55 @@ async def test_classic_only_usb_scanner_runs_with_system_ble():
     await manager.stop()
 
 
+@pytest.mark.asyncio
+async def test_classic_sdp_auto_starts_the_only_usb_controller_beside_os_ble():
+    controller = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+        supports_classic=True, supports_le=True,
+    )
+    usb_scanner = None
+
+    class UsbScanner:
+        def __init__(self, selected, callback):
+            nonlocal usb_scanner
+            usb_scanner = self
+            self.controller = selected
+            self.callback = callback
+            self.started = False
+            self._device = object()
+
+        @property
+        def is_scanning(self):
+            return self.started
+
+        async def start(self):
+            self.started = True
+
+    manager = BluetoothManager(
+        scanner_factory=lambda **kwargs: _Scanner(**kwargs),
+        usb_scanner_factory=UsbScanner,
+        usb_controller_finder=lambda: [controller],
+    )
+    await manager.start()
+
+    await manager._ensure_usb_scanner_ready()
+
+    assert manager._scanner is not None
+    assert manager._usb_scanner is usb_scanner
+    assert usb_scanner.started
+
+
+@pytest.mark.asyncio
+async def test_classic_sdp_missing_usb_controller_has_actionable_error():
+    manager = BluetoothManager(
+        usb_controller_finder=lambda: [],
+        os_ble_enabled=False,
+    )
+
+    with pytest.raises(BluetoothScanError, match="Connect or select"):
+        await manager._ensure_usb_scanner_ready()
+
+
 def test_macos_reserves_classic_controller_during_discovery(monkeypatch):
     controller = UsbBluetoothController(
         0x0A12, 0x0001, "BlueCore4-ROM", "Sena", "Parani-UD100", 1, 2,
@@ -523,6 +654,39 @@ def test_macos_reserves_classic_controller_during_discovery(monkeypatch):
     present.clear()
     manager.available_usb_controllers()
     assert scanners[0].released
+
+
+def test_macos_reserves_dual_mode_controller_during_discovery(monkeypatch):
+    """A dual-mode dongle must be held at plug-in. Waiting until scan time loses the race to macOS."""
+    controller = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+    )
+    scanners = []
+
+    class ReservableScanner:
+        def __init__(self, selected, callback):
+            self.controller = selected
+            self.callback = callback
+            self.reserved = False
+            scanners.append(self)
+
+        def reserve(self):
+            self.reserved = True
+
+        def release(self):
+            self.released = True
+
+    monkeypatch.setattr("wifit3.bluetooth.manager.sys.platform", "darwin")
+    manager = BluetoothManager(
+        usb_controller_finder=lambda: [controller],
+        usb_scanner_factory=ReservableScanner,
+    )
+
+    assert manager.available_usb_controllers() == [controller]
+    assert scanners[0].reserved
+    assert manager.usb_reservation_held(controller)
+    manager.available_usb_controllers()
+    assert len(scanners) == 1
 
 
 def test_usb_and_ble_observations_merge_as_dual_mode():
@@ -606,4 +770,466 @@ def test_separate_classic_and_ble_addresses_are_probabilistically_linked():
     assert ble.related_identifiers == (classic.identifier,)
     assert classic.correlation_confidence == "high"
     assert "exact normalized name" in classic.correlation_evidence
+
+
+@pytest.mark.asyncio
+async def test_start_parallel_runs_os_ble_beside_an_le_usb_controller():
+    """A dual-mode USB dongle used to skip OS BLE. Background mode runs both."""
+    controller = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+    )
+    system = None
+    usb = None
+
+    def system_factory(**kwargs):
+        nonlocal system
+        system = _Scanner(**kwargs)
+        return system
+
+    class UsbScanner:
+        def __init__(self, selected, callback):
+            nonlocal usb
+            usb = self
+            self.controller = selected
+            self.callback = callback
+
+        async def start(self):
+            self.started = True
+
+        async def stop(self):
+            self.stopped = True
+
+    manager = BluetoothManager(
+        scanner_factory=system_factory,
+        usb_scanner_factory=UsbScanner,
+    )
+    failures = await manager.start_parallel(os_ble=True, controller=controller)
+
+    assert failures == []
+    assert system.started
+    assert usb.started
+    assert manager.is_usb_scanning
+    assert manager.os_ble_status.state == "OS-ACTIVE"
+    await manager.stop()
+    assert system.stopped
+    assert usb.stopped
+
+
+class _FakeDebug:
+    """Minimal UsbLabDebugSession stand-in: records steps, supports phase()."""
+
+    def __init__(self):
+        self.steps: list[str] = []
+
+    def step(self, message):
+        self.steps.append(message)
+
+    def phase(self, _name):
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+
+def _os_uuid_device():
+    from wifit3.models import BluetoothDevice
+    from wifit3.models.bluetooth_device import BLE_RADIO
+
+    return BluetoothDevice(
+        identifier="41C28AFD-7223-CCD1-6681-2C4127D8F06E",
+        name="[TV] Samsung Q60AA 85 TV",
+        rssi=-50,
+        service_uuids=(),
+        service_data_uuids=(),
+        manufacturer_ids=(),
+        manufacturer_data_bytes=0,
+        service_data_bytes=0,
+        tx_power=None,
+        advertisement_count=1,
+        advertisement_interval=0.0,
+        first_seen=0.0,
+        last_seen=1.0,
+        address_type="platform-opaque",
+        radio_types=(BLE_RADIO,),
+    )
+
+
+@pytest.mark.asyncio
+def _device_information_inspection(device):
+    from wifit3.models import (
+        BluetoothCharacteristic,
+        BluetoothInspection,
+        BluetoothService,
+    )
+
+    service = BluetoothService(
+        uuid="0000180a-0000-1000-8000-00805f9b34fb",
+        name="Device Information",
+    )
+    fields = {
+        "00002a24-0000-1000-8000-00805f9b34fb": ("Model Number String", "Watch7,15"),
+        "00002a26-0000-1000-8000-00805f9b34fb": ("Firmware Revision String", "11.0"),
+        "00002a27-0000-1000-8000-00805f9b34fb": ("Hardware Revision String", "1.0"),
+        "00002a28-0000-1000-8000-00805f9b34fb": ("Software Revision String", "11.0.1"),
+    }
+    for handle, (uuid_value, (name, value)) in enumerate(fields.items(), start=3):
+        service.characteristics.append(
+            BluetoothCharacteristic(
+                handle=handle,
+                uuid=uuid_value,
+                name=name,
+                properties=("read",),
+                value=value,
+            ),
+        )
+    inspection = BluetoothInspection(device=device, connected=True)
+    inspection.services = [service]
+    return inspection
+
+
+def test_connection_update_caches_device_information_onto_scan_row():
+    manager = BluetoothManager()
+    device = _os_uuid_device()
+    manager._devices[device.identifier] = device
+
+    inspection = _device_information_inspection(device)
+    manager._connection_updated(inspection, None)
+
+    cached = manager._devices[device.identifier]
+    assert cached.model_number == "Watch7,15"
+    assert cached.firmware_revision == "11.0"
+    assert cached.hardware_revision == "1.0"
+    assert cached.software_revision == "11.0.1"
+    assert manager._device_information[device.identifier]["model_number"] == "Watch7,15"
+
+
+class _FakeDisChar:
+    def __init__(self, uuid, handle, value, properties=("read",)):
+        self.uuid = uuid
+        self.handle = handle
+        self.properties = properties
+        self.descriptors = ()
+        self._value = value
+
+
+class _FakeDisService:
+    def __init__(self, uuid, characteristics):
+        self.uuid = uuid
+        self.characteristics = characteristics
+
+
+class _FakeDisClient:
+    """Minimal Bleak-like client exposing a Device Information Service."""
+
+    def __init__(self, *args, **kwargs):
+        self.services = [
+            _FakeDisService(
+                "0000180a-0000-1000-8000-00805f9b34fb",
+                [
+                    _FakeDisChar(
+                        "00002a24-0000-1000-8000-00805f9b34fb", 10, b"Watch7,15",
+                    ),
+                    _FakeDisChar(
+                        "00002a26-0000-1000-8000-00805f9b34fb", 12, b"11.0",
+                    ),
+                ],
+            ),
+        ]
+        self.connected = False
+
+    async def connect(self):
+        self.connected = True
+
+    async def disconnect(self):
+        self.connected = False
+
+    async def read_gatt_char(self, handle):
+        for service in self.services:
+            for char in service.characteristics:
+                if char.handle == handle:
+                    return char._value
+        raise KeyError(handle)
+
+
+@pytest.mark.asyncio
+async def test_device_information_sweep_enriches_connectable_device():
+    manager = BluetoothManager(client_factory=_FakeDisClient)
+    manager._scanner = object()  # OS BLE path active
+    manager._enrichment_screen_active = True  # scanner screen is live
+    manager._enrichment_gap_s = 0.0
+    device = _os_uuid_device()
+    manager._devices[device.identifier] = device
+
+    await manager._run_device_information_sweep()
+
+    enriched = manager._devices[device.identifier]
+    assert enriched.model_number == "Watch7,15"
+    assert enriched.firmware_revision == "11.0"
+    assert manager._device_information[device.identifier]["model_number"] == "Watch7,15"
+    assert manager.connection is None  # the sweep never clobbers the user connection
+
+
+@pytest.mark.asyncio
+async def test_device_information_sweep_enriches_over_usb_transport():
+    from wifit3.bluetooth import gatt_att as att
+    from wifit3.models import BluetoothCharacteristic, BluetoothService
+
+    model_char = BluetoothCharacteristic(
+        handle=0x0010,
+        uuid="00002a24-0000-1000-8000-00805f9b34fb",
+        name="Model Number String",
+        properties=("read",),
+    )
+    dis = BluetoothService(
+        uuid="0000180a-0000-1000-8000-00805f9b34fb",
+        name="Device Information",
+        characteristics=[model_char],
+    )
+    gatt = SimpleNamespace(
+        le_gatt_session_start=lambda device: (0x0040, [dis]),
+        le_gatt_session_stop=lambda handle: None,
+        att_exchange=lambda handle, request: (
+            bytes((att.ATT_READ_RESPONSE,)) + b"Watch7,15"
+        ),
+    )
+    scanner = SimpleNamespace(
+        gatt=gatt,
+        controller=SimpleNamespace(supports_le=True),
+        suspend_background_scan=AsyncMock(return_value=True),
+        resume_background_scan=AsyncMock(),
+    )
+
+    manager = BluetoothManager()
+    manager._usb_scanner = scanner  # USB HCI dongle owns LE; no OS BLE scanner
+    manager._enrichment_screen_active = True
+    manager._enrichment_gap_s = 0.0
+    from wifit3.models import BluetoothDevice
+
+    now = 1_700_000_000.0
+    device = BluetoothDevice(
+        identifier="AA:BB:CC:DD:EE:FF",
+        name="BLE Speaker",
+        rssi=-50,
+        service_uuids=("180a",),
+        service_data_uuids=(),
+        manufacturer_ids=(),
+        manufacturer_data_bytes=0,
+        service_data_bytes=0,
+        tx_power=None,
+        advertisement_count=1,
+        advertisement_interval=None,
+        first_seen=now,
+        last_seen=now,
+        radio_types=("BLE",),
+        discovery_source="usb-hci+system",
+    )
+    manager._devices[device.identifier] = device
+
+    # The sweep is available over USB even without an OS BLE scanner.
+    assert manager._enrichment_unavailable_reason() == ""
+    await manager._run_device_information_sweep()
+
+    assert manager._devices[device.identifier].model_number == "Watch7,15"
+    assert manager.enrichment_successes == 1
+    scanner.suspend_background_scan.assert_awaited()
+    scanner.resume_background_scan.assert_awaited_with(True)
+
+
+def test_device_information_sweep_skips_os_uuid_without_os_ble():
+    manager = BluetoothManager()
+    manager._usb_scanner = SimpleNamespace(
+        controller=SimpleNamespace(supports_le=True),
+    )
+    manager._enrichment_screen_active = True
+    device = _os_uuid_device()
+    manager._devices[device.identifier] = device
+
+    assert manager._enrichment_transport_for(device) == "none"
+    assert manager._device_information_candidates() == []
+
+
+@pytest.mark.asyncio
+async def test_device_information_sweep_only_runs_while_scanner_screen_active(tmp_path):
+    manager = BluetoothManager(client_factory=_FakeDisClient)
+    manager._scanner = object()
+    manager._enrichment_gap_s = 0.0
+    device = _os_uuid_device()
+    manager._devices[device.identifier] = device
+
+    # Screen not active (e.g. in Focus/Lab): the sweep must not connect.
+    await manager._run_device_information_sweep()
+    assert device.identifier not in manager._device_information
+
+    manager.resume_device_information_sweep()
+    await manager._run_device_information_sweep()
+    assert manager._devices[device.identifier].model_number == "Watch7,15"
+
+    await manager.pause_device_information_sweep()
+    assert manager._enrichment_screen_active is False
+    assert manager._enrichment_task is None
+
+
+@pytest.mark.asyncio
+async def test_device_information_sweep_persists_to_history(tmp_path):
+    from wifit3.persist.bluetooth_history import BluetoothHistoryStore
+
+    history = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
+    manager = BluetoothManager(client_factory=_FakeDisClient, history=history)
+    manager._scanner = object()
+    manager._enrichment_screen_active = True
+    manager._enrichment_gap_s = 0.0
+
+    from dataclasses import replace
+
+    from wifit3.models import BluetoothDevice
+
+    now = 1_700_000_000.0
+    device = BluetoothDevice(
+        identifier="AA:BB:CC:DD:EE:FF",
+        name="Apple Watch",
+        rssi=-50,
+        service_uuids=("180a",),
+        service_data_uuids=(),
+        manufacturer_ids=(76,),
+        manufacturer_data_bytes=4,
+        service_data_bytes=0,
+        tx_power=-8,
+        advertisement_count=1,
+        advertisement_interval=None,
+        first_seen=now,
+        last_seen=now,
+        radio_types=("BLE",),
+        address_type="public",
+    )
+    manager._devices[device.identifier] = device
+
+    await manager._run_device_information_sweep()
+    assert manager._devices[device.identifier].model_number == "Watch7,15"
+
+    # A fresh observation of the same device restores the model from the DB.
+    returning = replace(device, model_number="", firmware_revision="")
+    assert history.enrich(returning)
+    assert returning.model_number == "Watch7,15"
+    assert returning.firmware_revision == "11.0"
+    history.close()
+
+
+@pytest.mark.asyncio
+async def test_device_information_sweep_skips_during_active_connection():
+    manager = BluetoothManager(client_factory=_FakeDisClient)
+    manager._scanner = object()
+    manager._enrichment_screen_active = True
+    manager._enrichment_gap_s = 0.0
+    manager.connection = object()  # user is inspecting a device
+    device = _os_uuid_device()
+    manager._devices[device.identifier] = device
+
+    await manager._run_device_information_sweep()
+
+    assert device.identifier not in manager._device_information
+
+
+@pytest.mark.asyncio
+async def test_device_information_sweep_skips_and_counts_nonconnectable():
+    manager = BluetoothManager(client_factory=_FakeDisClient)
+    manager._scanner = object()
+    manager._enrichment_screen_active = True
+    manager._enrichment_gap_s = 0.0
+    device = _os_uuid_device()
+    manager._devices[device.identifier] = device
+    # CoreBluetooth reported this advertiser as non-connectable.
+    manager._platform_connectable[device.identifier] = False
+
+    await manager._run_device_information_sweep()
+
+    assert manager.enrichment_nonconnectable == 1
+    assert manager.enrichment_attempts == 1
+    assert "model sweep ON" in manager.device_information_status()
+
+
+def test_device_information_hint_explains_per_device_state():
+    from dataclasses import replace
+
+    manager = BluetoothManager()
+    manager._enrichment_screen_active = True
+    manager._scanner = object()  # sweep available
+
+    connectable = _os_uuid_device()
+    manager._platform_connectable[connectable.identifier] = False
+    assert "non-connectable" in manager.device_information_hint(connectable)
+    assert "still trying" in manager.device_information_hint(connectable)
+
+    classic = replace(
+        _os_uuid_device(),
+        identifier="33:33:33:33:33:33",
+        discovery_source="usb-hci",
+        radio_types=("BT",),
+    )
+    assert "Classic only" in manager.device_information_hint(classic)
+
+    known = replace(_os_uuid_device(), identifier="44:44:44:44:44:44",
+                    model_number="Watch7,15")
+    assert manager.device_information_hint(known) == "cached Watch7,15"
+
+    pending = replace(_os_uuid_device(), identifier="55:55:55:55:55:55")
+    assert "pending" in manager.device_information_hint(pending)
+
+
+def test_device_information_status_reports_disabled_reason():
+    manager = BluetoothManager()
+    manager._enrichment_screen_active = True
+    manager._scanner = None  # OS BLE not active
+    status = manager.device_information_status()
+    assert "model sweep OFF" in status
+    assert "no BLE scanner active" in status
+
+
+def test_device_information_candidates_exclude_noncandidates():
+    from dataclasses import replace
+
+    manager = BluetoothManager()
+    manager._scanner = object()
+
+    connectable = _os_uuid_device()
+    cached = replace(_os_uuid_device(), identifier="22:22:22:22:22:22")
+    classic = replace(
+        _os_uuid_device(),
+        identifier="33:33:33:33:33:33",
+        discovery_source="usb-hci",
+        radio_types=("BT",),
+    )
+    for device in (connectable, cached, classic):
+        manager._devices[device.identifier] = device
+    manager._device_information[cached.identifier] = {"model_number": "known"}
+
+    candidate_ids = {d.identifier for d in manager._device_information_candidates()}
+    assert connectable.identifier in candidate_ids
+    assert cached.identifier not in candidate_ids  # already enriched
+    assert classic.identifier not in candidate_ids  # not Bleak-connectable
+
+
+def test_cached_device_information_survives_new_advertisement():
+    from types import SimpleNamespace
+
+    manager = BluetoothManager()
+    device = _os_uuid_device()
+    manager._devices[device.identifier] = device
+    manager._connection_updated(_device_information_inspection(device), None)
+
+    advertisement = SimpleNamespace(
+        local_name=device.name,
+        service_uuids=(),
+        manufacturer_data={},
+        service_data={},
+        tx_power=None,
+        rssi=-55,
+        platform_data=(),
+    )
+    manager._on_advertisement(
+        SimpleNamespace(address=device.identifier, name=device.name),
+        advertisement,
+    )
+
+    refreshed = manager._devices[device.identifier]
+    assert refreshed.model_number == "Watch7,15"
+    assert refreshed.software_revision == "11.0.1"
 

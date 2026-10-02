@@ -5,6 +5,7 @@ from textual.widgets import DataTable
 
 from wifit3.models import (
     BluetoothCharacteristic,
+    BluetoothDescriptor,
     BluetoothDevice,
     BluetoothInspection,
     BluetoothService,
@@ -12,6 +13,7 @@ from wifit3.models import (
 from wifit3.ui.app import WifiteApp
 from wifit3.ui.screens.bluetooth_focus import (
     BluetoothFocusView,
+    _read_error_cell,
     gatt_ascii,
     gatt_payload_hex,
     gatt_payload_text,
@@ -71,12 +73,13 @@ async def test_bluetooth_focus_renders_identity_traffic_and_gatt_table():
         assert isinstance(screen, BluetoothFocusView)
 
         table = screen.query_one("#gatt-table", DataTable)
-        assert table.row_count == 1
+        assert table.row_count == 2
         row = table.get_row("1")
         assert row[0] == "Device Information"
         assert row[1] == "Manufacturer Name String"
         assert row[3].plain == "Acme"
         assert row[4].plain == "LOW"
+        assert screen.query_one("#gatt-detail").border_title == "DEVICE / BLE"
         assert "L1" in str(screen.query_one("#bt-connection").render())
 
         local = screen.query_one("#bt-local").region
@@ -100,6 +103,64 @@ async def test_bluetooth_focus_renders_identity_traffic_and_gatt_table():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_focus_shows_property_meanings_and_live_descriptors():
+    inspection = _inspection()
+    characteristic = inspection.services[0].characteristics[0]
+    characteristic.descriptors.append(BluetoothDescriptor(
+        handle=7,
+        uuid="00002904-0000-1000-8000-00805f9b34fb",
+        name="Characteristic Presentation Format",
+        value=(
+            "uint16; exponent -1; unit 0x272f; "
+            "namespace 0x01; description 0x0000"
+        ),
+        value_hex="06 ff 2f 27 01 00 00",
+    ))
+    characteristic.descriptors.append(BluetoothDescriptor(
+        handle=8,
+        uuid="00002902-0000-1000-8000-00805f9b34fb",
+        name="Client Characteristic Configuration",
+        read_error=(
+            "BleakGATTProtocolError: Read Not Permitted "
+            "(ATT 0x02, native code=2)"
+        ),
+    ))
+    app = WifiteApp()
+    app.bluetooth_manager.connection = SimpleNamespace(inspection=inspection)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen("bluetooth-focus")
+        await pilot.pause(0)
+        screen = app.screen
+        table = screen.query_one("#gatt-table", DataTable)
+
+        assert table.row_count == 4
+        assert table.get_row("descriptor:1:7")[1] == (
+            "Characteristic Presentation Format"
+        )
+        assert table.get_row("descriptor:1:8")[3].plain == "READ DENIED"
+        await pilot.press("down")
+        characteristic_detail = str(screen.query_one("#gatt-detail").render())
+        assert "Permits an ATT Read Request" in characteristic_detail
+        assert "Bluetooth SIG Assigned Numbers" in characteristic_detail
+        await pilot.press("down")
+        descriptor_detail = str(screen.query_one("#gatt-detail").render())
+        assert "unit 0x272f" in descriptor_detail
+        assert "Live ATT/GATT descriptor discovery" in descriptor_detail
+        await pilot.press("down")
+        error_detail = str(screen.query_one("#gatt-detail").render())
+        assert "BleakGATTProtocolError: Read Not Permitted" in error_detail
+
+
+def test_read_errors_are_compact_in_table_cells():
+    assert _read_error_cell("TimeoutError").plain == "TIMEOUT"
+    assert _read_error_cell("Insufficient Authentication (ATT 0x05)").plain == (
+        "AUTH REQUIRED"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
 async def test_bluetooth_focus_keeps_remote_art_visible_while_disconnected():
     app = WifiteApp()
     app.bluetooth_manager.connection = None
@@ -115,6 +176,79 @@ async def test_bluetooth_focus_keeps_remote_art_visible_while_disconnected():
         assert "Waiting for connection" in device_art.plain
         assert "██" in device_art.plain
         assert "DISCONNECTED" in str(link)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_focus_opens_with_observation_data_after_gatt_timeout():
+    app = WifiteApp()
+    device = _inspection().device
+    app.bluetooth_manager._devices[device.identifier] = device
+    app.bluetooth_manager.select_focus(
+        device.identifier,
+        error="BLE GATT connection timed out",
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen("bluetooth-focus")
+        await pilot.pause(0)
+        screen = app.screen
+
+        assert "Test Sensor" in screen.query_one("#bt-device").render().plain
+        assert "DISCONNECTED" in str(screen.query_one("#bt-connection").render())
+        assert "BLE GATT connection timed out" in str(
+            screen.query_one("#gatt-detail").render(),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_focus_renders_classic_identity_sdp_and_hci_in_same_design():
+    app = WifiteApp()
+    device = BluetoothDevice(
+        identifier="38:8C:EF:CA:7F:FF",
+        name="Classic Speaker",
+        rssi=-64,
+        service_uuids=("110b", "110e"),
+        service_data_uuids=(),
+        manufacturer_ids=(0x0075,),
+        manufacturer_data_bytes=0,
+        service_data_bytes=0,
+        tx_power=None,
+        advertisement_count=16,
+        advertisement_interval=0.9,
+        first_seen=1,
+        last_seen=12,
+        radio_types=("BT",),
+        discovery_source="usb-hci",
+        class_of_device=0x0C0404,
+        page_scan_repetition_mode=1,
+        clock_offset=0x1234,
+        address_type="public",
+    )
+    app.bluetooth_manager._devices[device.identifier] = device
+    app.bluetooth_manager.select_classic_focus(device.identifier)
+    app.bluetooth_manager.connection = None
+
+    async with app.run_test(size=(140, 45)) as pilot:
+        app.push_screen("bluetooth-focus")
+        await pilot.pause(0)
+        screen = app.screen
+
+        assert "CLASSIC" in screen.query_one("#bt-local").render().plain
+        assert "Classic Speaker" in screen.query_one("#bt-device").render().plain
+        assert "CLASSIC / BR-EDR" in str(screen.query_one("#bt-connection").render())
+        packet_flow = screen.query_one("#bt-traffic").render().plain
+        assert "CLASSIC PACKET FLOW" in packet_flow
+        assert "▁" in packet_flow
+        assert screen.query_one("#bt-sdp").display
+        table = screen.query_one("#gatt-table", DataTable)
+        assert table.row_count == 4
+        assert table.get_row("classic:trace")[1] == "PDU 0x06 → 0x07"
+        assert table.get_row("classic:110b")[1] == "110b"
+        detail = screen.query_one("#gatt-detail")
+        assert detail.border_title == "DEVICE / CLASSIC"
+        assert "Address & privacy" in str(detail.render())
 
 
 def test_gatt_payload_hex_decodes_ascii_hex_strings():
@@ -220,6 +354,8 @@ async def test_bluetooth_focus_toggles_ascii_for_printable_values():
         assert table.get_row("1")[3].plain == "45 50 41 38 58 42 38 39"
         assert table.get_row("2")[3].plain == "00 00 00 00 00 00 00 00"
         assert table.get_row("3")[3].plain == "87%"
+        table.move_cursor(row=1, animate=False)
+        await pilot.pause(0)
         detail = screen.query_one("#gatt-detail")
         assert "ASCII" in str(detail.render())
         assert "EPA8XB89" in str(detail.render())

@@ -10,6 +10,7 @@ from .bluetooth_device import BluetoothDevice
 from .location import LocationFix, SignalPosition
 from .bluetooth_inspection import (
     BluetoothCharacteristic,
+    BluetoothDescriptor,
     BluetoothInspection,
     BluetoothService,
     BluetoothTraffic,
@@ -47,6 +48,7 @@ __all__ = [
     "LocationFix",
     "SignalPosition",
     "BluetoothCharacteristic",
+    "BluetoothDescriptor",
     "BluetoothInspection",
     "BluetoothService",
     "BluetoothTraffic",

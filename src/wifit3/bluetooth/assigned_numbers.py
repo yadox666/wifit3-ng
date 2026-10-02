@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from uuid import UUID
 
-from bluetooth_numbers import characteristic, company, oui, service
+from bluetooth_numbers import characteristic, company, descriptor, oui, service
 from bluetooth_numbers.exceptions import UnknownUUIDError
 
 from wifit3.bluetooth.assigned_number_updates import CHARACTERISTIC_UPDATES, SERVICE_UPDATES
@@ -61,6 +61,53 @@ def characteristic_name(characteristic_uuid: str) -> str:
     compact = _compact_uuid(characteristic_uuid)
     short = compact if len(compact) <= 8 else compact[:8] + "…"
     return f"Custom ({short})"
+
+
+def descriptor_name(descriptor_uuid: str) -> str:
+    """Bluetooth SIG descriptor name, or a compact custom UUID."""
+    key = _service_key(descriptor_uuid)
+    try:
+        name = descriptor[key] if key is not None else None
+    except UnknownUUIDError:
+        name = None
+    if name:
+        return name
+    compact = _compact_uuid(descriptor_uuid)
+    short = compact if len(compact) <= 8 else compact[:8] + "…"
+    return f"Custom ({short})"
+
+
+_PROPERTY_DETAILS = {
+    "broadcast": "May broadcast the value through server configuration.",
+    "read": "Permits an ATT Read Request; security policy may still reject it.",
+    "write-without-response": "Permits an unacknowledged ATT Write Command.",
+    "write": "Permits an acknowledged ATT Write Request.",
+    "notify": "Server may send unacknowledged value updates through CCCD.",
+    "indicate": "Server may send acknowledged value updates through CCCD.",
+    "authenticated-signed-writes": "Permits signed writes without an encrypted link.",
+    "extended-properties": "Additional behavior is defined by descriptor 0x2900.",
+}
+
+
+def characteristic_property_detail(property_name: str) -> str:
+    """Official GATT meaning of an advertised characteristic property."""
+    return _PROPERTY_DETAILS.get(
+        property_name,
+        "Unknown or platform-specific advertised property.",
+    )
+
+
+def uuid_metadata_source(uuid_value: str, *, kind: str) -> str:
+    """Provenance for a resolved UUID label."""
+    compact = _compact_uuid(uuid_value)
+    updates = SERVICE_UPDATES if kind == "service" else CHARACTERISTIC_UPDATES
+    if compact in updates:
+        return "Bundled Bluetooth SIG / Nordic update snapshot"
+    if len(compact) == 4:
+        return "Bluetooth SIG Assigned Numbers"
+    if compact in MEMBER_UUID_OWNERS:
+        return "Bluetooth SIG member UUID registry"
+    return "Vendor-specific UUID; public semantics unavailable"
 
 
 _INFERRED_SERVICE_CHARACTERISTICS = {

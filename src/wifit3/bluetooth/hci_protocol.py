@@ -28,12 +28,108 @@ HCI_USER_PASSKEY_REQUEST_NEG_REPLY = 0x042F
 HCI_REMOTE_OOB_DATA_REQUEST_NEG_REPLY = 0x0433
 HCI_IO_CAPABILITY_REQUEST_NEG_REPLY = 0x0434
 HCI_READ_BUFFER_SIZE = 0x1005
+HCI_LE_READ_BUFFER_SIZE = 0x2002
 HCI_WRITE_INQUIRY_MODE = 0x0C45
 HCI_LE_SET_EVENT_MASK = 0x2001
+# LE Meta events we consume: bit0 Connection Complete, bit1 Advertising Report
+# (bits 2-5 are the intermediate connection/feature events). 0x3f = bits 0-5.
+LE_EVENT_MASK_SCAN_AND_CONNECT = b"\x3f" + b"\x00" * 7
+# Active scan with window == interval == 0x0060 (96 x 0.625 ms = 60 ms): a 100%
+# duty cycle so the whole advertising-channel dwell is spent listening.
+LE_SCAN_TYPE_ACTIVE = 0x01
+LE_SCAN_INTERVAL = 0x0060
+LE_SCAN_WINDOW = 0x0060
+LE_SCAN_PARAMETERS = struct.pack(
+    "<BHHBB",
+    LE_SCAN_TYPE_ACTIVE,
+    LE_SCAN_INTERVAL,
+    LE_SCAN_WINDOW,
+    0x00,
+    0x00,
+)
+# GIAC 0x9E8B33. Inquiry_Length in units of 1.28 s (HCI spec).
+CLASSIC_INQUIRY_LENGTH_SHORT = 0x05  # ~6.4 s — when USB also runs LE scan on a shared radio
+CLASSIC_INQUIRY_LENGTH_FULL = 0x0A  # ~12.8 s — Classic-only USB path (OS Bleak owns BLE)
+CLASSIC_INQUIRY_LENGTH = CLASSIC_INQUIRY_LENGTH_SHORT
+CLASSIC_INQUIRY_PARAMETERS = bytes(
+    (0x33, 0x8B, 0x9E, CLASSIC_INQUIRY_LENGTH_SHORT, 0x00),
+)
+
+
+def classic_inquiry_parameters(length: int = CLASSIC_INQUIRY_LENGTH_SHORT) -> bytes:
+    return bytes((0x33, 0x8B, 0x9E, length, 0x00))
+
+
+def classic_inquiry_timeout_ms(length: int) -> int:
+    return max(5_000, int(length * 1.28 * 1000) + 2_000)
 HCI_LE_SET_SCAN_PARAMETERS = 0x200B
 HCI_LE_SET_SCAN_ENABLE = 0x200C
+HCI_LE_CREATE_CONNECTION = 0x200D
+HCI_LE_CREATE_CONNECTION_CANCEL = 0x200E
+HCI_LE_READ_REMOTE_FEATURES = 0x2016
+HCI_READ_REMOTE_SUPPORTED_FEATURES = 0x041B
+HCI_READ_REMOTE_VERSION_INFORMATION = 0x041D
+HCI_PIN_CODE_REQUEST_REPLY = 0x040D
+HCI_LINK_KEY_REQUEST_REPLY = 0x040B
+HCI_AUTHENTICATION_REQUESTED = 0x0411
+HCI_SET_CONNECTION_ENCRYPTION = 0x0413
+HCI_IO_CAPABILITY_REQUEST_REPLY = 0x042B
+HCI_USER_CONFIRMATION_REQUEST_REPLY = 0x042C
+HCI_USER_PASSKEY_REQUEST_REPLY = 0x042E
+HCI_READ_ENCRYPTION_KEY_SIZE = 0x1408
 
 EVENT_INQUIRY_COMPLETE = 0x01
+EVENT_AUTHENTICATION_COMPLETE = 0x06
+EVENT_ENCRYPTION_CHANGE = 0x08
+EVENT_CONNECTION_COMPLETE = 0x03
+EVENT_PIN_CODE_REQUEST = 0x16
+EVENT_LINK_KEY_REQUEST = 0x17
+EVENT_LINK_KEY_NOTIFICATION = 0x18
+EVENT_IO_CAPABILITY_REQUEST = 0x31
+EVENT_IO_CAPABILITY_RESPONSE = 0x32
+EVENT_USER_CONFIRMATION_REQUEST = 0x33
+EVENT_USER_PASSKEY_REQUEST = 0x34
+EVENT_REMOTE_OOB_DATA_REQUEST = 0x35
+EVENT_USER_PASSKEY_NOTIFICATION = 0x3B
+
+# SSP IO capabilities (HCI IO_Capability_Request_Reply / IO Capability Response).
+IO_CAPABILITY_DISPLAY_ONLY = 0x00
+IO_CAPABILITY_DISPLAY_YES_NO = 0x01
+IO_CAPABILITY_KEYBOARD_ONLY = 0x02
+IO_CAPABILITY_NO_INPUT_NO_OUTPUT = 0x03
+
+# SSP Authentication Requirements (bonding + MITM protection).
+AUTH_REQ_NO_MITM_GENERAL_BONDING = 0x04
+AUTH_REQ_MITM_GENERAL_BONDING = 0x05
+
+IO_CAPABILITY_NAMES: dict[int, str] = {
+    IO_CAPABILITY_DISPLAY_ONLY: "DisplayOnly",
+    IO_CAPABILITY_DISPLAY_YES_NO: "DisplayYesNo",
+    IO_CAPABILITY_KEYBOARD_ONLY: "KeyboardOnly",
+    IO_CAPABILITY_NO_INPUT_NO_OUTPUT: "NoInputNoOutput",
+}
+
+
+def io_capability_name(value: int) -> str:
+    return IO_CAPABILITY_NAMES.get(value, f"0x{value:02x}")
+
+
+def io_capability_has_display(value: int) -> bool:
+    """True for peers that can show a code (DisplayOnly / DisplayYesNo)."""
+    return value in (IO_CAPABILITY_DISPLAY_ONLY, IO_CAPABILITY_DISPLAY_YES_NO)
+
+
+def io_capability_supports_mitm(value: int) -> bool:
+    """True when the peer has I/O for Numeric Comparison or Passkey Entry."""
+    return value in (
+        IO_CAPABILITY_DISPLAY_ONLY,
+        IO_CAPABILITY_DISPLAY_YES_NO,
+        IO_CAPABILITY_KEYBOARD_ONLY,
+    )
+EVENT_READ_REMOTE_SUPPORTED_FEATURES_COMPLETE = 0x0B
+EVENT_READ_REMOTE_VERSION_COMPLETE = 0x0C
+LE_SUBEVENT_READ_REMOTE_FEATURES_COMPLETE = 0x04
+EVENT_DISCONNECTION_COMPLETE = 0x05
 EVENT_INQUIRY_RESULT = 0x02
 EVENT_REMOTE_NAME_REQUEST_COMPLETE = 0x07
 EVENT_INQUIRY_RESULT_WITH_RSSI = 0x22
@@ -44,6 +140,148 @@ EVENT_LE_META = 0x3E
 
 LE_ADVERTISING_REPORT = 0x02
 LE_EXTENDED_ADVERTISING_REPORT = 0x0D
+LE_SUBEVENT_CONNECTION_COMPLETE = 0x01
+
+ATT_CID = 0x0004
+
+_HCI_STATUS_NAMES: dict[int, str] = {
+    0x00: "Success",
+    0x01: "Unknown HCI command",
+    0x02: "Unknown connection identifier",
+    0x03: "Hardware failure",
+    0x04: "Page timeout",
+    0x05: "Authentication failure",
+    0x06: "PIN or key missing",
+    0x07: "Memory capacity exceeded",
+    0x08: "Connection timeout",
+    0x09: "Connection limit exceeded",
+    0x0A: "Synchronous connection limit exceeded",
+    0x0B: "ACL connection already exists",
+    0x0C: "Command disallowed",
+    0x0D: "Connection rejected: limited resources",
+    0x0E: "Connection rejected: security reasons",
+    0x0F: "Connection rejected: unacceptable BD_ADDR",
+    0x10: "Connection accept timeout exceeded",
+    0x11: "Unsupported feature or parameter value",
+    0x12: "Invalid HCI command parameters",
+    0x13: "Remote user terminated connection",
+    0x14: "Remote device terminated connection due to low resources",
+    0x15: "Remote device terminated connection due to power off",
+    0x16: "Connection terminated by local host",
+    0x17: "Repeated attempts",
+    0x18: "Pairing not allowed",
+    0x19: "Unknown LMP PDU",
+    0x1A: "Unsupported remote feature",
+    0x1B: "SCO offset rejected",
+    0x1C: "SCO interval rejected",
+    0x1D: "SCO air mode rejected",
+    0x1E: "Invalid LMP parameters / invalid LL parameters",
+    0x1F: "Unspecified error",
+    0x20: "Unsupported LMP parameter value / unsupported LL parameter value",
+    0x21: "Role change not allowed",
+    0x22: "LMP response timeout / LL response timeout",
+    0x23: "LMP error transaction collision / LL procedure collision",
+    0x24: "LMP PDU not allowed",
+    0x25: "Encryption mode not acceptable",
+    0x26: "Link key cannot be changed",
+    0x27: "Requested QoS not supported",
+    0x28: "Instant passed",
+    0x29: "Pairing with unit key not supported",
+    0x2A: "Different transaction collision",
+    0x2C: "QoS unacceptable parameter",
+    0x2D: "QoS rejected",
+    0x2E: "Channel classification not supported",
+    0x2F: "Insufficient security",
+    0x30: "Parameter out of mandatory range",
+    0x32: "Role switch pending",
+    0x34: "Reserved slot violation",
+    0x35: "Role switch failed",
+    0x36: "Extended inquiry response too large",
+    0x37: "Secure Simple Pairing not supported by host",
+    0x38: "Host busy pairing",
+    0x39: "Connection rejected: no suitable channel found",
+    0x3A: "Controller busy",
+    0x3B: "Unacceptable connection parameters",
+    0x3C: "Advertising timeout",
+    0x3D: "Connection terminated due to MIC failure",
+    0x3E: "Connection failed to be established / synchronization timeout",
+    0x3F: "Previously used error code (reserved)",
+    0x40: (
+        "Coarse clock adjustment rejected; controller will try clock dragging"
+    ),
+    0x41: "Type 0 submap not defined",
+    0x42: "Unknown advertising identifier",
+    0x43: "Limit reached",
+    0x44: "Operation cancelled by host",
+    0x45: "Packet too long",
+    0x46: "Too late",
+    0x47: "Too early",
+    0x48: "Insufficient channels",
+}
+
+
+CLASSIC_CONNECT_RETRYABLE_STATUSES = frozenset(
+    {0x04, 0x08, 0x09, 0x0B, 0x0C, 0x0D, 0x0E},
+)
+
+
+def classic_connect_retryable(status: int) -> bool:
+    return status in CLASSIC_CONNECT_RETRYABLE_STATUSES
+
+
+def classic_connect_exception_retriable(exc: Exception) -> bool:
+    """Whether a failed Classic ACL connect is worth retrying with fresh inquiry."""
+    from wifit3.bluetooth.usb_hci import UsbBluetoothError
+
+    if isinstance(exc, UsbBluetoothError) and exc.hci_status is not None:
+        return classic_connect_retryable(exc.hci_status)
+    message = str(exc).casefold()
+    return (
+        "event 0x03 timed out" in message
+        or "connection complete" in message
+        or "page timeout" in message
+        or "connection timeout" in message
+        or "acl packet timed out" in message
+    )
+
+
+def hci_status_message(status: int) -> str:
+    name = _HCI_STATUS_NAMES.get(status, "Reserved or unknown HCI status")
+    label = f"{name} (HCI 0x{status:02x})"
+    if status == 0x04:
+        return (
+            f"{label}: the remote device did not answer Classic paging. "
+            "It may be BLE-only, out of range, asleep, or not connectable over BR/EDR."
+        )
+    if status == 0x08:
+        return f"{label}: the link setup timed out."
+    if status == 0x0D:
+        return (
+            f"{label}: the target refused a new BR/EDR link (often already connected "
+            "to a phone/PC, out of pairing slots, or not in discoverable/pairing mode). "
+            "Disconnect other hosts, open pairing on the device, then retry."
+        )
+    if status == 0x0E:
+        return (
+            f"{label}: the target rejected the connection for security policy "
+            "(pairing mode required or bond mismatch)."
+        )
+    if status == 0x0B:
+        return (
+            f"{label}: an ACL to this address may already exist on the target or "
+            "controller — disconnect other Bluetooth users and retry."
+        )
+    if status == 0x12:
+        return (
+            f"{label}: the controller rejected a pairing command as malformed "
+            "(invalid HCI parameters) — this is a lab bug, not a device issue."
+        )
+    if status == 0x21:
+        return (
+            f"{label}: the controller rejected the pairing step for the current "
+            "master/slave role — the lab retries the ACL with role switch disabled."
+        )
+    return label
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +306,8 @@ class DiscoveryObservation:
     protocol_confidence: str = ""
     page_scan_repetition_mode: int = 0
     clock_offset: int = 0
+    decode_state: str = ""
+    signature_watch: str = ""
 
 
 def command_packet(opcode: int, parameters: bytes = b"") -> bytes:

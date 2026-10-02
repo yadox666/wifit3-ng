@@ -90,6 +90,14 @@ def test_migrates_v4_database_to_structured_analysis_and_protocol(tmp_path):
     assert "hardware_vendor" in columns
     assert "hardware_product" in columns
     assert "hardware_source" in columns
+    assert "model_number" in columns
+    assert "firmware_revision" in columns
+    assert "hardware_revision" in columns
+    assert "software_revision" in columns
+    assert "serial_number" in columns
+    assert "manufacturer_name" in columns
+    assert "gatt_device_name" in columns
+    assert "pnp_id" in columns
     store.close()
 
 
@@ -101,6 +109,11 @@ def test_remember_and_enrich_only_a_live_device(tmp_path):
     saved.hardware_vendor = "Sony Corp."
     saved.hardware_product = "WH-1000XM5 Headphones"
     saved.hardware_source = "BlueZ Device ID / systemd hwdb"
+    saved.model_number = "WH-1000XM5"
+    saved.firmware_revision = "2.0.1"
+    saved.hardware_revision = "1.0"
+    saved.software_revision = "2.0"
+    saved.serial_number = "SN12345"
     assert store.remember(saved, force=True)
 
     observed = _device(name="<Unknown>")
@@ -124,6 +137,11 @@ def test_remember_and_enrich_only_a_live_device(tmp_path):
     assert observed.hardware_vendor == "Sony Corp."
     assert observed.hardware_product == "WH-1000XM5 Headphones"
     assert observed.hardware_source == "BlueZ Device ID / systemd hwdb"
+    assert observed.model_number == "WH-1000XM5"
+    assert observed.firmware_revision == "2.0.1"
+    assert observed.hardware_revision == "1.0"
+    assert observed.software_revision == "2.0"
+    assert observed.serial_number == "SN12345"
     assert store.count() == 1
 
 

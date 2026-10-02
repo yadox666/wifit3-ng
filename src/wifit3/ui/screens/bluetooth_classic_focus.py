@@ -14,10 +14,16 @@ from wifit3.ui.notification_center import WifiteHeader
 
 from wifit3.bluetooth.assigned_numbers import manufacturer_label, service_label
 from wifit3.bluetooth.classification import device_classification
+from wifit3.models.bluetooth_device import CLASSIC_RADIO
+from wifit3.targeting import bluetooth_candidate
 
 if TYPE_CHECKING:
     from wifit3.models import BluetoothDevice
     from wifit3.ui.app import WifiteApp
+
+
+def _device_supports_sdp(device: "BluetoothDevice") -> bool:
+    return CLASSIC_RADIO in device.radio_types
 
 
 class BluetoothClassicFocusView(Screen):
@@ -68,7 +74,9 @@ class BluetoothClassicFocusView(Screen):
         device = self.app.bluetooth_manager.classic_focus_device
         if device is None:
             self.query_one("#classic-status", Static).update("[red]Device unavailable[/red]")
+            self.query_one("#classic-sdp", Button).display = False
             return
+        self.query_one("#classic-sdp", Button).display = _device_supports_sdp(device)
         self.query_one("#classic-status", Static).update(
             f"[bold cyan]● CLASSIC OBSERVATION[/]  {escape(device.name)}"
         )
@@ -144,32 +152,21 @@ class BluetoothClassicFocusView(Screen):
             self.action_browse_services()
 
     def action_targets_editor(self) -> None:
-        self.app.open_targets_editor()
+        device = self.app.bluetooth_manager.classic_focus_device
+        self.app.open_targets_editor(
+            prefill=bluetooth_candidate(device) if device is not None else None,
+        )
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
 
     def action_browse_services(self) -> None:
+        device = self.app.bluetooth_manager.classic_focus_device
+        if device is None or not _device_supports_sdp(device):
+            self.notify(
+                "SDP is available only for Bluetooth Classic (BR/EDR) devices.",
+                severity="warning",
+            )
+            return
         self.browse_services()
 
-    @work(exclusive=True, group="classic-sdp")
-    async def browse_services(self) -> None:
-        device = self.app.bluetooth_manager.classic_focus_device
-        if device is None:
-            return
-        self.query_one("#classic-status", Static).update(
-            f"[yellow]Browsing public SDP records…[/]  {escape(device.name)}"
-        )
-        try:
-            services = await self.app.bluetooth_manager.browse_classic_sdp(
-                device.identifier,
-            )
-        except Exception as exc:
-            self.notify(str(exc), title="Classic SDP failed", severity="error")
-        else:
-            self.notify(
-                f"Found {len(services)} public service classes",
-                title="Classic SDP complete",
-            )
-        finally:
-            self._refresh()

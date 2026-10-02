@@ -1,8 +1,13 @@
 from types import SimpleNamespace
+import struct
 
 import pytest
 
-from wifit3.bluetooth.connection import BluetoothConnection, BluetoothConnectionError
+from wifit3.bluetooth.connection import (
+    BluetoothConnection,
+    BluetoothConnectionError,
+    bluetooth_error_detail,
+)
 from wifit3.models import BluetoothDevice
 
 
@@ -117,6 +122,52 @@ async def test_explicit_read_updates_value_and_traffic():
 
 
 @pytest.mark.asyncio
+async def test_connection_enumerates_and_decodes_standard_descriptors():
+    class DescriptorClient(_Client):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.services[0].characteristics[0].descriptors = [
+                SimpleNamespace(
+                    handle=10,
+                    uuid="00002901-0000-1000-8000-00805f9b34fb",
+                ),
+                SimpleNamespace(
+                    handle=11,
+                    uuid="00002902-0000-1000-8000-00805f9b34fb",
+                ),
+                SimpleNamespace(
+                    handle=12,
+                    uuid="00002904-0000-1000-8000-00805f9b34fb",
+                ),
+            ]
+
+        async def read_gatt_descriptor(self, handle):
+            return {
+                10: b"Vendor name",
+                11: b"\x01\x00",
+                12: struct.pack("<BbHBH", 0x06, -1, 0x272F, 1, 0),
+            }[handle]
+
+    connection = BluetoothConnection(
+        _device(),
+        object(),
+        client_factory=DescriptorClient,
+    )
+    inspection = await connection.connect()
+    descriptors = inspection.services[0].characteristics[0].descriptors
+
+    assert [descriptor.name for descriptor in descriptors] == [
+        "Characteristic User Descriptor",
+        "Client Characteristic Configuration",
+        "Characteristic Presentation Format",
+    ]
+    assert descriptors[0].value == "Vendor name"
+    assert "notifications enabled" in descriptors[1].value
+    assert "uint16" in descriptors[2].value
+    assert "unit 0x272f" in descriptors[2].value
+
+
+@pytest.mark.asyncio
 async def test_connection_infers_custom_service_from_characteristics():
     class AppleClient(_Client):
         def __init__(self, *args, **kwargs):
@@ -154,4 +205,19 @@ async def test_connection_wraps_connect_failure():
 
     assert not connection.inspection.connected
     assert connection.inspection.traffic.errors == 1
+
+
+def test_bluetooth_error_detail_preserves_native_domain_and_code():
+    class NativeError(Exception):
+        def domain(self):
+            return "CBErrorDomain"
+
+        def code(self):
+            return 14
+
+    detail = bluetooth_error_detail(NativeError("Peer removed pairing information"))
+
+    assert "NativeError: Peer removed pairing information" in detail
+    assert "domain=CBErrorDomain" in detail
+    assert "code=14" in detail
 

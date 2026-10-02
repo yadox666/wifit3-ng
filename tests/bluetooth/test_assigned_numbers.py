@@ -1,9 +1,12 @@
 from wifit3.bluetooth.assigned_numbers import (
+    characteristic_property_detail,
     characteristic_name,
+    descriptor_name,
     manufacturer_label,
     resolved_service_name,
     service_label,
     service_name,
+    uuid_metadata_source,
 )
 
 
@@ -75,5 +78,17 @@ def test_unknown_service_without_recognized_characteristics_stays_custom():
     uuid = "12345678-1234-5678-1234-56789abcdef0"
     assert resolved_service_name(uuid, ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]) == (
         "Custom (12345678…)"
+    )
+
+
+def test_descriptor_properties_and_metadata_provenance_are_resolved():
+    assert descriptor_name("2902") == "Client Characteristic Configuration"
+    assert "ATT Read Request" in characteristic_property_detail("read")
+    assert uuid_metadata_source("2a19", kind="characteristic") == (
+        "Bluetooth SIG Assigned Numbers"
+    )
+    assert "Vendor-specific" in uuid_metadata_source(
+        "12345678-1234-5678-1234-56789abcdef0",
+        kind="characteristic",
     )
 

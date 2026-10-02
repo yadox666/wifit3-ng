@@ -95,6 +95,16 @@ class BluetoothDevice:
     correlation_confidence: str = ""
     correlation_evidence: tuple[str, ...] = ()
     positions: list[SignalPosition] = field(default_factory=list)
+    decode_state: str = ""
+    signature_watch: bool = False
+    model_number: str = ""
+    serial_number: str = ""
+    firmware_revision: str = ""
+    hardware_revision: str = ""
+    software_revision: str = ""
+    manufacturer_name: str = ""
+    gatt_device_name: str = ""
+    pnp_id: str = ""
 
     @property
     def radio_label(self) -> str:

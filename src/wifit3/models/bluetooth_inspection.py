@@ -6,6 +6,16 @@ from .bluetooth_device import BluetoothDevice
 
 
 @dataclass(slots=True)
+class BluetoothDescriptor:
+    handle: int
+    uuid: str
+    name: str
+    value: str = ""
+    value_hex: str = ""
+    read_error: str = ""
+
+
+@dataclass(slots=True)
 class BluetoothCharacteristic:
     handle: int
     uuid: str
@@ -17,6 +27,8 @@ class BluetoothCharacteristic:
     read_error: str = ""
     notifications: int = 0
     notification_bytes: int = 0
+    declaration_handle: int | None = None
+    descriptors: list[BluetoothDescriptor] = field(default_factory=list)
 
 
 @dataclass(slots=True)

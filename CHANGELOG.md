@@ -37,6 +37,11 @@ build compared with the original
 - **Targets editor v2:** contextual **New from selection**, wider two-pane layout,
   and improved same-SSID infrastructure targeting (see `targets_editor`).
 
+- **USB Bluetooth claim and GATT identity:** direct USB HCI bring-up (RTL8761,
+  cross-platform claim/reclaim), passive **MODEL** column via GATT Device
+  Information / Apple identifier tables, and scanner identity enrichment over
+  USB (no USB Bluetooth lab UI).
+
 ## 0.3.11 - 2026-09-30
 
 ### Added
