@@ -429,6 +429,11 @@ class WifiteApp(App):
             name=final_name,
             description=result.description,
         )
+        if self.background_autostart:
+            from wifit3.ui.screens.splash import SplashView
+
+            splash = self.get_screen("splash", SplashView)
+            splash.autostart_background()
 
     @property
     def locked_target(self) -> SavedTarget | None:

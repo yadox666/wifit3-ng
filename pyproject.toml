@@ -13,6 +13,7 @@ dependencies = [
     "bleak>=1.1.1",
     "bluetooth-numbers>=1.1.2",
     "libusb-package>=1.0.26.3",
+    "numpy>=2",
     "packaging>=24",
     "platformdirs",
     "pyserial>=3.5",

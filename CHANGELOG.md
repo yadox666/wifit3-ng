@@ -8,6 +8,13 @@ build compared with the original
 
 ### Fixed
 
+- **Dependencies:** declare **numpy** (required by the HackRF RF-SPECTRUM analyzer);
+  `start.sh` reinstalls the editable package when `pyproject.toml` changes.
+
+- **Splash (public):** remove the private-edition logo badge; fix spectrum footer
+  key gating; start **background monitor** only after the scan session dialog
+  completes so history uses the chosen session name.
+
 - **Focus leave confirmation:** always-on passive network metadata in AP Focus
   and Client Focus no longer triggers the stop-and-leave dialog when leaving
   with Escape / Back.

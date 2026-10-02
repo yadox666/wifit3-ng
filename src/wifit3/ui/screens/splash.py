@@ -104,7 +104,6 @@ def load_logo() -> Text:
         if logo_path.exists():
             logo = Text.from_ansi(logo_path.read_text(encoding="utf-8"))
             logo = _add_ng_badge(logo)
-            logo = _add_private_edition_badge(logo)
             return make_black_transparent(logo)
     except Exception:
         pass
@@ -438,8 +437,6 @@ class SplashView(Screen):
         await self.refresh_usb_bluetooth_controllers()
         self.autoreclaim_usb_bluetooth_once()
         self.probe_os_ble()
-        if self.app.background_autostart:
-            self.autostart_background()
 
     @work(exclusive=True, group="os-ble-probe")
     async def probe_os_ble(self) -> None:
@@ -560,7 +557,6 @@ class SplashView(Screen):
         if action == "start_usb_bluetooth" and not self._usb_bluetooth_controllers:
             return False
         if action == "start_spectrum" and not self._hackrf_devices:
-            return False
             return False
         if self._background_active and action in {
             "start",
