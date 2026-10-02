@@ -15,6 +15,9 @@ build compared with the original
   key gating; start **background monitor** only after the scan session dialog
   completes so history uses the chosen session name.
 
+- **USB Bluetooth on macOS:** ship `bluetooth_bonds` persistence and an updated
+  `BluetoothPicker` (claim/reclaim UI) required by the splash hardware refresh.
+
 - **Focus leave confirmation:** always-on passive network metadata in AP Focus
   and Client Focus no longer triggers the stop-and-leave dialog when leaving
   with Escape / Back.
