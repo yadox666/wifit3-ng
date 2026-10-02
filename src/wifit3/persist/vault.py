@@ -122,15 +122,39 @@ class Vault:
         return result
 
     def known_psk(self, ap: "AccessPoint") -> Optional[str]:
-        """The passphrase held for this AP: recovered this session (PBC/PIN) or
-        loaded from a prior session's WPS file, else None. A WPS PIN alone does
-        not count."""
-        return (
-            ap.wps_pbc_psk
-            or ap.wps_pin_psk
-            or next((p.value for p in self.persisted(ap.bssid)
-                     if p.type in self._PSK_TYPES and p.value), None)
-        )
+        """Return a usable credential for an AP.
+
+        Session and exact-BSSID credentials take precedence. If neither exists,
+        reuse one unambiguous persisted credential from the exact same SSID.
+        SSIDs are case-sensitive octet strings; hidden/unknown SSIDs never
+        inherit credentials. Conflicting credentials for one SSID are
+        deliberately rejected rather than guessed.
+        """
+        session_psk = ap.wps_pbc_psk or ap.wps_pin_psk
+        if session_psk:
+            return session_psk
+        direct = next((
+            capture.value
+            for capture in self.persisted(ap.bssid)
+            if capture.type in self._PSK_TYPES and capture.value
+        ), None)
+        if direct:
+            return direct
+        if not ap.ssid:
+            return None
+        ssid_credentials = {
+            capture.value
+            for captures in self._index.values()
+            for capture in captures
+            if (
+                capture.type in self._PSK_TYPES
+                and capture.value
+                and capture.ssid == ap.ssid
+            )
+        }
+        if len(ssid_credentials) == 1:
+            return next(iter(ssid_credentials))
+        return None
 
     def has_psk(self, ap: "AccessPoint") -> bool:
         """True once we hold this AP's passphrase (see known_psk)."""

@@ -30,6 +30,13 @@ build compared with the original
 - **Readable notification history:** header badge, persistent store, expand/copy
   rows; opening history marks items read.
 
+- **Vault SSID credential reuse:** `known_psk` reuses one unambiguous persisted
+  credential for the same SSID on another BSSID; hidden or conflicting SSIDs do
+  not inherit. Opening Vault from AP Focus prefills Add PSK from the current AP.
+
+- **Targets editor v2:** contextual **New from selection**, wider two-pane layout,
+  and improved same-SSID infrastructure targeting (see `targets_editor`).
+
 ## 0.3.11 - 2026-09-30
 
 ### Added

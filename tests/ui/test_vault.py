@@ -2,10 +2,12 @@
 The autouse _captures_to_tmp fixture points Config.captures_dir at tmp_path, and WifiteApp builds its Vault from there.
 """
 import pytest
-from textual.widgets import Button, DataTable
+from textual.widgets import Button, DataTable, Input
 
+from wifit3.models import AccessPoint
 from wifit3.ui.app import WifiteApp
 from wifit3.ui.screens.vault_drawer import VaultDrawer
+from wifit3.ui.screens.vault_import import VaultImportModal
 from wifit3.ui.screens.vault_item import ConfirmModal, _CapturePanel
 
 _HS_LINE = "WPA*02*" + "0" * 32 + "*aabbccddeeff*112233445566*5465737431***2\n"
@@ -90,6 +92,28 @@ async def test_open_vault_focuses_ap_list(tmp_path):
         view = await _open_vault(app)
         await pilot.pause()
         assert app.focused is view.query_one("#vault-aps", DataTable)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_contextual_vault_add_psk_uses_highlighted_ap():
+    app = WifiteApp()
+    ap = AccessPoint(
+        bssid="aa:bb:cc:dd:ee:ff",
+        ssid="Selected Network",
+    )
+
+    async with app.run_test() as pilot:
+        app.action_toggle_vault(ap)
+        await pilot.pause()
+        drawer = app.screen
+        assert isinstance(drawer, VaultDrawer)
+        drawer.query_one("#vault-add-psk", Button).press()
+        await pilot.pause()
+
+        assert isinstance(app.screen, VaultImportModal)
+        assert app.screen.query_one("#import-ssid", Input).value == ap.ssid
+        assert app.screen.query_one("#import-bssid", Input).value == ap.bssid
 
 
 @pytest.mark.asyncio

@@ -31,18 +31,34 @@ class VaultImportModal(ModalScreen[bool]):
     VaultImportModal #import-actions { height: auto; align: right middle; }
     """
 
+    def __init__(
+        self,
+        access_point: AccessPoint | None = None,
+        *,
+        credential_type: str = "wpa",
+    ) -> None:
+        super().__init__()
+        self._access_point = access_point
+        self._credential_type = credential_type
+
     def compose(self) -> ComposeResult:
+        ssid = self._access_point.ssid if self._access_point is not None else ""
+        bssid = self._access_point.bssid if self._access_point is not None else ""
         with Vertical(id="import-dialog"):
             yield Label("Add credential", id="import-title")
             yield Label("Network name")
-            yield Input(placeholder="SSID", id="import-ssid")
+            yield Input(value=ssid or "", placeholder="SSID", id="import-ssid")
             yield Label("Access point address")
-            yield Input(placeholder="AA:BB:CC:DD:EE:FF", id="import-bssid")
+            yield Input(
+                value=bssid,
+                placeholder="AA:BB:CC:DD:EE:FF",
+                id="import-bssid",
+            )
             yield Label("Credential type")
             yield Select(
                 [("WPA/WPA2 passphrase", "wpa"), ("WEP key (hex)", "wep"),
                  ("WPS PIN + passphrase", "wps")],
-                value="wpa", allow_blank=False, id="import-type",
+                value=self._credential_type, allow_blank=False, id="import-type",
             )
             yield Label("Credential")
             yield Input(placeholder="Passphrase or hexadecimal WEP key", password=True, id="import-secret")
@@ -52,6 +68,10 @@ class VaultImportModal(ModalScreen[bool]):
             with Horizontal(id="import-actions"):
                 yield Button("Cancel", id="import-cancel")
                 yield Button("Save", variant="primary", id="import-save")
+
+    def on_mount(self) -> None:
+        if self._access_point is not None:
+            self.query_one("#import-secret", Input).focus()
 
     @on(Button.Pressed, "#import-save")
     def save(self) -> None:

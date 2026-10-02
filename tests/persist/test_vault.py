@@ -165,6 +165,49 @@ def test_known_psk_from_cracked_wpa_psk_file(tmp_path):
     assert v.has_psk(ap) is True and v.known_psk(ap) == "crackedpw"
 
 
+def test_known_psk_falls_back_to_exact_ssid_for_infrastructure_bssid():
+    v = Vault()
+    source = AccessPoint(
+        bssid="00:11:22:33:44:aa",
+        ssid="Hotel Infrastructure",
+    )
+    peer = AccessPoint(
+        bssid="00:11:22:33:44:bb",
+        ssid="Hotel Infrastructure",
+    )
+    v.save_wpa_psk(source, "infrastructure-passphrase")
+
+    assert v.known_psk(peer) == "infrastructure-passphrase"
+    assert v.has_psk(peer) is True
+    reloaded = Vault()
+    assert reloaded.known_psk(peer) == "infrastructure-passphrase"
+
+
+def test_known_psk_ssid_fallback_is_case_sensitive_and_requires_known_ssid():
+    v = Vault()
+    source = AccessPoint(bssid="00:11:22:33:44:aa", ssid="Hotel WiFi")
+    v.save_wpa_psk(source, "infrastructure-passphrase")
+
+    assert v.known_psk(
+        AccessPoint(bssid="00:11:22:33:44:bb", ssid="hotel wifi"),
+    ) is None
+    assert v.known_psk(
+        AccessPoint(bssid="00:11:22:33:44:cc", ssid=None),
+    ) is None
+
+
+def test_known_psk_rejects_ambiguous_ssid_but_exact_bssid_wins():
+    v = Vault()
+    first = AccessPoint(bssid="00:11:22:33:44:aa", ssid="Shared Name")
+    second = AccessPoint(bssid="00:11:22:33:44:bb", ssid="Shared Name")
+    peer = AccessPoint(bssid="00:11:22:33:44:cc", ssid="Shared Name")
+    v.save_wpa_psk(first, "first-passphrase")
+    v.save_wpa_psk(second, "second-passphrase")
+
+    assert v.known_psk(peer) is None
+    assert v.known_psk(first) == "first-passphrase"
+
+
 def test_wpa_psk_has_a_kind_label():
     assert CaptureType.WPA_PSK in Vault._KIND_LABELS
 

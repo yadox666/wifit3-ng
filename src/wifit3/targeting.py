@@ -18,6 +18,7 @@ class TargetCandidate:
     identifier: str
     title: str
     details: dict[str, Any]
+    match_mode: str = "id"
 
 
 def _json_safe(value: Any) -> Any:
@@ -68,6 +69,60 @@ def ap_candidate(ap: AccessPoint) -> TargetCandidate:
         title=ap.ssid or ap.bssid,
         details=details,
     )
+
+
+def infrastructure_candidate(
+    members: list[AccessPoint] | tuple[AccessPoint, ...],
+) -> TargetCandidate | None:
+    """Create one SSID rule from a collapsed same-SSID infrastructure."""
+    if not members:
+        return None
+    ssids = {
+        (ap.ssid or "").strip()
+        for ap in members
+        if (ap.ssid or "").strip()
+    }
+    if len(ssids) != 1:
+        return None
+    ssid = next(iter(ssids))
+    security_levels = sorted({_ap_security_label(ap) for ap in members})
+    security = (
+        security_levels[0]
+        if len(security_levels) == 1
+        else "Mixed: " + ", ".join(security_levels)
+    )
+    channels = sorted({ap.channel for ap in members})
+    details = {
+        "ssid": ssid,
+        "infrastructure": True,
+        "ap_count": len(members),
+        "bssids": [ap.bssid for ap in members],
+        "channels": channels,
+        "encryption": security,
+        "security_levels": security_levels,
+        "wps": any(ap.wps for ap in members),
+    }
+    return TargetCandidate(
+        medium="wifi",
+        kind="ap",
+        identifier=ssid,
+        title=ssid,
+        details=details,
+        match_mode="name",
+    )
+
+
+def _ap_security_label(ap: AccessPoint) -> str:
+    akms = {str(akm).upper() for akm in ap.akms}
+    if ap.wpa3 and ap.transition_mode:
+        return "WPA2/3-PSK"
+    if ap.wpa3:
+        return "WPA3-SAE"
+    if any("EAP" in akm for akm in akms):
+        return "WPA2-Enterprise"
+    if akms or (ap.encryption or "").upper().startswith("WPA2"):
+        return "WPA2-PSK"
+    return (ap.encryption or "Unknown").upper()
 
 
 def client_candidate(
@@ -287,3 +342,271 @@ def is_wifi_ap_whitelisted(store: TargetStore, bssid: str) -> bool:
 
 def bluetooth_editor_category(device: BluetoothDevice) -> str:
     return "ble" if _bluetooth_is_ble(device) else "bt"
+
+
+def _summary_value(value: Any, *, max_len: int = 56) -> str | None:
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and value == int(value):
+            value = int(value)
+        return str(value)
+    if isinstance(value, list):
+        items = [str(item) for item in value if item not in (None, "", [])]
+        if not items:
+            return None
+        if len(items) > 3:
+            return ", ".join(items[:3]) + f" (+{len(items) - 3} more)"
+        return ", ".join(items)
+    text = str(value).strip()
+    if not text or text == "<Unknown>":
+        return None
+    if len(text) > max_len:
+        return text[: max_len - 1] + "…"
+    return text
+
+
+def _summary_pair(
+    lines: list[tuple[str, str]],
+    label: str,
+    value: Any,
+) -> None:
+    rendered = _summary_value(value)
+    if rendered is not None:
+        lines.append((label, rendered))
+
+
+def _format_wifi_channel(channel: Any) -> str | None:
+    if channel in (None, ""):
+        return None
+    try:
+        number = int(channel)
+    except (TypeError, ValueError):
+        return _summary_value(channel)
+    if 1 <= number <= 14:
+        band = "2.4 GHz"
+    elif number > 14:
+        band = "5 GHz"
+    else:
+        band = ""
+    return f"Ch {number} on {band}" if band else f"Ch {number}"
+
+
+def _signal_strength_label(dbm: Any) -> str | None:
+    try:
+        value = int(dbm)
+    except (TypeError, ValueError):
+        return _summary_value(dbm)
+    if value >= -55:
+        bars = "▮▮▮▮"
+        word = "Strong"
+    elif value >= -67:
+        bars = "▮▮▮▯"
+        word = "Good"
+    elif value >= -75:
+        bars = "▮▮▯▯"
+        word = "Fair"
+    else:
+        bars = "▮▯▯▯"
+        word = "Weak"
+    return f"{bars}  {value} dBm · {word}"
+
+
+def observation_kind_subtitle(medium: str, kind: str) -> str:
+    return {
+        ("wifi", "ap"): "Wi-Fi access point",
+        ("wifi", "client"): "Wi-Fi client",
+        ("bluetooth", "device"): "Bluetooth device",
+    }.get((medium, kind), "Device")
+
+
+def observation_summary_lines(
+    medium: str,
+    kind: str,
+    details: dict[str, Any],
+    *,
+    identifier: str = "",
+) -> list[tuple[str, str]]:
+    """Short, human-readable fields for the targets editor (not full stored JSON)."""
+    lines: list[tuple[str, str]] = []
+    if medium == "wifi" and kind == "ap":
+        ssid = details.get("ssid")
+        if ssid:
+            _summary_pair(lines, "Network", ssid)
+        if details.get("infrastructure"):
+            _summary_pair(lines, "Scope", f"{details.get('ap_count', 0)} APs by SSID")
+            _summary_pair(lines, "Security", details.get("encryption"))
+            _summary_pair(lines, "Channels", details.get("channels"))
+            bssids = details.get("bssids")
+            if isinstance(bssids, list):
+                _summary_pair(lines, "BSSIDs", f"{len(bssids)} captured")
+            return lines
+        _summary_pair(lines, "Address", details.get("bssid") or identifier)
+        _summary_pair(lines, "Channel", _format_wifi_channel(details.get("channel")))
+        _summary_pair(lines, "Security", details.get("encryption"))
+        signal = details.get("signal_dbm")
+        if signal is not None:
+            _summary_pair(lines, "Signal", _signal_strength_label(signal))
+        _summary_pair(lines, "Vendor", details.get("manufacturer"))
+    elif medium == "wifi" and kind == "client":
+        mac = details.get("mac") or details.get("client_mac") or identifier
+        _summary_pair(lines, "Address", mac)
+        _summary_pair(lines, "Vendor", details.get("manufacturer"))
+        _summary_pair(lines, "On network", details.get("associated_ssid"))
+        _summary_pair(lines, "AP", details.get("associated_bssid"))
+        signal = details.get("signal_dbm")
+        if signal is not None:
+            _summary_pair(lines, "Signal", _signal_strength_label(signal))
+        access_points = details.get("access_points")
+        if isinstance(access_points, list) and access_points:
+            latest = max(
+                access_points,
+                key=lambda item: item.get("last_seen") or 0,
+            )
+            _summary_pair(lines, "Last SSID", latest.get("ssid"))
+            _summary_pair(lines, "Last AP", latest.get("bssid"))
+        _summary_pair(lines, "Probed SSIDs", details.get("probe_requests"))
+    elif medium == "bluetooth" and kind == "device":
+        _summary_pair(lines, "Name", details.get("name"))
+        _summary_pair(lines, "ID", details.get("identifier") or identifier)
+        _summary_pair(lines, "Radio", details.get("radio_types"))
+        signal = details.get("signal_dbm")
+        if signal is not None:
+            _summary_pair(lines, "Signal", _signal_strength_label(signal))
+        _summary_pair(lines, "Vendor", details.get("manufacturer"))
+        device_type = details.get("probable_type") or details.get("exact_type")
+        _summary_pair(lines, "Type", device_type)
+        protocol = details.get("protocol")
+        if isinstance(protocol, dict):
+            _summary_pair(
+                lines,
+                "Protocol",
+                protocol.get("label") or protocol.get("type"),
+            )
+        else:
+            _summary_pair(lines, "Protocol", protocol)
+    return lines
+
+
+def observation_display_markup(
+    medium: str,
+    kind: str,
+    details: dict[str, Any],
+    *,
+    identifier: str = "",
+    headline: str = "",
+    layout: str = "card",
+) -> str:
+    """Rich markup for the targets editor observation pane."""
+    from rich.markup import escape
+
+    if medium == "wifi" and kind == "ap":
+        name = headline or _summary_value(details.get("ssid")) or "Hidden network"
+    elif medium == "wifi" and kind == "client":
+        name = headline or _summary_value(
+            details.get("mac") or details.get("client_mac") or identifier,
+        ) or "Wi-Fi client"
+    elif medium == "bluetooth" and kind == "device":
+        name = headline or _summary_value(details.get("name")) or _summary_value(
+            details.get("identifier") or identifier,
+        ) or "Bluetooth device"
+    else:
+        name = headline or identifier or "Device"
+
+    subtitle = (
+        "Wi-Fi infrastructure"
+        if medium == "wifi" and kind == "ap" and details.get("infrastructure")
+        else observation_kind_subtitle(medium, kind)
+    )
+    pairs = observation_summary_lines(
+        medium,
+        kind,
+        details,
+        identifier=identifier,
+    )
+    if medium == "wifi" and kind == "ap":
+        pairs = [
+            (label, value)
+            for label, value in pairs
+            if label != "Network" or value != name
+        ]
+    pairs = [
+        (label, value)
+        for label, value in pairs
+        if label != "Name" or value != name
+    ]
+    row_markup = [
+        f"[dim]{escape(label):12}[/]  [bold]{escape(value)}[/]"
+        for label, value in pairs
+    ]
+    if not row_markup:
+        row_markup = ["[dim]No extra details were captured[/dim]"]
+
+    if layout == "draft":
+        return (
+            f"[bold cyan]{escape(name)}[/]\n"
+            f"[dim]{escape(subtitle)}[/]\n\n"
+            + "\n".join(row_markup)
+        )
+
+    return (
+        f"[bold]{escape(name)}[/]\n"
+        f"[dim italic]{escape(subtitle)}[/]\n\n"
+        + "\n".join(row_markup)
+    )
+
+
+def offline_record_candidate(
+    kind: str,
+    record: dict[str, Any],
+) -> TargetCandidate | None:
+    """Build a targets-editor draft from an Offline DB row."""
+    details = _json_safe(
+        {key: value for key, value in record.items() if key != "positions"},
+    )
+    if not isinstance(details, dict):
+        details = {}
+    if kind == "aps":
+        bssid = str(record.get("bssid") or "")
+        if not bssid:
+            return None
+        ssid = record.get("ssid")
+        title = str(ssid or bssid)
+        return TargetCandidate(
+            medium="wifi",
+            kind="ap",
+            identifier=bssid,
+            title=title,
+            details=details,
+        )
+    if kind == "clients":
+        mac = str(record.get("client_mac") or "")
+        if not mac:
+            return None
+        return TargetCandidate(
+            medium="wifi",
+            kind="client",
+            identifier=mac,
+            title=mac,
+            details=details,
+        )
+    if kind == "bluetooth":
+        identifier = str(record.get("identifier") or "")
+        if not identifier:
+            return None
+        name = record.get("name")
+        title = (
+            str(name)
+            if isinstance(name, str) and name and name != "<Unknown>"
+            else identifier
+        )
+        return TargetCandidate(
+            medium="bluetooth",
+            kind="device",
+            identifier=identifier,
+            title=title,
+            details=details,
+        )
+    return None
