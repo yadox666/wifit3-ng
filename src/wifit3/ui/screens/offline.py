@@ -22,6 +22,7 @@ from wifit3.ui.location_format import (
 )
 from wifit3.ui.notification_center import WifiteHeader
 
+from wifit3.targeting import TargetCandidate, offline_record_candidate
 from wifit3.ui.screens.clear_history import ClearHistoryModal, HistoryClearSelection
 from wifit3.ui.screens.offline_filter import OfflineFilterBar, OfflineFilters, record_matches
 
@@ -33,17 +34,19 @@ _COLUMNS = {
     "aps": (
         ("marker", ""), ("ssid", "SSID"), ("bssid", "BSSID"), ("channel", "CH"),
         ("encryption", "SECURITY"), ("clients", "CLIENTS"),
-        ("last_seen", "LAST SEEN"), ("location", "GPS"),
+        ("session", "SESSION"), ("last_seen", "LAST SEEN"), ("location", "GPS"),
     ),
     "clients": (
         ("marker", ""), ("client_mac", "CLIENT"), ("access_point_count", "APS"),
         ("last_ssid", "LAST SSID"), ("last_bssid", "LAST BSSID"),
-        ("channel", "CH"), ("last_seen", "LAST SEEN"), ("location", "GPS"),
+        ("channel", "CH"), ("session", "SESSION"),
+        ("last_seen", "LAST SEEN"), ("location", "GPS"),
     ),
     "bluetooth": (
         ("marker", ""), ("name", "NAME"), ("identifier", "IDENTIFIER"),
         ("radios", "RADIO"), ("address_type", "ADDRESS"),
-        ("protocol", "PROTOCOL"), ("last_seen", "LAST SEEN"), ("location", "GPS"),
+        ("protocol", "PROTOCOL"), ("session", "SESSION"),
+        ("last_seen", "LAST SEEN"), ("location", "GPS"),
     ),
 }
 
@@ -189,7 +192,21 @@ class OfflineDatabaseView(Screen):
         self.notify("Offline history reloaded", title="Database")
 
     def action_targets_editor(self) -> None:
-        self.app.open_targets_editor()
+        candidate = self._selected_target_candidate()
+        if candidate is None:
+            self.app.open_targets_editor()
+            return
+        self.app.open_targets_editor(prefill=candidate)
+
+    def _selected_target_candidate(self) -> TargetCandidate | None:
+        table = self._table(self._active)
+        identity = self._selected_identity(table, self._active)
+        if identity is None:
+            return None
+        for record in self._records[self._active]:
+            if self._identity(self._active, record) == identity:
+                return offline_record_candidate(self._active, record)
+        return None
 
     def action_clear_db(self) -> None:
         self.app.push_screen(ClearHistoryModal(), self._clear_history)
@@ -400,6 +417,7 @@ class OfflineDatabaseView(Screen):
                 str(record.get("channel") or "·"),
                 str(record.get("encryption") or "Unknown"),
                 str(len(record.get("clients", []))),
+                _session_label(record),
                 Text(_timestamp(record.get("last_seen")), style="dim"),
                 position,
             )
@@ -412,6 +430,7 @@ class OfflineDatabaseView(Screen):
                 str(latest.get("ssid") or "·"),
                 str(latest.get("bssid") or "·"),
                 str(latest.get("channel") or "·"),
+                _session_label(record),
                 Text(_timestamp(record.get("last_seen")), style="dim"),
                 position,
             )
@@ -423,6 +442,7 @@ class OfflineDatabaseView(Screen):
             " + ".join(str(item) for item in record.get("radio_types") or []) or "·",
             str(record.get("address_type") or "·"),
             str(protocol.get("label") or protocol.get("type") or "·"),
+            _session_label(record),
             Text(_timestamp(record.get("last_seen")), style="dim"),
             position,
         )
@@ -503,6 +523,8 @@ class OfflineDatabaseView(Screen):
         elif key == "protocol":
             protocol = record.get("protocol") or {}
             value = protocol.get("label") or protocol.get("type")
+        elif key == "session":
+            value = record.get("session_name")
         else:
             value = record.get(key)
         if isinstance(value, str):
@@ -544,6 +566,14 @@ class OfflineDatabaseView(Screen):
             if table.id == f"offline-{kind}":
                 return kind
         return None
+
+
+def _session_label(record: dict[str, Any]) -> Text:
+    name = str(record.get("session_name") or "Legacy")
+    count = int(record.get("session_count") or 0)
+    suffix = f" +{count - 1}" if count > 1 else ""
+    style = "cyan" if count else "dim"
+    return Text(f"{name}{suffix}", style=style)
 
 
 def _flatten(value: Any, prefix: str = "") -> list[tuple[str, str]]:

@@ -24,7 +24,9 @@ from wifit3.ui.screens.bluetooth_picker import BluetoothPicker
 from wifit3.ui.screens.device_picker import DevicePicker
 from wifit3.ui.screens.gps_picker import GpsPicker
 from wifit3.ui.screens.os_ble_picker import OsBlePicker
+from wifit3.ui.screens.sdr_picker import SdrPicker
 from wifit3.persist.config import Config
+from wifit3.wlan.scan_plan import member_channels_for_scan
 
 if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
@@ -41,7 +43,8 @@ _LEFT_MARGIN = " "
 
 
 def _bluetooth_usb_claim_alert(controller, error: Exception) -> str | None:
-    if "could not detach" not in str(error).casefold():
+    lowered = str(error).casefold()
+    if "could not detach" not in lowered and "could not claim" not in lowered:
         return None
     device_name = (
         "Sena UD100 adapter"
@@ -49,8 +52,9 @@ def _bluetooth_usb_claim_alert(controller, error: Exception) -> str | None:
         else "Bluetooth USB device"
     )
     return (
-        f"Please unplug and re-plug your {device_name} "
-        "to claim it from the OS!"
+        f"Your {device_name} is still owned by the OS. "
+        "Click ⎋ on that adapter in the Bluetooth adapters list to release it "
+        "(on macOS this briefly turns Bluetooth off), or unplug and re-plug once."
     )
 
 
@@ -99,7 +103,9 @@ def load_logo() -> Text:
     try:
         if logo_path.exists():
             logo = Text.from_ansi(logo_path.read_text(encoding="utf-8"))
-            return make_black_transparent(_add_ng_badge(logo))
+            logo = _add_ng_badge(logo)
+            logo = _add_private_edition_badge(logo)
+            return make_black_transparent(logo)
     except Exception:
         pass
 
@@ -108,6 +114,18 @@ def load_logo() -> Text:
         "[bold green]Wifit3[/bold green][bold bright_green]-NG[/bold bright_green]"
         "\n[dim green]// Wireless Auditor[/dim green]"
     )
+
+
+def _overlay_badge(lines: list[Text], start_row: int, column: int, badge: list[Text]) -> None:
+    for offset, badge_line in enumerate(badge):
+        row = start_row + offset
+        if row < 0 or row >= len(lines):
+            continue
+        line = lines[row]
+        end = column + len(badge_line)
+        if len(line) < end:
+            line.pad_right(end)
+        lines[row] = line[:column] + badge_line + line[end:]
 
 
 def _add_ng_badge(logo: Text) -> Text:
@@ -124,15 +142,27 @@ def _add_ng_badge(logo: Text) -> Text:
         + Text("G │", style=green),
         Text("└────┘", style=green),
     ]
-    for index, badge_line in enumerate(badge):
-        line = lines[index]
-        if len(line) < _NG_BADGE_COLUMN + len(badge_line):
-            line.pad_right(_NG_BADGE_COLUMN + len(badge_line))
-        lines[index] = (
-            line[:_NG_BADGE_COLUMN]
-            + badge_line
-            + line[_NG_BADGE_COLUMN + len(badge_line):]
-        )
+    _overlay_badge(lines, 0, _NG_BADGE_COLUMN, badge)
+    return Text("\n").join(lines)
+
+
+def _add_private_edition_badge(logo: Text) -> Text:
+    """Bottom-right lab marker (two lines inside a small frame)."""
+    lines = logo.split("\n")
+    accent = Style(color="#ff00aa")
+    white = Style(bold=True, color="#ffffff")
+    badge = [
+        Text("┌─────────┐", style=accent),
+        Text("│ ", style=accent) + Text("PRIVATE", style=white) + Text(" │", style=accent),
+        Text("│ ", style=accent) + Text("EDITION", style=white) + Text(" │", style=accent),
+        Text("└─────────┘", style=accent),
+    ]
+    if len(lines) < len(badge):
+        return logo
+    column = max(len(line) for line in lines) - len(badge[0])
+    if column < 0:
+        column = 0
+    _overlay_badge(lines, len(lines) - len(badge), column, badge)
     return Text("\n").join(lines)
 
 LOGO = load_logo()
@@ -146,6 +176,7 @@ class SplashView(Screen):
 
     DEFAULT_CSS = """
     SplashView #bt-picker-slot,
+    SplashView #sdr-picker-slot,
     SplashView #gps-picker-slot {
         display: none;
     }
@@ -154,7 +185,9 @@ class SplashView(Screen):
     BINDINGS = [
         Binding("w", "start", "Wi-Fi"),
         Binding("b", "start_bluetooth", "BLE"),
+        Binding("g", "start_background", "Background"),
         Binding("d", "start_usb_bluetooth", "BT + BLE"),
+        Binding("r", "start_spectrum", "RF Spectrum"),
         Binding("o", "offline", "Offline DB"),
         Binding("u", "update_oui", "Update OUI DB"),
     ]
@@ -165,8 +198,15 @@ class SplashView(Screen):
         # DeviceIDs from the last render (the app's DeviceWatch feeds them), indexed to the rows.
         self._devices = []
         self._usb_bluetooth_controllers = []
+        self._bt_not_claimed_snapshot: frozenset[tuple] = frozenset()
+        self._hackrf_devices = []
         self._gps_status = None
-        self._last_optional_hardware_signature: tuple[tuple, tuple] | None = None
+        self._last_optional_hardware_signature: tuple[tuple, tuple, tuple] | None = None
+        self._background_active = False
+        self._background_stop_event: asyncio.Event | None = None
+        self._background_timer = None
+        self._bt_autoreclaim_done = False
+
     def compose(self) -> ComposeResult:
         yield WifiteHeader(show_clock=False)
         with Vertical(id="splash-container"):
@@ -184,6 +224,8 @@ class SplashView(Screen):
                 yield OsBlePicker(id="os-ble-picker")
             with Center(id="bt-picker-slot"):
                 yield BluetoothPicker(id="bluetooth-picker")
+            with Center(id="sdr-picker-slot"):
+                yield SdrPicker(id="sdr-picker")
             with Center(id="gps-picker-slot"):
                 yield GpsPicker(id="gps-picker")
             with Center():
@@ -199,9 +241,9 @@ class SplashView(Screen):
                         variant="primary",
                     )
                     yield Button(
-                        Text("BT/BLE Scan"),
-                        id="bluetooth-usb-btn",
-                        variant="primary",
+                        Text.from_markup("BACK[bold bright_yellow]G[/]ROUND"),
+                        id="background-btn",
+                        variant="warning",
                     )
                     yield Button(
                         Text.from_markup("[bold bright_yellow]O[/]FFLINE DB"),
@@ -223,6 +265,9 @@ class SplashView(Screen):
     def _os_ble_picker(self) -> OsBlePicker:
         return self.query_one("#os-ble-picker", OsBlePicker)
 
+    def _sdr_picker(self) -> SdrPicker:
+        return self.query_one("#sdr-picker", SdrPicker)
+
     def _gps_picker(self) -> GpsPicker:
         return self.query_one("#gps-picker", GpsPicker)
 
@@ -231,7 +276,7 @@ class SplashView(Screen):
         shown = [
             picker for picker in (
                 self._picker(), self._os_ble_picker(), self._bt_picker(),
-                self._gps_picker(),
+                self._sdr_picker(), self._gps_picker(),
             )
             if picker.display
         ]
@@ -252,7 +297,7 @@ class SplashView(Screen):
         visible: bool,
         factory: Button,
     ) -> Button | None:
-        """Mount or remove a startup action button before Offline DB."""
+        """Mount or remove a startup action button before Background / Offline DB."""
         button = self._optional_action_button(button_id)
         if not visible:
             if button is not None:
@@ -260,32 +305,61 @@ class SplashView(Screen):
             return None
         if button is None:
             bar = self.query_one("#primary-actions", Horizontal)
-            offline = self.query_one("#offline-btn", Button)
-            bar.mount(factory, before=offline)
+            anchor = self.query_one("#background-btn", Button)
+            bar.mount(factory, before=anchor)
             button = self._optional_action_button(button_id)
         return button
 
-    def _optional_hardware_signature(self) -> tuple[tuple, tuple]:
+    def _optional_hardware_signature(self) -> tuple[tuple, tuple, tuple]:
         return (
             tuple(c.instance_key for c in self._usb_bluetooth_controllers),
+            tuple(d.instance_key for d in self._hackrf_devices),
             self._gps_status.instance_key if self._gps_status is not None else (),
         )
 
     def _sync_optional_hardware_ui(self) -> None:
-        """Panels, buttons, and footer keys for plug-in USB BT hardware."""
+        """Panels, buttons, and footer keys for plug-in USB BT and SDR hardware."""
         signature = self._optional_hardware_signature()
         layout_changed = signature != self._last_optional_hardware_signature
         controllers = self._usb_bluetooth_controllers
+        hackrf = self._hackrf_devices
         gps_status = self._gps_status
 
         if layout_changed:
             self._last_optional_hardware_signature = signature
             self.query_one("#bt-picker-slot", Center).display = bool(controllers)
+            self._ensure_primary_action_button(
+                "bluetooth-usb-btn",
+                visible=bool(controllers),
+                factory=Button(
+                    Text("BT/BLE Scan"),
+                    id="bluetooth-usb-btn",
+                    variant="primary",
+                ),
+            )
+            self.query_one("#sdr-picker-slot", Center).display = bool(hackrf)
+            self._ensure_primary_action_button(
+                "spectrum-btn",
+                visible=bool(hackrf),
+                factory=Button(
+                    Text.from_markup("[bold bright_yellow]R[/]F-SPECTRUM"),
+                    id="spectrum-btn",
+                    variant="primary",
+                ),
+            )
+            self._ensure_primary_action_button(
+                "rf-lab-btn",
+                visible=bool(hackrf),
+                factory=Button(
+                    Text.from_markup("RF [bold bright_yellow]L[/]AB TX"),
+                    id="rf-lab-btn",
+                    variant="warning",
+                ),
+            )
             self.query_one("#gps-picker-slot", Center).display = gps_status is not None
             self.refresh_bindings()
 
-        usb_button = self.query_one("#bluetooth-usb-btn", Button)
-        usb_button.display = bool(controllers)
+        usb_button = self._optional_action_button("bluetooth-usb-btn")
         if usb_button is not None:
             selected = self._bt_picker().selected_controller()
             usb_button.disabled = selected is None
@@ -296,6 +370,16 @@ class SplashView(Screen):
             else:
                 usb_button.tooltip = "Select a Bluetooth adapter"
 
+        spectrum_button = self._optional_action_button("spectrum-btn")
+        if spectrum_button is not None:
+            spectrum_button.disabled = False
+            spectrum_button.tooltip = "Open the receive-only RF spectrum analyzer"
+        lab_button = self._optional_action_button("rf-lab-btn")
+        if lab_button is not None:
+            lab_button.disabled = False
+            lab_button.tooltip = (
+                "Authorized lab: low-power channel noise to test AP ACS / CCA"
+            )
         os_ble_status = self.app.bluetooth_manager.os_ble_status
         ble_button = self.query_one("#bluetooth-btn", Button)
         ble_button.disabled = not (
@@ -364,9 +448,13 @@ class SplashView(Screen):
             uninstall.tooltip = f"Uninstall {hint} for the highlighted card"
         self.app.theme_changed_signal.subscribe(self, lambda _theme: self.refresh_theme_art())
         self._enter_scanning_mode()
+        self._set_background_button(running=False)
         self.set_interval(1.0, self.refresh_usb_bluetooth_controllers)
         await self.refresh_usb_bluetooth_controllers()
+        self.autoreclaim_usb_bluetooth_once()
         self.probe_os_ble()
+        if self.app.background_autostart:
+            self.autostart_background()
 
     @work(exclusive=True, group="os-ble-probe")
     async def probe_os_ble(self) -> None:
@@ -378,12 +466,20 @@ class SplashView(Screen):
 
     async def refresh_usb_bluetooth_controllers(self) -> None:
         if self._is_initializing:
+            if self._background_active:
+                await self._attach_reserved_usb()
             return
-        controllers = await asyncio.to_thread(
-            self.app.bluetooth_manager.available_usb_controllers,
+        from wifit3.sdr import find_hackrf_devices
+
+        controllers, hackrf_devices = await asyncio.gather(
+            asyncio.to_thread(self.app.bluetooth_manager.available_usb_controllers),
+            asyncio.to_thread(find_hackrf_devices),
         )
         bluetooth_changed = [c.instance_key for c in controllers] != [
             c.instance_key for c in self._usb_bluetooth_controllers
+        ]
+        hackrf_changed = [d.instance_key for d in hackrf_devices] != [
+            d.instance_key for d in self._hackrf_devices
         ]
         gps_status = self.app.gps_manager.status
         gps_changed = (
@@ -391,14 +487,20 @@ class SplashView(Screen):
         ) != (
             self._gps_status.instance_key if self._gps_status is not None else None
         )
+        not_claimed = self.app.bluetooth_manager.usb_not_claimed_keys()
+        claim_changed = not_claimed != self._bt_not_claimed_snapshot
         self._usb_bluetooth_controllers = controllers
+        self._hackrf_devices = hackrf_devices
         self._gps_status = gps_status
-        if bluetooth_changed:
-            self._bt_picker().set_controllers(controllers)
+        self._bt_not_claimed_snapshot = not_claimed
+        if bluetooth_changed or claim_changed:
+            self._bt_picker().set_controllers(controllers, not_claimed=not_claimed)
+        if hackrf_changed:
+            self._sdr_picker().set_devices(hackrf_devices)
         self._gps_picker().set_status(gps_status, self.app.gps_manager.latest_fix)
         self._os_ble_picker().set_status(self.app.bluetooth_manager.os_ble_status)
         self._sync_optional_hardware_ui()
-        if bluetooth_changed or gps_changed:
+        if bluetooth_changed or claim_changed or hackrf_changed or gps_changed:
             self._sync_adapter_widths()
 
     def reset_for_reentry(self) -> None:
@@ -472,6 +574,17 @@ class SplashView(Screen):
         # it visible but disabled. So return False to drop optional-hardware keys entirely.
         if action == "start_usb_bluetooth" and not self._usb_bluetooth_controllers:
             return False
+        if action == "start_spectrum" and not self._hackrf_devices:
+            return False
+            return False
+        if self._background_active and action in {
+            "start",
+            "start_bluetooth",
+            "start_usb_bluetooth",
+            "start_spectrum",
+            "offline",
+        }:
+            return False
         return True
 
     def action_start(self) -> None:
@@ -513,6 +626,9 @@ class SplashView(Screen):
             self._sync_optional_hardware_ui()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "background-btn":
+            self.action_start_background()
+            return
         if self._is_initializing:
             return
         if event.button.id == "start-btn":
@@ -521,6 +637,9 @@ class SplashView(Screen):
             self.action_start_bluetooth()
         elif event.button.id == "bluetooth-usb-btn":
             self.action_start_usb_bluetooth()
+        elif event.button.id == "spectrum-btn":
+            self.action_start_spectrum()
+        elif event.button.id == "rf-lab-btn":
         elif event.button.id == "offline-btn":
             self.action_offline()
         elif event.button.id == "uninstall-btn":
@@ -536,7 +655,7 @@ class SplashView(Screen):
         self._os_ble_picker().disabled = True
         self.query_one("#start-btn", Button).disabled = True
         self.query_one("#bluetooth-btn", Button).disabled = True
-        for button_id in ("bluetooth-usb-btn",):
+        for button_id in ("bluetooth-usb-btn", "spectrum-btn", "rf-lab-btn", "background-btn"):
             button = self._optional_action_button(button_id)
             if button is not None:
                 button.disabled = True
@@ -555,6 +674,7 @@ class SplashView(Screen):
         self._sync_optional_hardware_ui()
         self.query_one("#offline-btn", Button).disabled = False
         self.query_one("#uninstall-btn", Button).disabled = not self._devices
+        self._set_background_button(running=False)
         if self._devices:
             picker.focus_list()
         else:
@@ -591,6 +711,242 @@ class SplashView(Screen):
         else:  # all declined / nothing checked
             self.query_one("#status-label", Label).update(self._ready_prompt())
 
+    def _set_background_button(self, *, running: bool) -> None:
+        button = self.query_one("#background-btn", Button)
+        if running:
+            button.label = "Stop monitor"
+            button.tooltip = "Stop background monitor"
+            button.disabled = False
+            button.variant = "error"
+            return
+        button.label = Text.from_markup("BACK[bold bright_yellow]G[/]ROUND")
+        button.tooltip = (
+            "Record Wi-Fi, BLE, and Bluetooth on this screen until you stop"
+        )
+        button.disabled = False
+        button.variant = "warning"
+
+    def action_start_background(self) -> None:
+        """Stay on this screen and record every enabled radio until stop or quit."""
+        if self._background_active:
+            self._request_background_stop()
+            return
+        if self._is_initializing:
+            return
+        self.perform_background_start(force_all=False)
+
+    def _request_background_stop(self) -> None:
+        if self._background_stop_event is not None:
+            self._background_stop_event.set()
+        button = self.query_one("#background-btn", Button)
+        button.disabled = True
+        self.query_one("#status-label", Label).update("Stopping background monitor…")
+
+    def _background_selection(self, force_all: bool):
+        """Checked Wi-Fi cards, OS BLE, and the selected USB controller.
+
+        ``--all`` turns OS BLE on for this launch and uses every present Wi-Fi
+        card plus a USB controller when one is plugged in.
+        """
+        if force_all:
+            self.app.bluetooth_manager.set_os_ble_enabled(True)
+            try:
+                checkbox = self.query_one("#os-ble-enabled", Checkbox)
+                if not checkbox.value:
+                    checkbox.value = True
+            except Exception:
+                pass
+            wifi = list(self._devices)
+            controller = self._bt_picker().selected_controller()
+            if controller is None and self._usb_bluetooth_controllers:
+                controller = self._usb_bluetooth_controllers[0]
+        else:
+            wifi = self._start_targets()
+            controller = (
+                self._bt_picker().selected_controller()
+                if self._usb_bluetooth_controllers else None
+            )
+        status = self.app.bluetooth_manager.os_ble_status
+        use_ble = bool(status.enabled and status.available is not False)
+        return wifi, use_ble, controller
+
+    def _background_is_live(self) -> bool:
+        array = self.app.array
+        wifi = array is not None and bool(array.members)
+        return wifi or self.app.bluetooth_manager.is_scanning
+
+    def _refresh_background_status(self) -> None:
+        parts = ["Background monitor"]
+        array = self.app.array
+        if array is not None and array.members:
+            parts.append(f"Wi-Fi {len(array.access_points)} AP")
+        manager = self.app.bluetooth_manager
+        if manager.is_scanning:
+            radios = []
+            if manager.os_ble_status.state == "OS-ACTIVE":
+                radios.append("BLE")
+            if manager.is_usb_scanning:
+                radios.append("BT")
+            parts.append(f"{'+'.join(radios) or 'Bluetooth'} {len(manager.devices())}")
+        if self.app.gps_manager.latest_fix is not None:
+            parts.append("GPS")
+        elif self._gps_status is not None:
+            parts.append("GPS wait")
+        parts.append("recording")
+        self.query_one("#status-label", Label).update(
+            "[bold]" + " · ".join(parts) + "[/]"
+        )
+
+    async def _background_wifi(self, devices) -> tuple[int, list[str]]:
+        pooled = 0
+        failures: list[str] = []
+        for dev in devices:
+            if self._background_stop_event is not None and self._background_stop_event.is_set():
+                break
+            res = await self.app.device_manager.bringup(dev)
+            if res.status is Status.READY:
+                pooled += 1
+            elif res.status is Status.FAILED:
+                failures.append(res.message)
+        if (
+            pooled
+            and self._background_stop_event is not None
+            and not self._background_stop_event.is_set()
+        ):
+            array = self.app.array
+            if array is not None and array.members:
+                self.app.scan_band_by_instance = self._collect_scan_band_plan()
+                member_channels = member_channels_for_scan(
+                    array.members, None, self.app.scan_band_by_instance,
+                )
+                await array.start_hopping(
+                    interval=0.25,
+                    member_channels=member_channels,
+                )
+        return pooled, failures
+
+    async def _background_radios(self, use_ble: bool, controller) -> list[str]:
+        if self._background_stop_event is not None and self._background_stop_event.is_set():
+            return []
+        if not use_ble and controller is None:
+            return []
+        try:
+            failures = await self.app.bluetooth_manager.start_parallel(
+                os_ble=use_ble,
+                controller=controller,
+            )
+        except Exception as exc:
+            logger.debug("background radio start failed", exc_info=True)
+            failures = [str(exc) or type(exc).__name__]
+        if controller is None:
+            return failures
+        return [
+            _bluetooth_usb_claim_alert(controller, RuntimeError(message)) or message
+            for message in failures
+        ]
+
+    async def _attach_reserved_usb(self) -> None:
+        """After a replug, macOS reservation holds the dongle. Start it without a second claim."""
+        manager = self.app.bluetooth_manager
+        if manager.is_usb_scanning:
+            return
+        try:
+            controllers = await asyncio.to_thread(manager.available_usb_controllers)
+        except Exception:
+            logger.debug("background USB refresh failed", exc_info=True)
+            return
+        held = [controller for controller in controllers if manager.usb_reservation_held(controller)]
+        if not held:
+            return
+        failures = await self._background_radios(False, held[0])
+        if failures:
+            return
+        if manager.is_usb_scanning:
+            self._clear_error()
+            self._refresh_background_status()
+
+    async def _stop_background_engines(self) -> None:
+        array = self.app.array
+        if array is not None:
+            await array.stop_hopping()
+            await array.close()
+            if self.app.array is array:
+                self.app.array = None
+        await self.app.bluetooth_manager.stop()
+
+    def _restore_idle_status(self) -> None:
+        label = self.query_one("#status-label", Label)
+        if self._devices:
+            label.update(self._ready_prompt())
+        else:
+            label.update("Scanning for compatible hardware…")
+
+    @work(exclusive=True, group="background-autostart")
+    async def autostart_background(self) -> None:
+        """``--background``: wait for the first hardware pass, then start the monitor."""
+        await self.app.device_watch.poll()
+        await self.refresh_usb_bluetooth_controllers()
+        if self.app.background_all:
+            self.app.bluetooth_manager.set_os_ble_enabled(True)
+        status = await self.app.bluetooth_manager.probe_os_ble()
+        if self.app.screen is self:
+            self._os_ble_picker().set_status(status)
+            self._sync_optional_hardware_ui()
+            self._sync_adapter_widths()
+        if self._background_active or self._is_initializing:
+            return
+        self.perform_background_start(force_all=bool(self.app.background_all))
+
+    @work(exclusive=True, group="background-monitor")
+    async def perform_background_start(self, force_all: bool = False) -> None:
+        """Bring up the enabled radios and keep hopping on this screen."""
+        self._background_stop_event = asyncio.Event()
+        self._background_active = True
+        self._clear_error()
+        self._enter_busy()
+        self._set_background_button(running=True)
+        self.query_one("#status-label", Label).update("Starting background monitor…")
+        timer = None
+        try:
+            wifi, use_ble, controller = self._background_selection(force_all)
+            _wifi_result, radio_failures = await asyncio.gather(
+                self._background_wifi(wifi),
+                self._background_radios(use_ble, controller),
+            )
+            _pooled, wifi_failures = _wifi_result
+            if self._background_stop_event.is_set():
+                return
+            for message in (*wifi_failures, *radio_failures):
+                if message.startswith("Please unplug"):
+                    self._show_error(message, title="Bluetooth USB device busy")
+                else:
+                    self.notify(message, title="Background monitor", severity="warning")
+            if not self._background_is_live():
+                self.notify(
+                    "Nothing is available to monitor. Enable a Wi-Fi card, BLE, or a Bluetooth adapter.",
+                    title="Background monitor",
+                    severity="warning",
+                )
+                return
+            self._refresh_background_status()
+            timer = self.set_interval(1.0, self._refresh_background_status)
+            self._background_timer = timer
+            await self._background_stop_event.wait()
+        finally:
+            if timer is not None:
+                timer.stop()
+            self._background_timer = None
+            try:
+                await self._stop_background_engines()
+            except Exception:
+                logger.debug("background monitor stop failed", exc_info=True)
+            self._background_active = False
+            try:
+                self._exit_busy()
+                self._restore_idle_status()
+            except Exception:
+                logger.debug("background monitor ui restore failed", exc_info=True)
+
     def action_start_bluetooth(self) -> None:
         status = self.app.bluetooth_manager.os_ble_status
         if not status.enabled:
@@ -605,6 +961,51 @@ class SplashView(Screen):
     def action_offline(self) -> None:
         if not self._is_initializing:
             self.app.switch_screen("offline")
+
+    def action_start_spectrum(self) -> None:
+        if self._is_initializing or not self._hackrf_devices:
+            return
+        self.app.switch_screen("spectrum")
+        spectrum = self.app.get_screen("spectrum")
+        self.app.call_after_refresh(spectrum.activate)
+
+
+    def on_bluetooth_picker_reclaim_requested(
+        self, event: BluetoothPicker.ReclaimRequested,
+    ) -> None:
+        if self._is_initializing or self._background_active:
+            return
+        self.perform_reclaim_bluetooth_usb(event.controller)
+
+    @work(exclusive=True, group="bt-usb-reclaim")
+    async def perform_reclaim_bluetooth_usb(self, controller) -> None:
+        self.query_one("#status-label", Label).update(
+            "Releasing USB Bluetooth adapter from the OS…"
+        )
+        ok, message = await asyncio.to_thread(
+            self.app.bluetooth_manager.reclaim_usb_controller, controller,
+        )
+        await self.refresh_usb_bluetooth_controllers()
+        self.query_one("#status-label", Label).update(self._ready_prompt())
+        if ok:
+            self.notify(message, title="Bluetooth USB", severity="information")
+        else:
+            self.notify(message, title="Bluetooth USB", severity="warning")
+
+    @work(exclusive=True, group="bt-usb-reclaim")
+    async def autoreclaim_usb_bluetooth_once(self) -> None:
+        """One soft reclaim pass when the splash opens (avoids replug when the OS still holds the dongle)."""
+        if self._bt_autoreclaim_done:
+            return
+        self._bt_autoreclaim_done = True
+        await asyncio.sleep(0.25)
+        for controller in list(self._usb_bluetooth_controllers):
+            if controller.instance_key not in self.app.bluetooth_manager.usb_not_claimed_keys():
+                continue
+            await asyncio.to_thread(
+                self.app.bluetooth_manager.reclaim_usb_controller, controller,
+            )
+        await self.refresh_usb_bluetooth_controllers()
 
     def action_start_usb_bluetooth(self) -> None:
         if self._is_initializing:
@@ -635,8 +1036,22 @@ class SplashView(Screen):
     async def perform_usb_bluetooth_start(self, controller) -> None:
         self._clear_error()
         self._enter_busy()
+        if controller.instance_key in self.app.bluetooth_manager.usb_not_claimed_keys():
+            await asyncio.to_thread(
+                self.app.bluetooth_manager.reclaim_usb_controller, controller,
+            )
+            await self.refresh_usb_bluetooth_controllers()
+        manager = self.app.bluetooth_manager
+        use_os_ble = (
+            Config.os_ble_enabled
+            and manager.os_ble_enabled
+            and manager.os_ble_status.available is not False
+        )
         try:
-            await self.app.bluetooth_manager.start_usb(controller)
+            failures = await manager.start_parallel(
+                os_ble=use_os_ble,
+                controller=controller,
+            )
         except BluetoothScanError as exc:
             self._exit_busy()
             claim_alert = _bluetooth_usb_claim_alert(controller, exc)
@@ -644,10 +1059,25 @@ class SplashView(Screen):
                 self._show_error(claim_alert, title="Bluetooth USB device busy")
             else:
                 self._show_error(
-                    f"Bluetooth USB scan failed: {exc}",
-                    title="Bluetooth USB unavailable",
+                    f"Bluetooth scan failed: {exc}",
+                    title="Bluetooth unavailable",
                 )
             return
+        if not manager.is_scanning:
+            self._exit_busy()
+            detail = "; ".join(failures) if failures else "No scanner started"
+            self._show_error(
+                f"Bluetooth scan failed: {detail}",
+                title="Bluetooth unavailable",
+            )
+            return
+        for message in failures:
+            claim_alert = _bluetooth_usb_claim_alert(controller, RuntimeError(message))
+            self.notify(
+                claim_alert or message,
+                title="Bluetooth scan",
+                severity="warning",
+            )
         self._exit_busy()
         self.app.locked_target_id = None
         self.app.auto_lock_armed = True

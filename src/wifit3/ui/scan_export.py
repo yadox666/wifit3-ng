@@ -66,6 +66,8 @@ def _ap_record(ap: AccessPoint) -> dict:
         "wps": ap.wps,
         "wps_locked": ap.wps_locked,
         "country": ap.country_code,
+        "remote_id": ap.capabilities.remote_id,
+        "signature": ap.capabilities.signature_label,
         "first_seen": _iso_time(ap.first_seen),
         "last_seen": _iso_time(ap.last_seen),
         "capabilities": _json_safe(asdict(ap.capabilities)),

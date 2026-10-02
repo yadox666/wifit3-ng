@@ -1,4 +1,6 @@
 """Ctrl+P preferences modal."""
+import asyncio
+from pathlib import Path
 from rich.padding import Padding
 from rich.style import Style
 from rich.text import Text
@@ -12,6 +14,13 @@ from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import Button, Checkbox, ContentSwitcher, Input, Label, Select, Tab, Tabs
 
+from wifit3.observe.signature_pack import (
+    export_user_pack,
+    import_user_pack,
+    refresh_stock,
+    stock_path,
+    user_path,
+)
 from wifit3.persist.config import Config
 from wifit3.ui.screens.targets_editor import TargetsEditorDrawer
 
@@ -123,6 +132,43 @@ class ApExpirySetting(VerticalGroup):
             Config.scanner_ap_expiry = float(event.value)
 
 
+class RegulatoryCountrySetting(VerticalGroup):
+    """``wifi_regulatory_country`` for drivers that honor userland regdb limits."""
+
+    DEFAULT_CSS = _PREF_SECTION_CSS
+
+    _OPTIONS: list[tuple[str, str]] = [
+        ("World (ITU-style 20 dBm)", "00"),
+        ("United States (FCC)", "US"),
+        ("Canada (ISED)", "CA"),
+        ("United Kingdom (UK)", "GB"),
+        ("Germany (DE)", "DE"),
+        ("France (FR)", "FR"),
+        ("Spain (ES)", "ES"),
+        ("Japan (JP)", "JP"),
+        ("Australia (AU)", "AU"),
+    ]
+
+    @classmethod
+    def _select_options(cls) -> list[tuple[str, str]]:
+        from wifit3.wlan.regulatory import normalize_country
+
+        options = list(cls._OPTIONS)
+        current = normalize_country(Config.wifi_regulatory_country)
+        if current != "00" and not any(code == current for _label, code in options):
+            options.append((current, current))
+        return options
+
+    def compose(self) -> ComposeResult:
+        from wifit3.wlan.regulatory import normalize_country
+
+        yield _pref_tag("Wi‑Fi regulatory country (TX power & channels)")
+        options = self._select_options()
+        current = normalize_country(Config.wifi_regulatory_country)
+        value = current if any(code == current for _label, code in options) else "00"
+        yield Select(options, id="wifi_regulatory_country", value=value, allow_blank=False)
+
+
 class ActiveIntensitySetting(VerticalGroup):
     DEFAULT_CSS = _PREF_SECTION_CSS
 
@@ -152,7 +198,7 @@ class GpsSetting(VerticalGroup):
 
     def compose(self) -> ComposeResult:
         yield _pref_tag("GPS serial port")
-        yield Input(Config.gps_port, placeholder="COM3 or /dev/ttyUSB0 - blank = auto", id="gps_port")
+        yield Input(Config.gps_port, placeholder="COM3 or /dev/ttyUSB0 — blank = auto", id="gps_port")
         yield _pref_tag("Movement distance before logging a new fix (metres)")
         yield Input(
             str(Config.gps_movement_threshold_m),
@@ -214,6 +260,61 @@ class SaveFooter(Horizontal):
     def compose(self) -> ComposeResult:
         yield Button("Save", variant="primary", id="save")
         yield Button("Cancel", id="cancel")
+
+
+class SignaturePackSetting(VerticalGroup):
+    """Import, export, and refresh the JSON signature pack."""
+
+    DEFAULT_CSS = _PREF_SECTION_CSS + """
+    #signature-actions { height: 3; }
+    #signature-actions Button { margin-right: 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield _pref_tag("Signature pack")
+        yield Label(
+            "[dim]Stock rules refresh from GitHub. Your rules stay in a separate file. "
+            "Separated trackers and Remote ID are marked on the scanner.[/dim]",
+            markup=True,
+        )
+        yield Label(f"[dim]{stock_path()}[/dim]", markup=True)
+        yield Label(f"[dim]{user_path()}[/dim]", markup=True)
+        with Horizontal(id="signature-actions"):
+            yield Button("Refresh stock", id="signature-refresh")
+            yield Button("Export user rules", id="signature-export")
+        yield Input(placeholder="Path to a signature JSON to import", id="signature-import-path")
+        yield Button("Import user rules", id="signature-import")
+
+    @on(Button.Pressed, "#signature-refresh")
+    async def refresh_pressed(self) -> None:
+        status = await asyncio.to_thread(refresh_stock)
+        self.notify(
+            status.message,
+            title="Signatures",
+            severity="information" if status.ok else "warning",
+        )
+
+    @on(Button.Pressed, "#signature-export")
+    def export_pressed(self) -> None:
+        status = export_user_pack(Path(Config.captures_dir) / "scan_exports")
+        self.notify(
+            status.message,
+            title="Signatures",
+            severity="information" if status.ok else "error",
+        )
+
+    @on(Button.Pressed, "#signature-import")
+    def import_pressed(self) -> None:
+        raw = self.query_one("#signature-import-path", Input).value.strip()
+        if not raw:
+            self.notify("Enter the path of a signature JSON file", title="Signatures", severity="warning")
+            return
+        status = import_user_pack(Path(raw).expanduser())
+        self.notify(
+            status.message,
+            title="Signatures",
+            severity="information" if status.ok else "error",
+        )
 
 
 class PreferencesModal(ModalScreen):
@@ -279,6 +380,7 @@ class PreferencesModal(ModalScreen):
         "tab-safety": "panel-safety",
         "tab-captures": "panel-captures",
         "tab-gps": "panel-gps",
+        "tab-radio": "panel-radio",
     }
 
     def compose(self) -> ComposeResult:
@@ -290,6 +392,7 @@ class PreferencesModal(ModalScreen):
                 Tab("Safety", id="tab-safety"),
                 Tab("Captures", id="tab-captures"),
                 Tab("GPS", id="tab-gps"),
+                Tab("Radio", id="tab-radio"),
                 id="prefs-tabs",
             )
             with ContentSwitcher(id="prefs-panels", initial="panel-general"):
@@ -305,6 +408,7 @@ class PreferencesModal(ModalScreen):
                 with VerticalScroll(id="panel-scanner", classes="pref-panel-scroll"):
                     yield SortDelaySetting()
                     yield ApExpirySetting()
+                    yield SignaturePackSetting()
                 with VerticalScroll(id="panel-safety", classes="pref-panel-scroll"):
                     yield ActiveIntensitySetting()
                     with Vertical(classes="pref-field"):
@@ -345,6 +449,8 @@ class PreferencesModal(ModalScreen):
                     )
                 with VerticalScroll(id="panel-gps", classes="pref-panel-scroll"):
                     yield GpsSetting()
+                with VerticalScroll(id="panel-radio", classes="pref-panel-scroll"):
+                    yield RegulatoryCountrySetting()
             yield SaveFooter()
 
     @on(Tabs.TabActivated, "#prefs-tabs")
@@ -403,6 +509,11 @@ class PreferencesModal(ModalScreen):
         )
         Config.scanner_sort_delay = float(self.query_one("#sort_delay", Select).value)
         Config.scanner_ap_expiry = float(self.query_one("#ap_expiry", Select).value)
+        from wifit3.wlan.regulatory import normalize_country
+
+        Config.wifi_regulatory_country = normalize_country(
+            str(self.query_one("#wifi_regulatory_country", Select).value),
+        )
         self._save_and_dismiss()
 
     def _save_and_dismiss(self) -> None:

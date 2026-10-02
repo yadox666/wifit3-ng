@@ -14,12 +14,13 @@ from platformdirs import user_data_dir
 from wifit3.models import BluetoothDevice
 from wifit3.models.bluetooth_device import has_coherent_persistent_identity
 from wifit3.persist.private_files import ensure_private_directory
+from wifit3.persist.scan_sessions import ScanSession
 
 
 BLUETOOTH_HISTORY_PATH = (
     Path(user_data_dir("wifit3", appauthor=False)) / "bluetooth_history.sqlite3"
 )
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _MAX_DEVICES = 50_000
 _WRITE_INTERVAL_SECONDS = 5.0
 
@@ -46,6 +47,7 @@ class BluetoothHistoryStore:
         self._connection: sqlite3.Connection | None = None
         self._lock = threading.RLock()
         self._last_write: dict[str, float] = {}
+        self._active_session_id: str | None = None
         self._open()
 
     def _open(self) -> None:
@@ -190,6 +192,37 @@ class BluetoothHistoryStore:
                 """
             )
             connection.commit()
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 7:
+            connection.executescript(
+                """
+                CREATE TABLE scan_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    started_at REAL NOT NULL,
+                    ended_at REAL,
+                    mode TEXT NOT NULL
+                );
+                CREATE INDEX scan_sessions_started_idx
+                    ON scan_sessions(started_at DESC);
+                CREATE TABLE device_session_sightings (
+                    session_id TEXT NOT NULL,
+                    identifier TEXT NOT NULL COLLATE NOCASE,
+                    first_seen REAL NOT NULL,
+                    last_seen REAL NOT NULL,
+                    sighting_count INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY (session_id, identifier),
+                    FOREIGN KEY (session_id) REFERENCES scan_sessions(session_id)
+                        ON DELETE CASCADE,
+                    FOREIGN KEY (identifier) REFERENCES devices(identifier)
+                        ON DELETE CASCADE
+                );
+                CREATE INDEX device_session_sightings_session_idx
+                    ON device_session_sightings(session_id, last_seen DESC);
+                PRAGMA user_version = 8;
+                """
+            )
+            connection.commit()
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS legacy_event_imports (
@@ -199,6 +232,60 @@ class BluetoothHistoryStore:
             """
         )
         connection.commit()
+
+    @_locked
+    def start_scan_session(self, session: ScanSession) -> None:
+        connection = self._connection
+        if connection is None or "bluetooth" not in session.media:
+            return
+        with connection:
+            connection.execute(
+                """
+                UPDATE scan_sessions
+                SET ended_at = ?
+                WHERE ended_at IS NULL AND session_id != ?
+                """,
+                (session.started_at, session.id),
+            )
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO scan_sessions (
+                    session_id, name, started_at, ended_at, mode
+                ) VALUES (?, ?, ?, NULL, ?)
+                """,
+                (session.id, session.name, session.started_at, session.mode),
+            )
+        self._active_session_id = session.id
+        self._last_write.clear()
+
+    @_locked
+    def end_scan_session(self, session_id: str, *, ended_at: float | None = None) -> None:
+        connection = self._connection
+        if connection is None:
+            return
+        with connection:
+            connection.execute(
+                "UPDATE scan_sessions SET ended_at = ? WHERE session_id = ?",
+                (time.time() if ended_at is None else ended_at, session_id),
+            )
+        if self._active_session_id == session_id:
+            self._active_session_id = None
+
+    @_locked
+    def scan_sessions(self) -> list[dict]:
+        connection = self._connection
+        if connection is None:
+            return []
+        return [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT session_id, name, started_at, ended_at, mode
+                FROM scan_sessions
+                ORDER BY started_at DESC
+                """
+            )
+        ]
 
     @_locked
     def enrich(self, device: BluetoothDevice, *, classify: bool = True) -> bool:
@@ -256,6 +343,8 @@ class BluetoothHistoryStore:
                 device.protocol_type = str(protocol["type"])
                 device.protocol_source = str(protocol.get("source", ""))
                 device.protocol_confidence = str(protocol.get("confidence", ""))
+                if not device.decode_state and protocol.get("decode_state"):
+                    device.decode_state = str(protocol["decode_state"])
                 changed = True
         return changed
 
@@ -325,6 +414,7 @@ class BluetoothHistoryStore:
                 "type": device.protocol_type,
                 "source": device.protocol_source,
                 "confidence": device.protocol_confidence,
+                "decode_state": device.decode_state,
             },
         }
         now = time.time()
@@ -426,6 +516,33 @@ class BluetoothHistoryStore:
                         snapshot["hardware_source"],
                     ),
                 )
+                if self._active_session_id is not None:
+                    observed_at = float(device.last_seen)
+                    connection.execute(
+                        """
+                        INSERT INTO device_session_sightings (
+                            session_id, identifier, first_seen, last_seen,
+                            sighting_count
+                        ) VALUES (?, ?, ?, ?, 1)
+                        ON CONFLICT(session_id, identifier) DO UPDATE SET
+                            first_seen = MIN(
+                                device_session_sightings.first_seen,
+                                excluded.first_seen
+                            ),
+                            last_seen = MAX(
+                                device_session_sightings.last_seen,
+                                excluded.last_seen
+                            ),
+                            sighting_count =
+                                device_session_sightings.sighting_count + 1
+                        """,
+                        (
+                            self._active_session_id,
+                            identifier,
+                            observed_at,
+                            observed_at,
+                        ),
+                    )
                 self._prune(connection)
         except sqlite3.Error as exc:
             self.errors.append(
@@ -653,6 +770,7 @@ class BluetoothHistoryStore:
     def clear(self) -> None:
         connection = self._require_connection()
         with connection:
+            connection.execute("DELETE FROM scan_sessions")
             connection.execute("DELETE FROM event_captures")
             connection.execute("DELETE FROM devices")
         self._last_write.clear()
@@ -693,6 +811,27 @@ class BluetoothHistoryStore:
                     (identifier,),
                 )
             ]
+            record["scan_sessions"] = [
+                dict(item) for item in connection.execute(
+                    """
+                    SELECT session.session_id, session.name, session.started_at,
+                           session.ended_at, session.mode,
+                           sighting.first_seen, sighting.last_seen,
+                           sighting.sighting_count
+                    FROM device_session_sightings AS sighting
+                    JOIN scan_sessions AS session
+                      ON session.session_id = sighting.session_id
+                    WHERE sighting.identifier = ?
+                    ORDER BY sighting.last_seen DESC
+                    """,
+                    (identifier,),
+                )
+            ]
+            record["session_name"] = (
+                record["scan_sessions"][0]["name"]
+                if record["scan_sessions"] else "Legacy"
+            )
+            record["session_count"] = len(record["scan_sessions"])
             records.append(record)
         return records
 

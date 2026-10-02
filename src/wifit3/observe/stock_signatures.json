@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "rules": [
+    {
+      "id": "dult",
+      "class": "Tracker",
+      "label": "DULT location tracker",
+      "watch": true,
+      "decode": "dult",
+      "match": {"service_data_uuid": "fcb2"}
+    },
+    {
+      "id": "find-hub-nearby",
+      "class": "Tracker",
+      "label": "Google Find Hub tag",
+      "watch": true,
+      "decode": "find_hub",
+      "match": {"service_data_uuid": "feaa", "service_data_prefix": "40"}
+    },
+    {
+      "id": "find-hub-separated",
+      "class": "Tracker",
+      "label": "Google Find Hub tag",
+      "watch": true,
+      "decode": "find_hub",
+      "match": {"service_data_uuid": "feaa", "service_data_prefix": "41"}
+    },
+    {
+      "id": "remote-id-ble",
+      "class": "Drone",
+      "label": "Remote ID aircraft",
+      "watch": true,
+      "decode": "remote_id",
+      "match": {"service_data_uuid": "fffa"}
+    },
+    {
+      "id": "remote-id-wifi",
+      "class": "Drone",
+      "label": "Remote ID aircraft",
+      "watch": true,
+      "decode": "remote_id",
+      "match": {"vendor_oui": "FA:0B:BC"}
+    }
+  ]
+}

@@ -6,6 +6,30 @@ build compared with the original
 
 ## Unreleased
 
+### Fixed
+
+- **Focus leave confirmation:** always-on passive network metadata in AP Focus
+  and Client Focus no longer triggers the stop-and-leave dialog when leaving
+  with Escape / Back.
+
+### Added
+
+- **Named app sessions:** each run gets a memorable session name shared by Wi-Fi
+  and Bluetooth history until quit; Offline DB shows session membership and
+  accepts session names in search (`Legacy` for older rows).
+
+- **Background monitor** on the startup screen (**BACKGROUND** / `G`): checked
+  adapters, OS BLE, and USB Bluetooth scan into history without opening scanner
+  screens; other startup actions stay locked until stop or Ctrl+Q.
+
+- **Observer signature pack:** stock and user JSON rules under the app user-data
+  directory (DULT, Find Hub, OpenDroneID decoders where supported). Preferences
+  can refresh stock rules from the public GitHub raw host, export/import user
+  rules.
+
+- **Readable notification history:** header badge, persistent store, expand/copy
+  rows; opening history marks items read.
+
 ## 0.3.11 - 2026-09-30
 
 ### Added

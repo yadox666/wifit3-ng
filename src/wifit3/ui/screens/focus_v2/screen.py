@@ -439,8 +439,6 @@ class FocusViewV2(Screen):
             add("EAP lab honeypot")
         if self._packet_capture is not None:
             add("Focused packet capture")
-        if self._network_analyzer is not None:
-            add("Passive network metadata")
         return actions
 
     def _stop_probe(self) -> None:

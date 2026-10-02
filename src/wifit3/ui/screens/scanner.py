@@ -43,6 +43,7 @@ from wifit3.targeting import (
     TargetCandidate,
     ap_candidate,
     client_candidate,
+    infrastructure_candidate,
     is_target_entry,
     is_whitelisted_entry,
     iter_wifi_client_sightings,
@@ -80,7 +81,6 @@ if TYPE_CHECKING:
 
 
 STALE_DURATION_S = 10.0  # Seconds without a beacon before an AP row is dimmed.
-_CLIENT_MFR_MAX = 36
 _INFRASTRUCTURE_PREFIX = "infrastructure:"
 
 
@@ -399,7 +399,6 @@ class ScannerView(Screen):
         Binding("l", "toggle_log", "Toggle Log", show=True),
         Binding("t", "toggle_view", "APs/Clients", show=True),
         Binding("i", "toggle_infrastructure", "Infrastructure", show=True),
-        Binding("n", "targets_editor", "Targets", show=True),
         Binding("shift+t", "targets_editor", "Targets", show=True),
         Binding("a", "open_probe_ap", "Probe Honeypot", show=True),
         Binding("v", "open_vault", "Vault", show=True),
@@ -423,8 +422,9 @@ class ScannerView(Screen):
         ("identity", "VENDOR/ID"),
         ("country", "CC"),
         ("uptime", "UPTIME"),
-        ("stations", "CLIENT MFR"),
+        ("bssid", "BSSID"),
         ("location", "GPS"),
+        ("stations", "CLIENT MFR"),
     ]
 
     _CLIENT_COLUMNS = [
@@ -517,7 +517,8 @@ class ScannerView(Screen):
             table = _APScanTable(cursor_type="row", id="ap-table")
             for key, label in self._COLUMNS:
                 # Reserve 2 chars in every header to account for sort indicator
-                table.add_column(label + "  ", key=key, width=13 if key == "last_seen" else None)
+                width = 13 if key == "last_seen" else 17 if key == "bssid" else None
+                table.add_column(label + "  ", key=key, width=width)
             yield table
             yield SelectableRichLog(id="system-log", markup=True, highlight=True)
         yield GlobalJobTracker()
@@ -885,7 +886,12 @@ class ScannerView(Screen):
 
                     if prev_state.stations != stations:
                         prev_state.stations = stations
-                        table.update_cell(ap.bssid, "stations", self._render_target_cell(ap, "stations", is_stale))
+                        table.update_cell(
+                            ap.bssid,
+                            "stations",
+                            self._render_target_cell(ap, "stations", is_stale),
+                            update_width=True,
+                        )
 
                     location = format_position_globe(ap.positions)
                     if prev_state.location != location:
@@ -1144,7 +1150,6 @@ class ScannerView(Screen):
             for cell in cells:
                 cell.stylize("dim")
         if state.is_target:
-            cells[0].stylize("bold red")
             marked = target_row_prefix()
             marked.append_text(cells[0])
             cells[0] = marked
@@ -1233,7 +1238,7 @@ class ScannerView(Screen):
         if col_key == "ssid":
             matched = self._match_wifi_ap(ap)
             if is_target_entry(matched):
-                cell = self._ssid_cell(ap, target=True)
+                cell = self._ssid_cell(ap, target=False)
                 if is_stale:
                     cell.stylize("dim")
                 marked_cell = target_row_prefix()
@@ -1349,7 +1354,14 @@ class ScannerView(Screen):
             return Text(text if text else "·", justify="right", style=f"{dim}{fg}" if text else "dim")
         if col_key == "stations":
             label = self._station_labels.get(ap.bssid, "")
-            return Text(_clip(label, _CLIENT_MFR_MAX), style=f"{dim}{fg}")
+            return Text(label, style=f"{dim}{fg}")
+        if col_key == "bssid":
+            if infrastructure is not None:
+                return Text(
+                    f"{len(infrastructure)} BSSIDs",
+                    style=f"{dim}cyan",
+                )
+            return Text(ap.bssid, style=f"{dim}{fg}")
         if col_key == "location":
             return location_globe_cell(ap.positions, dim=is_stale)
         return Text("")
@@ -1403,6 +1415,10 @@ class ScannerView(Screen):
             name = Text(f"{ap.ssid} [history]" if historical else ap.ssid, style=name_style)
             if ap.bssid in self._secondary_member_bssids:
                 name = Text("└ ", style="dim cyan") + name
+            if ap.capabilities.remote_id:
+                name.append(" · RID", style="bold yellow")
+            elif ap.capabilities.signature_watch:
+                name.append(" ◆", style="bold yellow")
         else:
             sib = self._best_named_sibling_ssid(ap)
             name_style = "red bold" if target else "bold yellow" if sib else f"{self._theme_fg} italic"
@@ -1574,13 +1590,18 @@ class ScannerView(Screen):
         if title:
             name = ev.ssid or ev.bssid
             if ev.kind == CaptureKind.WEP_KEY:
-                self.notify(f"{name}: {wep_key_ascii(ev.value or '')}", title=title, timeout=6)
+                self.notify(
+                    f"{name}: {wep_key_ascii(ev.value or '')}",
+                    title=title,
+                    timeout=6,
+                    persist=True,
+                )
             else:
                 pair = ev.pair_label or ("M1" if ev.kind == CaptureKind.PMKID else None)
                 full_title = f"{title} ({pair})" if pair else title
                 body = (f"[bold]{escape(name)}[/bold] on channel [bold]{ap.channel}[/bold] "
                         f"[dim bold](BSSID: {escape(ap.bssid)})[/dim bold]")
-                self.notify(body, title=full_title, timeout=6)
+                self.notify(body, title=full_title, timeout=6, persist=True)
 
     def _write_log(self, text) -> None:
         try:
@@ -1965,7 +1986,8 @@ class ScannerView(Screen):
                 await self._start_scan_hopping()
 
     def action_open_vault(self) -> None:
-        self.app.action_toggle_vault()
+        access_point = self._selected_ap() if self._view_mode == "aps" else None
+        self.app.action_toggle_vault(access_point)
 
     def action_open_probe_ap(self) -> None:
         running = self._open_probe_campaign
@@ -2348,9 +2370,6 @@ class ScannerView(Screen):
         candidate, _subject = selected
         self.app.open_targets_editor(prefill=candidate)
 
-    def action_new_target(self) -> None:
-        self.action_targets_editor()
-
     def _selected_target_candidate(
         self,
     ) -> tuple[TargetCandidate, AccessPoint | Client] | None:
@@ -2371,11 +2390,10 @@ class ScannerView(Screen):
             )
             return client_candidate(client, ap), client
         if key in self._infrastructure_members:
-            self.notify(
-                "Expand the infrastructure and select one AP first",
-                severity="warning",
+            candidate = infrastructure_candidate(
+                self._infrastructure_members[key],
             )
-            return None
+            return (candidate, self.ap_cache[key]) if candidate is not None else None
         ap = self.ap_cache.get(key)
         if ap is not None and ap.is_own_fake:
             self.notify("Generated test APs cannot be saved as targets", severity="warning")
@@ -2545,7 +2563,11 @@ class ScannerView(Screen):
         table = self.query_one("#ap-table", DataTable)
         table.clear(columns=True)
         for key, label in self._active_columns():
-            width = 13 if self._view_mode == "aps" and key == "last_seen" else None
+            width = (
+                13 if self._view_mode == "aps" and key == "last_seen"
+                else 17 if self._view_mode == "aps" and key == "bssid"
+                else None
+            )
             table.add_column(label + "  ", key=key, width=width)
         self._row_states.clear()
         self.ap_cache.clear()

@@ -510,8 +510,6 @@ class ClientFocusView(Screen):
             actions.append("Probe honeypot")
         if self._writer is not None:
             actions.append("Client packet capture")
-        if self._network_analyzer is not None:
-            actions.append("Passive network metadata")
         return actions
 
     def action_targets_editor(self) -> None:

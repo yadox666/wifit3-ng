@@ -43,6 +43,9 @@ class AdvertisedCapabilities:
     wps_model: str | None = None
     wps_device_name: str | None = None
     wps_device_type: str | None = None
+    remote_id: str | None = None
+    signature_label: str | None = None
+    signature_watch: bool = False
 
     def merge(self, newer: "AdvertisedCapabilities") -> None:
         """Merge newly advertised evidence without erasing previously observed fields."""
@@ -66,10 +69,12 @@ class AdvertisedCapabilities:
             "admission_capacity", "power_constraint_db", "power_min_dbm", "power_max_dbm",
             "country_environment",
             "wps_manufacturer", "wps_model", "wps_device_name", "wps_device_type",
+            "remote_id", "signature_label",
         ):
             value = getattr(newer, name)
             if value is not None:
                 setattr(self, name, value)
+        self.signature_watch = self.signature_watch or newer.signature_watch
         if newer.country_channels:
             self.country_channels = list(newer.country_channels)
         if newer.supported_channel_ranges:

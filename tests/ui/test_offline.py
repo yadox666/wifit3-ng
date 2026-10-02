@@ -77,6 +77,7 @@ async def test_offline_columns_sort_and_full_gps_map_link(monkeypatch):
             "channel",
             "encryption",
             "clients",
+            "session",
             "last_seen",
             "location",
         ]

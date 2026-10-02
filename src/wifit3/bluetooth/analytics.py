@@ -10,6 +10,7 @@ from wifit3.bluetooth.signatures import (
     MANUFACTURER_PROTOCOLS,
     SERVICE_PROTOCOLS,
 )
+from wifit3.observe.signature_pack import describe_bluetooth
 
 
 HCI_PUBLIC_ADDRESS = 0x00
@@ -42,10 +43,106 @@ def hci_address_type(identifier: str, address_type: int) -> str:
     }.get(kind, "random-reserved")
 
 
+_RANDOM_LE_ADDRESS_TYPES = frozenset({
+    "random",
+    "random-static",
+    "random-identity",
+    "resolvable-private",
+    "non-resolvable-private",
+    "random-reserved",
+})
+
+
+def le_hci_peer_address_type(address_type: str, identifier: str = "") -> int:
+    """Peer_Address_Type for HCI LE Create Connection (0 public, 1 random)."""
+    if address_type in {"public", "public-identity"}:
+        return HCI_PUBLIC_ADDRESS
+    if address_type in _RANDOM_LE_ADDRESS_TYPES:
+        return HCI_RANDOM_ADDRESS
+    if address_type in {"", "unknown", "platform-opaque", "anonymous"}:
+        try:
+            most_significant = int(identifier.split(":", 1)[0], 16)
+        except (ValueError, IndexError):
+            return HCI_PUBLIC_ADDRESS
+        kind = most_significant >> 6
+        if kind in {0b01, 0b11}:
+            return HCI_RANDOM_ADDRESS
+        return HCI_PUBLIC_ADDRESS
+    return HCI_RANDOM_ADDRESS
+
+
 def platform_address_type(identifier: str) -> str:
     if len(identifier) == 36 and identifier.count("-") == 4:
         return "platform-opaque"
     return "unknown"
+
+
+def is_bluetooth_bd_addr(identifier: str) -> bool:
+    """True when ``identifier`` is a colon-separated 6-byte Bluetooth address."""
+    parts = identifier.split(":")
+    if len(parts) != 6:
+        return False
+    for part in parts:
+        if len(part) != 2:
+            return False
+        try:
+            int(part, 16)
+        except ValueError:
+            return False
+    return True
+
+
+def hci_bd_addr_bytes(identifier: str) -> bytes:
+    """Little-endian BD_ADDR for HCI commands (MSB of address in last byte)."""
+    if not is_bluetooth_bd_addr(identifier):
+        raise ValueError(
+            f"not a Bluetooth address: {identifier!r} "
+            "(expected AA:BB:CC:DD:EE:FF)"
+        )
+    return bytes.fromhex(identifier.replace(":", ""))[::-1]
+
+
+def normalized_bluetooth_name(name: str) -> str:
+    """Fold a discovery name for equality (DESKTOP-JOI2SAP vs Desktop JOI2SAP)."""
+    normalized = "".join(character for character in name.casefold() if character.isalnum())
+    if normalized in {"", "unknown", "unnamed", "bluetoothdevice"}:
+        return ""
+    return normalized if len(normalized) >= 4 else ""
+
+
+def discovery_names_match(observed_name: str, target_name: str) -> bool:
+    left = normalized_bluetooth_name(observed_name)
+    right = normalized_bluetooth_name(target_name)
+    return bool(left and right and left == right)
+
+
+def device_lacks_usb_hci_bd_addr(identifier: str, related_identifiers: tuple[str, ...] = ()) -> bool:
+    """True when USB HCI cannot derive a 6-byte peer address from the scanner row."""
+    if is_bluetooth_bd_addr(identifier):
+        return False
+    return not any(is_bluetooth_bd_addr(related) for related in related_identifiers)
+
+
+def ble_advertisement_matches_target(
+    observation_identifier: str,
+    observation_name: str,
+    target_identifier: str,
+    *,
+    alternate_identifiers: tuple[str, ...] = (),
+    target_name: str = "",
+) -> bool:
+    """Match USB LE reports to a scanner row (MAC, correlated MAC, or name)."""
+    observed = observation_identifier.casefold()
+    if observed == target_identifier.casefold():
+        return True
+    for alternate in alternate_identifiers:
+        if observed == alternate.casefold():
+            return True
+    name = (target_name or "").strip()
+    if name.casefold() in {"", "<unknown>", "unknown"}:
+        return False
+    observed_name = (observation_name or "").strip()
+    return observed_name.casefold() == name.casefold()
 
 
 def bluez_platform_metadata(platform_data: tuple, identifier: str) -> dict:
@@ -97,6 +194,36 @@ def payload_fingerprint(
 
 
 def protocol_type_hint(
+    manufacturer_data: Mapping[int, bytes] | None,
+    service_data: Mapping[str, bytes] | None,
+    service_uuids: Iterable[str] = (),
+    *,
+    name: str = "",
+) -> dict[str, str]:
+    compiled = _compiled_protocol_hint(
+        manufacturer_data, service_data, service_uuids, name=name,
+    )
+    notes = describe_bluetooth(
+        manufacturer_data, service_data, tuple(service_uuids), name=name,
+    )
+    if notes.protocol_type and (notes.prefer or not compiled):
+        result = _protocol_hint(
+            notes.category, notes.protocol_type, notes.source, notes.confidence,
+        )
+    else:
+        result = dict(compiled)
+    if notes.detail:
+        result["decode_state"] = notes.detail
+    elif notes.prefer:
+        result["decode_state"] = ""
+    if notes.prefer:
+        result["signature_watch"] = "1" if notes.alert else ""
+    elif notes.alert:
+        result["signature_watch"] = "1"
+    return result
+
+
+def _compiled_protocol_hint(
     manufacturer_data: Mapping[int, bytes] | None,
     service_data: Mapping[str, bytes] | None,
     service_uuids: Iterable[str] = (),
@@ -260,6 +387,7 @@ def profile_fingerprint(
     class_of_device: int | None,
     appearance: int | None,
     protocol_type: str,
+    decode_state: str = "",
     modalias: str = "",
     hardware_product: str = "",
 ) -> str:
@@ -272,6 +400,7 @@ def profile_fingerprint(
         "class_of_device": class_of_device,
         "appearance": appearance,
         "protocol_type": protocol_type,
+        "decode_state": decode_state,
         "modalias": modalias,
         "hardware_product": hardware_product,
     }

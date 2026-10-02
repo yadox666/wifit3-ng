@@ -760,6 +760,13 @@ class WlanFrameParser:
                         elif oui_type == 4: # WPS
                             # tag_data = OUI(3) + type(1) + WPS TLVs.
                             wps_payloads.append(tag_data[4:])
+                    elif oui == b"\xfa\x0b\xbc" and oui_type == 0x0D:
+                        from wifit3.observe.remote_id import summarize_remote_id
+
+                        report = summarize_remote_id(tag_data[4:])
+                        if report is not None:
+                            capabilities.remote_id = report.summary
+                            capabilities.signature_watch = True
             elif tag_id == 255 and tag_data: # Extension elements
                 extension_id = tag_data[0]
                 if extension_id in (35, 36):
@@ -808,6 +815,13 @@ class WlanFrameParser:
             akms=akms,
             pairwise_cipher=pairwise_cipher,
         )
+        from wifit3.observe.signature_pack import describe_wifi
+
+        notes = describe_wifi(parsed.get("ssid"), capabilities.vendor_ouis)
+        if notes.label and not capabilities.remote_id:
+            capabilities.signature_label = notes.label
+        if notes.alert:
+            capabilities.signature_watch = True
         return parsed
 
     # ---- RSN IE helpers -----------------------------------------------------

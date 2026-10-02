@@ -9,6 +9,7 @@ from wifit3.persist.bluetooth_history import (
     BluetoothHistoryStore,
     SCHEMA_VERSION,
 )
+from wifit3.persist.scan_sessions import new_scan_session
 
 
 IDENTIFIER = "AA:BB:CC:DD:EE:FF"
@@ -124,6 +125,20 @@ def test_remember_and_enrich_only_a_live_device(tmp_path):
     assert observed.hardware_product == "WH-1000XM5 Headphones"
     assert observed.hardware_source == "BlueZ Device ID / systemd hwdb"
     assert store.count() == 1
+
+
+def test_scan_session_groups_bluetooth_sightings(tmp_path):
+    store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
+    session = new_scan_session({"bluetooth"}, mode="bluetooth")
+    store.start_scan_session(session)
+    device = _device()
+    device.address_type = "public"
+    assert store.remember(device, force=True)
+    store.end_scan_session(session.id)
+
+    record = store.offline_devices()[0]
+    assert record["session_name"] == session.name
+    assert record["scan_sessions"][0]["session_id"] == session.id
 
 
 def test_history_rejects_rotating_synthetic_and_empty_observations(tmp_path):

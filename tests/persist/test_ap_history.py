@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from wifit3.models import AccessPoint, IdKey, IdSource
 from wifit3.persist.ap_history import ApHistoryStore, SCHEMA_VERSION
+from wifit3.persist.scan_sessions import new_scan_session
 
 
 BSSID = "aa:bb:cc:dd:ee:ff"
@@ -166,6 +167,33 @@ def test_offline_records_include_full_ap_and_client_relationships(tmp_path):
     assert access_points[0]["clients"][0]["client_mac"] == "12:34:56:78:9a:bc"
     assert clients[0]["client_mac"] == "12:34:56:78:9a:bc"
     assert clients[0]["access_points"][0]["ssid"] == "Remembered"
+
+
+def test_scan_session_groups_ap_and_client_sightings(tmp_path):
+    store = ApHistoryStore(tmp_path / "history.sqlite3")
+    session = new_scan_session({"wifi"}, mode="wifi")
+    store.start_scan_session(session)
+    ap = AccessPoint(
+        bssid=BSSID,
+        ssid="Session AP",
+        channel=36,
+        encryption="WPA2",
+    )
+    assert store.remember(ap, force=True)
+    assert store.remember_client_association(
+        BSSID,
+        "12:34:56:78:9a:bc",
+        observed_at=ap.last_seen,
+        force=True,
+    )
+    store.end_scan_session(session.id)
+
+    access_point = store.offline_access_points()[0]
+    client = store.offline_clients()[0]
+    assert access_point["session_name"] == session.name
+    assert access_point["scan_sessions"][0]["session_id"] == session.id
+    assert client["session_name"] == session.name
+    assert client["scan_sessions"][0]["session_id"] == session.id
 
 
 def test_imports_legacy_json_once_and_moves_network_metadata_into_database(tmp_path):

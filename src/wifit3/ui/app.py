@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import time
 from textual import events, work
 from textual.app import App
 from textual.binding import Binding
@@ -28,6 +29,7 @@ from wifit3.persist.bluetooth_history import (
 from wifit3.persist.notifications import NotificationStore, NotificationStoreError
 from wifit3.persist.targets import SavedTarget, TargetStore, TargetStoreError
 from wifit3.persist.locations import LocationStore
+from wifit3.persist.scan_sessions import ScanSession, new_scan_session
 from wifit3.persist.vault import Vault
 from wifit3.errors import WifiteDeviceLostError, WifiteFatalError
 from wifit3.bluetooth import BluetoothManager
@@ -40,6 +42,7 @@ from wifit3.models import AccessPoint, Client
 
 from .screens.splash import SplashView
 from .screens.scanner import ScannerView
+from .screens.spectrum import RfSpectrumView
 from .screens.bluetooth_scanner import BluetoothScannerView
 from .screens.bluetooth_focus import BluetoothFocusView
 from .screens.bluetooth_classic_focus import BluetoothClassicFocusView
@@ -74,6 +77,14 @@ def _notification_severity(value: object) -> str:
     if hasattr(value, "value"):
         return str(value.value).casefold()
     return str(value).casefold()
+
+
+def _notification_should_persist(severity: object, persist: bool | None) -> bool:
+    """Only warnings/errors go to notification history unless explicitly opted in."""
+    if persist is not None:
+        return persist
+    level = _notification_severity(severity)
+    return level in {"warning", "error"}
 
 
 Header.ALLOW_SELECT = False
@@ -119,6 +130,7 @@ class WifiteApp(App):
     #splash-container #device-picker,
     #splash-container #os-ble-picker,
     #splash-container #bluetooth-picker,
+    #splash-container #sdr-picker,
     #splash-container #gps-picker {
         margin-top: 1;
         width: auto;
@@ -130,8 +142,11 @@ class WifiteApp(App):
         align: center middle;
         margin-top: 1;
     }
-    #bluetooth-btn {
+    #bluetooth-btn, #background-btn {
         margin-left: 2;
+    }
+    #primary-actions #background-btn {
+        width: 16;
     }
     #offline-btn {
         margin-left: 2;
@@ -153,6 +168,10 @@ class WifiteApp(App):
     }
     #bluetooth-usb-btn {
         width: 22;
+        margin-left: 2;
+    }
+    #spectrum-btn {
+        width: 17;
         margin-left: 2;
     }
     #primary-actions Button:focus, #uninstall-btn:focus {
@@ -189,8 +208,10 @@ class WifiteApp(App):
     vault_open: reactive[bool] = reactive(False)
 
 
-    def __init__(self, cli_log_level=None):
+    def __init__(self, cli_log_level=None, *, background: bool = False, background_all: bool = False):
         super().__init__()
+        self.background_autostart = background
+        self.background_all = background_all
         self._config_error: Optional[str] = None
         try:
             Config.load()
@@ -198,7 +219,7 @@ class WifiteApp(App):
             self._config_error = str(e)
         _configure_file_logging(cli_log_level)
         self.array: Optional[WlanArray] = None
-        # Per physical card (instance_key): "all" | "2g" | "5g" - scanner hop only.
+        # Per physical card (instance_key): "all" | "2g" | "5g" — scanner hop only.
         self.scan_band_by_instance: dict[tuple, str] = {}
         self.location_store = LocationStore()
         self.gps_manager = GpsManager(
@@ -230,6 +251,12 @@ class WifiteApp(App):
         self.wifi_profile_store = WifiProfileStore()
         self.enterprise_session_store = EnterpriseSessionStore()
         self.ap_history_store = ApHistoryStore()
+        self.active_scan_session: ScanSession | None = None
+        self.start_scan_session(
+            {"wifi", "bluetooth"},
+            mode="app",
+            notify=False,
+        )
         self.locked_target_id: str | None = None
         self.target_missing_since: float | None = None
         self.auto_lock_armed = True
@@ -246,17 +273,19 @@ class WifiteApp(App):
         title: str = "",
         severity: str = "information",
         timeout: float | None = None,
+        persist: bool | None = None,
         **kwargs,
     ):
-        try:
-            self.notification_store.append(
-                _notification_plain_text(message),
-                title=_notification_plain_text(title),
-                severity=_notification_severity(severity),
-            )
-            self.unread_notifications = self.notification_store.unread_count()
-        except NotificationStoreError:
-            logger.warning("Could not persist notification", exc_info=True)
+        if _notification_should_persist(severity, persist):
+            try:
+                self.notification_store.append(
+                    _notification_plain_text(message),
+                    title=_notification_plain_text(title),
+                    severity=_notification_severity(severity),
+                )
+                self.unread_notifications = self.notification_store.unread_count()
+            except NotificationStoreError:
+                logger.warning("Could not persist notification", exc_info=True)
         return super().notify(
             message,
             title=title,
@@ -283,6 +312,54 @@ class WifiteApp(App):
         except ConfigError as e:
             self.notify(str(e), severity="error", title="Config")
 
+    def start_scan_session(
+        self,
+        media: set[str],
+        *,
+        mode: str,
+        notify: bool = True,
+    ) -> ScanSession:
+        if self.active_scan_session is not None:
+            self.end_scan_session()
+        existing_names = {
+            str(item["name"])
+            for item in (
+                *self.ap_history_store.scan_sessions(),
+                *self.bluetooth_history_store.scan_sessions(),
+            )
+        }
+        session = new_scan_session(
+            media,
+            mode=mode,
+            existing_names=existing_names,
+        )
+        if "wifi" in session.media:
+            self.ap_history_store.start_scan_session(session)
+        if "bluetooth" in session.media:
+            self.bluetooth_history_store.start_scan_session(session)
+        self.active_scan_session = session
+        if notify:
+            self.notify(
+                session.name,
+                title="Scan session started",
+                timeout=4,
+            )
+        return session
+
+    def end_scan_session(self) -> None:
+        session = self.active_scan_session
+        if session is None:
+            return
+        ended_at = time.time()
+        if "wifi" in session.media:
+            self.ap_history_store.end_scan_session(session.id, ended_at=ended_at)
+        if "bluetooth" in session.media:
+            self.bluetooth_history_store.end_scan_session(
+                session.id,
+                ended_at=ended_at,
+            )
+        self.active_scan_session = None
+
     @property
     def locked_target(self) -> SavedTarget | None:
         return self.target_store.get(self.locked_target_id)
@@ -296,7 +373,7 @@ class WifiteApp(App):
         self.locked_target_id = target.id
         self.target_missing_since = None
         self.auto_lock_armed = False
-        self.notify(f"Target {target.alias} locked", title="Target lock")
+        self.notify(f"Target {target.alias} locked", title="Target lock", persist=True)
         return True
 
     def clear_target_sighting(self, target_id: str) -> None:
@@ -310,8 +387,9 @@ class WifiteApp(App):
         self._target_sightings_notified.add(target.id)
         label = "Whitelist" if target.role == "whitelist" else "Target"
         self.notify(
-            f"«{target.alias}» ({target.identifier}) - {where}",
+            f"«{target.alias}» ({target.identifier}) — {where}",
             title=f"{label} in range",
+            persist=True,
         )
 
     def open_targets_editor(self, **kwargs) -> None:
@@ -366,8 +444,20 @@ class WifiteApp(App):
             self.notify(msg, severity="warning", title="Bluetooth history")
         for msg in self.location_store.errors:
             self.notify(msg, severity="warning", title="Location history")
+        if self.active_scan_session is not None:
+            self.notify(
+                self.active_scan_session.name,
+                title="App session",
+                timeout=5,
+            )
+        from wifit3.observe.signature_pack import ensure_stock
+
+        signature_status = ensure_stock()
+        if not signature_status.ok:
+            self.notify(signature_status.message, severity="warning", title="Signatures")
         self.install_screen(SplashView(), name="splash")
         self.install_screen(ScannerView(), name="scanner")
+        self.install_screen(RfSpectrumView(), name="spectrum")
         self.install_screen(BluetoothScannerView(), name="bluetooth")
         self.install_screen(BluetoothFocusView(), name="bluetooth-focus")
         self.install_screen(BluetoothClassicFocusView(), name="bluetooth-classic-focus")
@@ -427,7 +517,12 @@ class WifiteApp(App):
         if job.status == ToolStatus.SUCCESS:
             msg = job.progress_msg
             key = msg.split("Key:", 1)[1].strip() if "Key:" in msg else msg
-            self.notify(f"SUCCESS  PSK: {key}", title=job.display_name, severity="information")
+            self.notify(
+                f"SUCCESS  PSK: {key}",
+                title=job.display_name,
+                severity="information",
+                persist=True,
+            )
         elif job.status == ToolStatus.FAILURE:
             self.notify(f"NOT FOUND  {job.progress_msg}", title=job.display_name, severity="warning")
         else:
@@ -590,9 +685,11 @@ class WifiteApp(App):
         await focus.stop_eap_lab_honeypot()
         await self.bluetooth_manager.disconnect()
         await self.bluetooth_manager.stop()
+        await self.get_screen("spectrum", RfSpectrumView).stop()
         await self.gps_manager.stop()
         if self.array:
             await self.array.close()
+        self.end_scan_session()
         self.ap_history_store.close()
         self.bluetooth_history_store.close()
         self.location_store.close()
@@ -610,7 +707,7 @@ class WifiteApp(App):
             return
         self.open_targets_editor()
 
-    def action_toggle_vault(self) -> None:
+    def action_toggle_vault(self, access_point: AccessPoint | None = None) -> None:
         """Open the vault drawer."""
         if isinstance(
             self.screen, (
@@ -620,12 +717,14 @@ class WifiteApp(App):
         ):
             return
         if not isinstance(self.screen, VaultDrawer):
+            if access_point is None and isinstance(self.screen, FocusViewV2):
+                access_point = self.screen._target_ap or self.target_ap
             self.vault_open = True
             
             def _on_dismiss(_=None):
                 self.vault_open = False
                 
-            self.push_screen(VaultDrawer(), callback=_on_dismiss)
+            self.push_screen(VaultDrawer(access_point), callback=_on_dismiss)
 
     def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
         if action == "toggle_vault" and isinstance(

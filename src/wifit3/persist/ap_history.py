@@ -14,10 +14,11 @@ from platformdirs import user_data_dir
 
 from wifit3.models import AccessPoint, AdvertisedCapabilities, IdKey, IdSource
 from wifit3.persist.private_files import ensure_private_directory
+from wifit3.persist.scan_sessions import ScanSession
 
 
 AP_HISTORY_PATH = Path(user_data_dir("wifit3", appauthor=False)) / "ap_history.sqlite3"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _WRITE_INTERVAL_SECONDS = 5.0
 _MAX_APS = 20_000
 
@@ -56,6 +57,7 @@ class ApHistoryStore:
         self._last_write: dict[str, float] = {}
         self._last_client_write: dict[tuple[str, str], float] = {}
         self._signatures: dict[str, str] = {}
+        self._active_session_id: str | None = None
         self._connection: sqlite3.Connection | None = None
         self._lock = threading.RLock()
         self._open()
@@ -164,7 +166,7 @@ class ApHistoryStore:
                 """,
             )
             connection.commit()
-            version = SCHEMA_VERSION
+            version = 3
         if version == 2:
             connection.executescript(
                 """
@@ -183,7 +185,7 @@ class ApHistoryStore:
                 """
             )
             connection.commit()
-            version = SCHEMA_VERSION
+            version = 3
         if version == 1:
             connection.executescript(
                 """
@@ -214,6 +216,108 @@ class ApHistoryStore:
                 """
             )
             connection.commit()
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 3:
+            connection.executescript(
+                """
+                CREATE TABLE scan_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    started_at REAL NOT NULL,
+                    ended_at REAL,
+                    mode TEXT NOT NULL
+                );
+                CREATE INDEX scan_sessions_started_idx
+                    ON scan_sessions(started_at DESC);
+                CREATE TABLE ap_session_sightings (
+                    session_id TEXT NOT NULL,
+                    bssid TEXT NOT NULL COLLATE NOCASE,
+                    first_seen REAL NOT NULL,
+                    last_seen REAL NOT NULL,
+                    sighting_count INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY (session_id, bssid),
+                    FOREIGN KEY (session_id) REFERENCES scan_sessions(session_id)
+                        ON DELETE CASCADE,
+                    FOREIGN KEY (bssid) REFERENCES access_points(bssid)
+                        ON DELETE CASCADE
+                );
+                CREATE INDEX ap_session_sightings_session_idx
+                    ON ap_session_sightings(session_id, last_seen DESC);
+                CREATE TABLE client_session_sightings (
+                    session_id TEXT NOT NULL,
+                    bssid TEXT NOT NULL COLLATE NOCASE,
+                    client_mac TEXT NOT NULL COLLATE NOCASE,
+                    first_seen REAL NOT NULL,
+                    last_seen REAL NOT NULL,
+                    sighting_count INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY (session_id, bssid, client_mac),
+                    FOREIGN KEY (session_id) REFERENCES scan_sessions(session_id)
+                        ON DELETE CASCADE
+                );
+                CREATE INDEX client_session_sightings_session_idx
+                    ON client_session_sightings(session_id, last_seen DESC);
+                CREATE INDEX client_session_sightings_client_idx
+                    ON client_session_sightings(client_mac, last_seen DESC);
+                PRAGMA user_version = 4;
+                """
+            )
+            connection.commit()
+
+    @_locked
+    def start_scan_session(self, session: ScanSession) -> None:
+        connection = self._connection
+        if connection is None or "wifi" not in session.media:
+            return
+        with connection:
+            connection.execute(
+                """
+                UPDATE scan_sessions
+                SET ended_at = ?
+                WHERE ended_at IS NULL AND session_id != ?
+                """,
+                (session.started_at, session.id),
+            )
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO scan_sessions (
+                    session_id, name, started_at, ended_at, mode
+                ) VALUES (?, ?, ?, NULL, ?)
+                """,
+                (session.id, session.name, session.started_at, session.mode),
+            )
+        self._active_session_id = session.id
+        self._last_write.clear()
+        self._last_client_write.clear()
+        self._signatures.clear()
+
+    @_locked
+    def end_scan_session(self, session_id: str, *, ended_at: float | None = None) -> None:
+        connection = self._connection
+        if connection is None:
+            return
+        with connection:
+            connection.execute(
+                "UPDATE scan_sessions SET ended_at = ? WHERE session_id = ?",
+                (time.time() if ended_at is None else ended_at, session_id),
+            )
+        if self._active_session_id == session_id:
+            self._active_session_id = None
+
+    @_locked
+    def scan_sessions(self) -> list[dict[str, Any]]:
+        connection = self._connection
+        if connection is None:
+            return []
+        return [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT session_id, name, started_at, ended_at, mode
+                FROM scan_sessions
+                ORDER BY started_at DESC
+                """
+            )
+        ]
 
     @_locked
     def enrich(self, ap: AccessPoint) -> bool:
@@ -350,6 +454,11 @@ class ApHistoryStore:
                 )
                 self._remember_identity(connection, ap, now)
                 self._remember_relationships(connection, ap, now)
+                self._remember_ap_session(
+                    connection,
+                    bssid,
+                    float(ap.last_seen),
+                )
                 self._prune(connection)
         except sqlite3.Error as exc:
             self.errors.append(f"Could not save AP history for {bssid}: {exc}")
@@ -357,6 +466,27 @@ class ApHistoryStore:
         self._signatures[bssid] = signature
         self._last_write[bssid] = now
         return True
+
+    def _remember_ap_session(
+        self,
+        connection: sqlite3.Connection,
+        bssid: str,
+        observed_at: float,
+    ) -> None:
+        if self._active_session_id is None:
+            return
+        connection.execute(
+            """
+            INSERT INTO ap_session_sightings (
+                session_id, bssid, first_seen, last_seen, sighting_count
+            ) VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT(session_id, bssid) DO UPDATE SET
+                first_seen = MIN(ap_session_sightings.first_seen, excluded.first_seen),
+                last_seen = MAX(ap_session_sightings.last_seen, excluded.last_seen),
+                sighting_count = ap_session_sightings.sighting_count + 1
+            """,
+            (self._active_session_id, bssid, observed_at, observed_at),
+        )
 
     def _remember_identity(
         self,
@@ -447,6 +577,33 @@ class ApHistoryStore:
                     """,
                     (bssid, client_mac, observed_at, observed_at, bssid),
                 )
+                if cursor.rowcount > 0 and self._active_session_id is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO client_session_sightings (
+                            session_id, bssid, client_mac,
+                            first_seen, last_seen, sighting_count
+                        ) VALUES (?, ?, ?, ?, ?, 1)
+                        ON CONFLICT(session_id, bssid, client_mac) DO UPDATE SET
+                            first_seen = MIN(
+                                client_session_sightings.first_seen,
+                                excluded.first_seen
+                            ),
+                            last_seen = MAX(
+                                client_session_sightings.last_seen,
+                                excluded.last_seen
+                            ),
+                            sighting_count =
+                                client_session_sightings.sighting_count + 1
+                        """,
+                        (
+                            self._active_session_id,
+                            bssid,
+                            client_mac,
+                            observed_at,
+                            observed_at,
+                        ),
+                    )
         except sqlite3.Error as exc:
             self.errors.append(
                 f"Could not save client association {client_mac} → {bssid}: {exc}",
@@ -755,6 +912,7 @@ class ApHistoryStore:
     def clear(self) -> None:
         connection = self._require_connection()
         with connection:
+            connection.execute("DELETE FROM scan_sessions")
             connection.execute("DELETE FROM identity_evidence")
             connection.execute("DELETE FROM ap_relationships")
             connection.execute("DELETE FROM client_associations")
@@ -825,6 +983,27 @@ class ApHistoryStore:
                     (bssid,),
                 )
             ]
+            record["scan_sessions"] = [
+                dict(item) for item in connection.execute(
+                    """
+                    SELECT session.session_id, session.name, session.started_at,
+                           session.ended_at, session.mode,
+                           sighting.first_seen, sighting.last_seen,
+                           sighting.sighting_count
+                    FROM ap_session_sightings AS sighting
+                    JOIN scan_sessions AS session
+                      ON session.session_id = sighting.session_id
+                    WHERE sighting.bssid = ?
+                    ORDER BY sighting.last_seen DESC
+                    """,
+                    (bssid,),
+                )
+            ]
+            record["session_name"] = (
+                record["scan_sessions"][0]["name"]
+                if record["scan_sessions"] else "Legacy"
+            )
+            record["session_count"] = len(record["scan_sessions"])
             records.append(record)
         return records
 
@@ -858,6 +1037,29 @@ class ApHistoryStore:
                     (client["client_mac"],),
                 )
             ]
+            record["scan_sessions"] = [
+                dict(item) for item in connection.execute(
+                    """
+                    SELECT session.session_id, session.name, session.started_at,
+                           session.ended_at, session.mode,
+                           MIN(sighting.first_seen) AS first_seen,
+                           MAX(sighting.last_seen) AS last_seen,
+                           SUM(sighting.sighting_count) AS sighting_count
+                    FROM client_session_sightings AS sighting
+                    JOIN scan_sessions AS session
+                      ON session.session_id = sighting.session_id
+                    WHERE sighting.client_mac = ?
+                    GROUP BY session.session_id
+                    ORDER BY last_seen DESC
+                    """,
+                    (client["client_mac"],),
+                )
+            ]
+            record["session_name"] = (
+                record["scan_sessions"][0]["name"]
+                if record["scan_sessions"] else "Legacy"
+            )
+            record["session_count"] = len(record["scan_sessions"])
             records.append(record)
         return records
 
@@ -967,6 +1169,7 @@ def _merge_capabilities(caps: AdvertisedCapabilities, raw: dict[str, Any]) -> bo
         "channel_utilization", "admission_capacity", "power_constraint_db",
         "power_min_dbm", "power_max_dbm", "country_environment",
         "wps_manufacturer", "wps_model", "wps_device_name", "wps_device_type",
+        "remote_id", "signature_label",
     ):
         if name in raw:
             setattr(historical, name, raw[name])
@@ -974,6 +1177,7 @@ def _merge_capabilities(caps: AdvertisedCapabilities, raw: dict[str, Any]) -> bo
         "channel_conflict", "radio_measurement", "fast_transition",
         "bss_transition", "wmm", "multi_bssid", "reduced_neighbor_report",
         "multi_link", "pmf_capable", "pmf_required",
+        "signature_watch",
     ):
         setattr(historical, name, bool(raw.get(name, False)))
     for name in ("country_channels", "supported_channel_ranges"):
@@ -997,6 +1201,7 @@ def _merge_capabilities(caps: AdvertisedCapabilities, raw: dict[str, Any]) -> bo
         "channel_utilization", "admission_capacity", "power_constraint_db",
         "power_min_dbm", "power_max_dbm", "country_environment",
         "wps_manufacturer", "wps_model", "wps_device_name", "wps_device_type",
+        "remote_id", "signature_label",
     ):
         if getattr(caps, name) is None:
             setattr(caps, name, getattr(historical, name))
@@ -1004,6 +1209,7 @@ def _merge_capabilities(caps: AdvertisedCapabilities, raw: dict[str, Any]) -> bo
         "channel_conflict", "radio_measurement", "fast_transition",
         "bss_transition", "wmm", "multi_bssid", "reduced_neighbor_report",
         "multi_link", "pmf_capable", "pmf_required",
+        "signature_watch",
     ):
         setattr(caps, name, getattr(caps, name) or getattr(historical, name))
     if not caps.country_channels:
