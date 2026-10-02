@@ -347,15 +347,6 @@ class SplashView(Screen):
                     variant="primary",
                 ),
             )
-            self._ensure_primary_action_button(
-                "rf-lab-btn",
-                visible=bool(hackrf),
-                factory=Button(
-                    Text.from_markup("RF [bold bright_yellow]L[/]AB TX"),
-                    id="rf-lab-btn",
-                    variant="warning",
-                ),
-            )
             self.query_one("#gps-picker-slot", Center).display = gps_status is not None
             self.refresh_bindings()
 
@@ -374,12 +365,6 @@ class SplashView(Screen):
         if spectrum_button is not None:
             spectrum_button.disabled = False
             spectrum_button.tooltip = "Open the receive-only RF spectrum analyzer"
-        lab_button = self._optional_action_button("rf-lab-btn")
-        if lab_button is not None:
-            lab_button.disabled = False
-            lab_button.tooltip = (
-                "Authorized lab: low-power channel noise to test AP ACS / CCA"
-            )
         os_ble_status = self.app.bluetooth_manager.os_ble_status
         ble_button = self.query_one("#bluetooth-btn", Button)
         ble_button.disabled = not (
@@ -654,7 +639,7 @@ class SplashView(Screen):
         self._os_ble_picker().disabled = True
         self.query_one("#start-btn", Button).disabled = True
         self.query_one("#bluetooth-btn", Button).disabled = True
-        for button_id in ("bluetooth-usb-btn", "spectrum-btn", "rf-lab-btn", "background-btn"):
+        for button_id in ("bluetooth-usb-btn", "spectrum-btn", "background-btn"):
             button = self._optional_action_button(button_id)
             if button is not None:
                 button.disabled = True
