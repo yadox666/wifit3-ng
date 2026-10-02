@@ -29,7 +29,14 @@ from wifit3.persist.bluetooth_history import (
 from wifit3.persist.notifications import NotificationStore, NotificationStoreError
 from wifit3.persist.targets import SavedTarget, TargetStore, TargetStoreError
 from wifit3.persist.locations import LocationStore
-from wifit3.persist.scan_sessions import ScanSession, new_scan_session
+from wifit3.persist.scan_sessions import (
+    ScanSession,
+    allocate_session_name,
+    collect_session_metadata,
+    new_scan_session,
+    persisted_session_names,
+    session_end_metadata_patch,
+)
 from wifit3.persist.vault import Vault
 from wifit3.errors import WifiteDeviceLostError, WifiteFatalError
 from wifit3.bluetooth import BluetoothManager
@@ -56,6 +63,7 @@ from .screens.new_device import NewDeviceDialog
 from .screens.vault_drawer import VaultDrawer
 from .screens.vault_table import VaultTable
 from .notification_center import NotificationHistoryModal
+from .screens.session_start_modal import SessionStartInput, SessionStartModal
 from .pref import PreferencesModal
 from .themes import register_app_themes
 from wifit3.updates import check_for_update
@@ -252,11 +260,6 @@ class WifiteApp(App):
         self.enterprise_session_store = EnterpriseSessionStore()
         self.ap_history_store = ApHistoryStore()
         self.active_scan_session: ScanSession | None = None
-        self.start_scan_session(
-            {"wifi", "bluetooth"},
-            mode="app",
-            notify=False,
-        )
         self.locked_target_id: str | None = None
         self.target_missing_since: float | None = None
         self.auto_lock_armed = True
@@ -312,26 +315,45 @@ class WifiteApp(App):
         except ConfigError as e:
             self.notify(str(e), severity="error", title="Config")
 
+    def _existing_session_names(self) -> set[str]:
+        return persisted_session_names(
+            self.ap_history_store,
+            self.bluetooth_history_store,
+        )
+
     def start_scan_session(
         self,
         media: set[str],
         *,
         mode: str,
-        notify: bool = True,
+        name: str | None = None,
+        description: str = "",
+        notify: bool = False,
     ) -> ScanSession:
         if self.active_scan_session is not None:
             self.end_scan_session()
-        existing_names = {
-            str(item["name"])
-            for item in (
-                *self.ap_history_store.scan_sessions(),
-                *self.bluetooth_history_store.scan_sessions(),
-            )
-        }
+        started_at = time.time()
+        gps_fix = self.gps_manager.latest_fix
+        gps_port = (
+            self.gps_manager.status.port
+            if self.gps_manager.status is not None
+            else ""
+        )
+        metadata = collect_session_metadata(
+            mode=mode,
+            wifit3_version=__version__,
+            started_at=started_at,
+            gps_fix=gps_fix,
+            gps_port=gps_port,
+        )
         session = new_scan_session(
             media,
             mode=mode,
-            existing_names=existing_names,
+            existing_names=self._existing_session_names(),
+            name=name,
+            description=description,
+            metadata=metadata,
+            started_at=started_at,
         )
         if "wifi" in session.media:
             self.ap_history_store.start_scan_session(session)
@@ -351,14 +373,62 @@ class WifiteApp(App):
         if session is None:
             return
         ended_at = time.time()
+        patch = session_end_metadata_patch(
+            ended_at,
+            gps_fix=self.gps_manager.latest_fix,
+        )
         if "wifi" in session.media:
-            self.ap_history_store.end_scan_session(session.id, ended_at=ended_at)
+            self.ap_history_store.end_scan_session(
+                session.id,
+                ended_at=ended_at,
+                metadata_patch=patch,
+            )
         if "bluetooth" in session.media:
             self.bluetooth_history_store.end_scan_session(
                 session.id,
                 ended_at=ended_at,
+                metadata_patch=patch,
             )
         self.active_scan_session = None
+
+    def _prompt_scan_session(self) -> None:
+        default_name = allocate_session_name(
+            None,
+            self._existing_session_names(),
+        )
+        gps_fix = self.gps_manager.latest_fix
+        self.push_screen(
+            SessionStartModal(
+                default_name,
+                gps_fix=gps_fix,
+                gps_status=self.gps_manager.status,
+                gps_configured_port=self.gps_manager.configured_port,
+            ),
+            self._on_scan_session_start,
+        )
+
+    def _on_scan_session_start(self, result: SessionStartInput | None) -> None:
+        existing = self._existing_session_names()
+        if result is None:
+            result = SessionStartInput(
+                name=allocate_session_name(None, existing),
+                description="",
+            )
+        requested = result.name.strip()
+        final_name = allocate_session_name(requested, existing)
+        if requested and final_name.casefold() != requested.casefold():
+            self.notify(
+                f"“{requested}” is already in session history; using “{final_name}”.",
+                title="Scan session",
+                severity="warning",
+                timeout=5,
+            )
+        self.start_scan_session(
+            {"wifi", "bluetooth"},
+            mode="app",
+            name=final_name,
+            description=result.description,
+        )
 
     @property
     def locked_target(self) -> SavedTarget | None:
@@ -444,12 +514,6 @@ class WifiteApp(App):
             self.notify(msg, severity="warning", title="Bluetooth history")
         for msg in self.location_store.errors:
             self.notify(msg, severity="warning", title="Location history")
-        if self.active_scan_session is not None:
-            self.notify(
-                self.active_scan_session.name,
-                title="App session",
-                timeout=5,
-            )
         from wifit3.observe.signature_pack import ensure_stock
 
         signature_status = ensure_stock()
@@ -471,6 +535,7 @@ class WifiteApp(App):
         self.call_after_refresh(self.device_watch.poll)
         self.call_after_refresh(self._poll_jobs)
         self.gps_manager.start()
+        self.call_after_refresh(self._prompt_scan_session)
         if Config.auto_check_updates:
             self.check_updates()
 
@@ -707,7 +772,7 @@ class WifiteApp(App):
             return
         self.open_targets_editor()
 
-    def action_toggle_vault(self, access_point: AccessPoint | None = None) -> None:
+    def action_toggle_vault(self) -> None:
         """Open the vault drawer."""
         if isinstance(
             self.screen, (
@@ -717,14 +782,12 @@ class WifiteApp(App):
         ):
             return
         if not isinstance(self.screen, VaultDrawer):
-            if access_point is None and isinstance(self.screen, FocusViewV2):
-                access_point = self.screen._target_ap or self.target_ap
             self.vault_open = True
             
             def _on_dismiss(_=None):
                 self.vault_open = False
                 
-            self.push_screen(VaultDrawer(access_point), callback=_on_dismiss)
+            self.push_screen(VaultDrawer(), callback=_on_dismiss)
 
     def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
         if action == "toggle_vault" and isinstance(

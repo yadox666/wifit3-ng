@@ -8,19 +8,20 @@ import time
 import uuid
 from functools import wraps
 from pathlib import Path
+from typing import Any
 
 from platformdirs import user_data_dir
 
 from wifit3.models import BluetoothDevice
 from wifit3.models.bluetooth_device import has_coherent_persistent_identity
 from wifit3.persist.private_files import ensure_private_directory
-from wifit3.persist.scan_sessions import ScanSession
+from wifit3.persist.scan_sessions import ScanSession, merge_session_metadata
 
 
 BLUETOOTH_HISTORY_PATH = (
     Path(user_data_dir("wifit3", appauthor=False)) / "bluetooth_history.sqlite3"
 )
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 _MAX_DEVICES = 50_000
 _WRITE_INTERVAL_SECONDS = 5.0
 
@@ -255,6 +256,18 @@ class BluetoothHistoryStore:
                 """
             )
             connection.commit()
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 10:
+            connection.executescript(
+                """
+                ALTER TABLE scan_sessions
+                    ADD COLUMN description TEXT NOT NULL DEFAULT '';
+                ALTER TABLE scan_sessions
+                    ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
+                PRAGMA user_version = 11;
+                """
+            )
+            connection.commit()
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS legacy_event_imports (
@@ -282,24 +295,55 @@ class BluetoothHistoryStore:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO scan_sessions (
-                    session_id, name, started_at, ended_at, mode
-                ) VALUES (?, ?, ?, NULL, ?)
+                    session_id, name, started_at, ended_at, mode,
+                    description, metadata_json
+                ) VALUES (?, ?, ?, NULL, ?, ?, ?)
                 """,
-                (session.id, session.name, session.started_at, session.mode),
+                (
+                    session.id,
+                    session.name,
+                    session.started_at,
+                    session.mode,
+                    session.description,
+                    session.metadata_json,
+                ),
             )
         self._active_session_id = session.id
         self._last_write.clear()
 
     @_locked
-    def end_scan_session(self, session_id: str, *, ended_at: float | None = None) -> None:
+    def end_scan_session(
+        self,
+        session_id: str,
+        *,
+        ended_at: float | None = None,
+        metadata_patch: dict[str, Any] | None = None,
+    ) -> None:
         connection = self._connection
         if connection is None:
             return
+        ended = time.time() if ended_at is None else ended_at
         with connection:
-            connection.execute(
-                "UPDATE scan_sessions SET ended_at = ? WHERE session_id = ?",
-                (time.time() if ended_at is None else ended_at, session_id),
-            )
+            if metadata_patch:
+                row = connection.execute(
+                    "SELECT metadata_json FROM scan_sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                prior = row[0] if row is not None else "{}"
+                merged = merge_session_metadata(prior, metadata_patch)
+                connection.execute(
+                    """
+                    UPDATE scan_sessions
+                    SET ended_at = ?, metadata_json = ?
+                    WHERE session_id = ?
+                    """,
+                    (ended, merged, session_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE scan_sessions SET ended_at = ? WHERE session_id = ?",
+                    (ended, session_id),
+                )
         if self._active_session_id == session_id:
             self._active_session_id = None
 
@@ -312,7 +356,8 @@ class BluetoothHistoryStore:
             dict(row)
             for row in connection.execute(
                 """
-                SELECT session_id, name, started_at, ended_at, mode
+                SELECT session_id, name, started_at, ended_at, mode,
+                       description, metadata_json
                 FROM scan_sessions
                 ORDER BY started_at DESC
                 """

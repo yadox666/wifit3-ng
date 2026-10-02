@@ -50,7 +50,9 @@ These capabilities come from the original [derv82/wifit3](https://github.com/der
 
 The sections below are the additions in this fork (0.3.4 through current). They sit on top of the original auditor.
 
-**0.3.11 (full notes in [CHANGELOG](CHANGELOG.md)):** compact **Wi‑Fi / Bluetooth / SDR / GPS** startup pickers with per-card **All | 2.4 | 5G** (hardware-aware) and conditional **BT/BLE Scan** / **RF-SPECTRUM** / **RF LAB TX** actions; **spread** scanner hop order (every channel, coprime stride); **RF LAB TX** (`L`) lab channel noise (waveforms, hop scan, burst/sleep, jitter, simulated spectrum preview); **Offline DB** (`O`) single-line filters; **PortalTwin** (locales, post-login eviction, CNA probes); **Client Focus** layout; scanner **CC** / **UPTIME**; DFS 5 GHz hops; **targets & whitelist** (`Shift+T`); **Focus leave** confirmation; tabbed **Preferences**; whitelist **deauth** guard; GPS history and globe links; Fake-Connect; BLE GATT value view; MT792 replug guidance — details in the changelog.
+**Unreleased ([CHANGELOG](CHANGELOG.md#unreleased)):** **scan session dialog** at startup (editable name, optional notes, metadata JSON with platform and GPS when available; names deduped against history); **named app sessions**; startup **background monitor** (`G`); **observer signature pack**; **notification history**; **vault SSID reuse** and contextual vault entry; **targets editor v2**; **USB Bluetooth claim** with passive **MODEL** / GATT identity on the scanner — full list in the changelog.
+
+**0.3.11:** compact **Wi‑Fi / Bluetooth / SDR / GPS** startup pickers with per-card **All | 2.4 | 5G**; conditional **BT/BLE Scan** and **RF-SPECTRUM**; **spread** scanner hop order; **Offline DB** (`O`) filters; **Client Focus** layout; scanner **CC** / **UPTIME**; DFS 5 GHz hops; **targets & whitelist** (`Shift+T`); **Focus leave** confirmation; tabbed **Preferences**; whitelist **deauth** guard; GPS history and globe links; Fake-Connect; BLE GATT value view; MT792 replug guidance.
 
 ### Navigation
 
@@ -62,7 +64,6 @@ The startup screen shows centered **START WI-FI** and **SCAN BLE** buttons on on
 | `B` | Startup | Start the Bluetooth/BLE scanner |
 | `D` | Startup (USB BT adapter detected) | Start direct Bluetooth Classic + BLE scanning on the selected dedicated USB controller |
 | `R` | Startup (supported SDR detected) | Open the receive-only RF Spectrum analyzer |
-| `L` | Startup (HackRF One detected) | Open **RF LAB TX** (authorized-lab channel noise / CCA tests) |
 | `O` | Startup | Open **Offline DB** (browse saved Wi-Fi and Bluetooth history with no adapter started) |
 | `C` | Offline DB | **Clear-DB** — delete saved Wi-Fi and/or Bluetooth history (type `DELETE NOW!` to confirm) |
 | `U` | Startup | Update the local OUI database |
@@ -90,7 +91,8 @@ Vault is available only in Wi-Fi mode.
 
 - **Wi‑Fi adapters** — one bordered panel, one line per USB card: **checkbox** (include on START), **chipset · product** name, and a compact **All | 2.4 | 5G** band control on the right. Dual-band cards can pin the AP/Clients scanner to one band; single-band hardware (for example AR9271) shows a fixed band label from the driver's channel list. The choice is remembered per device and affects **only** scanner hopping — not Focus, EvilTwin, or deauth campaigns. With every card on **All**, the pool still **SPREAD**-partitions channels across adapters. After **START**, the panel subtitle shows **World (reg)**, **US (reg)**, or your configured ISO code when the driver applied the default **World (reg)** domain on bring-up.
 - **Bluetooth adapters** — when a supported USB dongle is plugged in, a matching panel appears below Wi‑Fi (the panel slot stays hidden until then). Each row has a checkbox and a mode tag (**BT+BLE**, **BT**, or **BLE**). The **BT/BLE Scan** action and footer **`D`** appear only while at least one dongle is present; they use the checked dongle (highlighted row wins when several are checked). With none checked, the button stays disabled. **SCAN BLE** (`B`) still uses the OS radio through Bleak.
-- **Software-defined radios** — when a supported SDR (HackRF One) is detected, a **Software-defined radios** panel appears and the action bar gains **RF-SPECTRUM** (`R`) and **RF LAB TX** (`L`). With no SDR, that panel and both buttons stay hidden so the startup row stays compact.
+- **Software-defined radios** — when a supported SDR (HackRF One) is detected, a **Software-defined radios** panel appears and the action bar gains **RF-SPECTRUM** (`R`). With no SDR, that panel and button stay hidden so the startup row stays compact.
+- **Scan session** — after the splash mounts, a modal asks for a **session name** (editable suggested label) and optional **notes** before the run starts. Escape keeps the suggestion. Names already in Wi-Fi or Bluetooth history are skipped for suggestions; if you reuse an existing label, the app warns and picks a new unique name. Each session stores notes plus JSON metadata (wifit3/OS/Python versions, UTC start/end, GPS start/end when a fix exists).
 - **GPS / GNSS receivers** — a receiver appears only after checksummed NMEA
   traffic confirms it is operational. The row shows manufacturer/product,
   serial port, baud rate, NMEA/fix state, satellites, and accuracy. Hovering a
@@ -608,36 +610,6 @@ directly through PyUSB/libusb; it does not require the operating system's
 HackRF/PortaPack displays do not mirror the host's USB tuning commands, so a
 PortaPack screen is not expected to show the sweep or channel changes. The
 application's graph and channel table are the source of sweep status.
-
-### RF Lab channel noise (ACS / CCA tests)
-
-When HackRF One is present, **RF LAB TX** (`L`) opens an **authorized-lab-only**
-transmitter that raises the in-band noise floor on a selected 2.4 or 5 GHz Wi-Fi
-primary. **Band-limited AWGN** is the default: it covers the full **20 MHz primary**
-so 802.11 **CCA** sees a busy channel more reliably than a narrow tone would. Use
-it to observe whether your own APs run **ACS** and move to another channel.
-
-**Waveforms:** band-limited AWGN, wideband noise, CW carrier, offset sinusoid,
-linear chirp, and pulsed AWGN (50% duty). Tone offset applies to the sinusoid;
-**jitter** (off or 1–60) spreads CW / sinusoid / chirp in frequency.
-
-**Scheduling:** optional **TX burst / sleep** cycles turn the HackRF transceiver off
-between bursts; **hop mode** can hold one channel or **scan** every 2.4 or 5 GHz
-Wi-Fi primary on a configurable interval (stress neighbor ACS). Duration and **TX
-VGA** stay capped low; the RF amplifier stays off; each run needs the active-action
-confirm modal; transmission auto-stops on timer, **Stop**, leaving the screen, or
-global quit.
-
-**Live preview:** while transmitting, the lower panel shows a **simulated spectrum**
-(heat-map bars, short waterfall, primary-channel markers, and Wi-Fi **channel
-number rulers** on 2.4 / 5 / low 6 GHz — styled like **RF-SPECTRUM**). This is a
-visual model of the selected waveform, not live IQ from the HackRF. The animation
-runs only during TX.
-
-Prefer a shielded enclosure or conducted path (attenuator + dummy load). HackRF
-output is not calibrated. This mode is independent of the receive-only
-**RF-SPECTRUM** analyzer (`R`). A hardware smoke script lives at
-`scripts/hackrf_lab_tx_smoke.py`.
 
 ### GPS and location history
 

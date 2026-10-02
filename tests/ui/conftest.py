@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from wifit3.persist.config import Config
 from wifit3.bluetooth.manager import OsBleSourceStatus
+from wifit3.ui.app import WifiteApp
 
 
 @pytest.fixture(autouse=True)
@@ -48,6 +49,16 @@ def _isolate_config(tmp_path, monkeypatch):
     Config.os_ble_enabled = True
     Config.silenced_bssids = []
     yield
+
+
+@pytest.fixture(autouse=True)
+def _auto_start_scan_session(monkeypatch):
+    """UI tests boot WifiteApp without blocking on the session naming modal."""
+
+    def _prompt(self) -> None:
+        self.start_scan_session({"wifi", "bluetooth"}, mode="app")
+
+    monkeypatch.setattr(WifiteApp, "_prompt_scan_session", _prompt)
 
 
 @pytest.fixture

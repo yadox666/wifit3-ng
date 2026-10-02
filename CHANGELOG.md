@@ -14,7 +14,14 @@ build compared with the original
 
 ### Added
 
-- **Named app sessions:** each run gets a memorable session name shared by Wi-Fi
+- **Scan session dialog:** on startup, a modal collects an editable session name
+  and optional notes (replacing the old session toast). Suggested names avoid
+  labels already stored in Wi-Fi and Bluetooth history; duplicate typed names
+  get a warning and a fresh unique label. Session rows store `description` plus
+  JSON metadata (wifit3/OS/Python versions, UTC start/end, GPS start/end when a
+  fix is available). AP history schema **v5**, Bluetooth history schema **v11**.
+
+- **Named app sessions:** each run is grouped under one label shared by Wi-Fi
   and Bluetooth history until quit; Offline DB shows session membership and
   accepts session names in search (`Legacy` for older rows).
 
