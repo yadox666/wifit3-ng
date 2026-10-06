@@ -8,9 +8,13 @@ from typing import Optional
 _SSID_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
 _SSID_MAX = 32
 
+# Filename stand-in for a WPA passphrase that applies to every AP of one SSID.
+SSID_SCOPED_BSSID_TOKEN = "ess"
+SSID_SCOPE_PREFIX = "ssid:"
+
 LEGACY_CAPTURE_RE = re.compile(
     r"^(?P<ssid>.+)_"
-    r"(?P<bssid>[0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})_"
+    r"(?P<bssid>[0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5}|ess)_"
     r"(?P<epoch>\d+)_"
     r"(?P<kind>enterprise_report|eap_lab_report|handshake|pmkid|mschapv2|netntlmv2|packet_capture|wep_key|wps_pin|wps_pbc|wpa_psk)"
     r"\.(?P<ext>json|pcap|hc22000|mschapv2|netntlmv2|txt)$"
@@ -41,6 +45,33 @@ def bssid_to_dashed(bssid: str) -> str:
 def bssid_to_colon(dashed: str) -> str:
     """``aa-bb-cc-dd-ee-ff`` -> ``aa:bb:cc:dd:ee:ff``."""
     return dashed.replace("-", ":").lower()
+
+
+def bssid_path_token(bssid: str | None) -> str:
+    """Dashed BSSID, or the SSID-scoped token when the address was left blank."""
+    if not (bssid or "").strip():
+        return SSID_SCOPED_BSSID_TOKEN
+    return bssid_to_dashed(bssid)
+
+
+def is_ssid_scoped_token(token: str) -> bool:
+    return token.lower() == SSID_SCOPED_BSSID_TOKEN
+
+
+def ssid_scope_key(ssid: str | None) -> str:
+    """Vault index key for a passphrase that is not tied to one access point."""
+    return f"{SSID_SCOPE_PREFIX}{ssid or ''}"
+
+
+def is_ssid_scope_key(key: str) -> bool:
+    return key.startswith(SSID_SCOPE_PREFIX)
+
+
+def capture_index_key(bssid: str | None, ssid: str | None) -> str:
+    """Index a capture by BSSID, or by SSID when it covers every AP of that name."""
+    if not (bssid or "").strip():
+        return ssid_scope_key(ssid)
+    return bssid or ""
 
 
 @dataclass(frozen=True, slots=True)

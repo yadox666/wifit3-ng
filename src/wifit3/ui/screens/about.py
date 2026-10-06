@@ -11,7 +11,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
 
 from wifit3 import __version__
-from wifit3.updates import RELEASES_URL, UpdateInfo
+from wifit3.updates import RELEASES_URL, UpdateInfo, can_install_update
 
 
 class UpdateAvailableModal(ModalScreen[None]):
@@ -40,12 +40,20 @@ class UpdateAvailableModal(ModalScreen[None]):
             yield Static(
                 f"Installed: [bold]{self._update.current_version}[/bold]\n"
                 f"Available: [bold green]{self._update.latest_version}[/bold green]\n\n"
-                "Download the published release for your operating system from GitHub.",
+                "A verified release is available for your operating system.",
                 id="update-details",
             )
             with Horizontal(id="update-actions"):
-                yield Button("Open release", variant="success", id="update-open")
+                if can_install_update(self._update):
+                    yield Button("Install update", variant="success", id="update-install")
+                else:
+                    yield Button("Open release", variant="success", id="update-open")
                 yield Button("Later", id="update-later")
+
+    @on(Button.Pressed, "#update-install")
+    def install_update(self) -> None:
+        self.app.install_update(self._update)
+        self.dismiss()
 
     @on(Button.Pressed, "#update-open")
     def open_release(self) -> None:

@@ -118,6 +118,24 @@ async def test_contextual_vault_add_psk_uses_highlighted_ap():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
+async def test_ssid_scoped_psk_lists_any_access_point(tmp_path):
+    _write(
+        tmp_path,
+        "Hotel_Guest_ess_1000_wpa_psk.txt",
+        "SSID: Hotel Guest\nBSSID:\nPSK: hotel-passphrase\n",
+    )
+    app = WifiteApp()
+    async with app.run_test() as pilot:
+        view = await _open_vault(app)
+        await pilot.pause()
+        table = view.query_one("#vault-table")
+        assert any(str(key).startswith("ssid:") for key in table._aps)
+        assert "any AP" in view.query_one("#vault-aps", DataTable).get_row_at(0)[0]
+        assert "any access point" in view.query_one("VaultItemView").border_title
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
 async def test_selection_restored_after_reload(tmp_path):
     _write(tmp_path, "Alpha_aa-bb-cc-dd-ee-ff_1000_wep_key.txt",
            "SSID: Alpha\nBSSID: aa:bb:cc:dd:ee:ff\nWEP key (hex): 6162\n")

@@ -19,6 +19,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Select
 
 from wifit3.models import CaptureType, PersistedCapture
+from wifit3.persist.common import is_ssid_scope_key
 from wifit3.persist.vault import _open_in_file_manager
 from wifit3.ui.vault.tools_ui import UI_TOOLS
 
@@ -336,7 +337,8 @@ class VaultItemView(Vertical):
             return
             
         name = ssid or "‹hidden›"
-        self.border_title = f"[$background bold on $primary] {escape(name)} ({escape(bssid)}) [/]"
+        address = "any access point" if is_ssid_scope_key(bssid) else bssid
+        self.border_title = f"[$background bold on $primary] {escape(name)} ({escape(address)}) [/]"
         
         groups = {
             "PACKET CAPTURE": [c for c in captures if c.type == CaptureType.PCAP],

@@ -20,6 +20,7 @@ from wifit3.persist.common import (
     WEP_KEY_HEX_RE,
     WPS_PIN_RE,
     WPS_PSK_RE,
+    bssid_path_token,
     bssid_to_colon,
     bssid_to_dashed,
     parse_hc22000,
@@ -144,7 +145,7 @@ def _fresh_path(captures_dir: Path, ssid: str | None, bssid: str, suffix: str) -
     the smallest free epoch. Distinct content saved in the same second would
     otherwise collide. Dedupe only catches identical content, so structurally
     different artifacts (new ANonce / rotated PSK) need their own files."""
-    base = f"{safe_ssid(ssid)}_{bssid_to_dashed(bssid)}"
+    base = f"{safe_ssid(ssid)}_{bssid_path_token(bssid)}"
     epoch = int(time.time())
     while True:
         candidate = captures_dir / f"{base}_{epoch}{suffix}"
@@ -155,18 +156,37 @@ def _fresh_path(captures_dir: Path, ssid: str | None, bssid: str, suffix: str) -
 
 def _existing(captures_dir: Path, bssid: str, suffix: str) -> list[Path]:
     """Files in ``captures_dir`` whose name carries this BSSID + ``_<suffix>``
-    (kind + extension, e.g. ``_handshake.hc22000``)."""
+    (kind + extension, e.g. ``_handshake.hc22000``).
+
+    A blank BSSID matches SSID-scoped passphrase files (every AP of that name).
+    """
     if not captures_dir.is_dir():
         return []
-    dashed = bssid_to_dashed(bssid)
+    token = bssid_path_token(bssid)
     out: list[Path] = []
-    for p in captures_dir.iterdir():
-        if not p.is_file():
+    for path in captures_dir.iterdir():
+        if not path.is_file() or not path.name.lower().endswith(suffix):
             continue
-        name = p.name.lower()
-        if dashed in name and name.endswith(suffix):
-            out.append(p)
+        match = LEGACY_CAPTURE_RE.match(path.name)
+        if match and match.group("bssid").lower() == token:
+            out.append(path)
     return out
+
+
+def _file_ssid(path: Path) -> str | None:
+    """Exact SSID stored on the ``SSID:`` line of a credential text file."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if not line.startswith("SSID:"):
+            continue
+        value = line.removeprefix("SSID:")
+        if value.startswith(" "):
+            value = value[1:]
+        return value or None
+    return None
 
 
 # ----- Handshake / PMKID ----------------------------------------------------
@@ -572,11 +592,17 @@ def _write_or_reuse(
 
 
 def save_wpa_psk(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
-    """Persist a manually supplied WPA passphrase without exposing it in a filename."""
+    """Persist a manually supplied WPA passphrase without exposing it in a filename.
+
+    A blank BSSID stores the passphrase for every access point of this SSID.
+    """
     captures_dir = Path(Config.captures_dir)
     if not psk:
         return None
+    scoped = not (ap.bssid or "").strip()
     for path in _existing(captures_dir, ap.bssid, "_wpa_psk.txt"):
+        if scoped and _file_ssid(path) != (ap.ssid or None):
+            continue
         try:
             match = WPS_PSK_RE.search(path.read_text(encoding="utf-8", errors="replace"))
         except OSError:
@@ -585,8 +611,9 @@ def save_wpa_psk(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
             return SaveResult(path=path, was_new=False)
     ensure_private_directory(captures_dir)
     path = _fresh_path(captures_dir, ap.ssid, ap.bssid, "_wpa_psk.txt")
+    bssid_line = "BSSID:\n" if scoped else f"BSSID: {ap.bssid}\n"
     write_private_text(
         path,
-        f"SSID: {ap.ssid or ''}\nBSSID: {ap.bssid}\nPSK: {psk}\n",
+        f"SSID: {ap.ssid or ''}\n{bssid_line}PSK: {psk}\n",
     )
     return SaveResult(path=path, was_new=True)

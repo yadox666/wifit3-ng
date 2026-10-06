@@ -65,7 +65,7 @@ from .notification_center import NotificationHistoryModal
 from .screens.session_start_modal import SessionStartInput, SessionStartModal
 from .pref import PreferencesModal
 from .themes import register_app_themes
-from wifit3.updates import check_for_update
+from wifit3.updates import UpdateInfo, check_for_update, install_update as install_release_update
 
 logger = logging.getLogger(__name__)
 
@@ -781,6 +781,7 @@ class WifiteApp(App):
         try:
             update = check_for_update()
         except Exception as exc:
+            logger.warning("Update check failed: %s", exc)
             if show_current:
                 self.call_from_thread(
                     self.notify, str(exc), title="Update check failed", severity="error",
@@ -797,6 +798,24 @@ class WifiteApp(App):
                 f"Version {update.current_version} is current",
                 title="wifit3 update",
             )
+
+    @work(thread=True, exclusive=True, group="updates")
+    def install_update(self, update: UpdateInfo) -> None:
+        try:
+            install_release_update(update)
+        except Exception as exc:
+            logger.warning("Update installation failed", exc_info=True)
+            self.call_from_thread(
+                self.notify, str(exc), title="Update failed", severity="error",
+            )
+            return
+        self.call_from_thread(
+            self.notify,
+            "The verified update was installed. Restart wifit3 to use it.",
+            title="Update installed",
+            severity="information",
+            timeout=12,
+        )
 
     async def action_quit(self):
         self.persist_config()

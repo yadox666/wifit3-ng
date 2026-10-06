@@ -436,6 +436,23 @@ def test_save_wpa_psk_uses_dedicated_type_and_dedupes(tmp_path):
     assert second.path == first.path
 
 
+def test_save_wpa_psk_without_bssid_covers_the_ssid(tmp_path):
+    ap = AccessPoint(bssid="", ssid="Hotel Guest")
+    first = save_wpa_psk(ap, "hotel-passphrase")
+    second = save_wpa_psk(ap, "hotel-passphrase")
+    other = save_wpa_psk(AccessPoint(bssid="", ssid="Cafe"), "hotel-passphrase")
+
+    assert first is not None and first.was_new is True
+    assert "_ess_" in first.path.name
+    assert first.path.read_text(encoding="utf-8") == (
+        "SSID: Hotel Guest\nBSSID:\nPSK: hotel-passphrase\n"
+    )
+    assert second is not None and second.was_new is False
+    assert second.path == first.path
+    assert other is not None and other.was_new is True
+    assert other.path != first.path
+
+
 def test_save_enterprise_report_is_sanitized_and_private(tmp_path):
     ap = AccessPoint(
         bssid="aa:bb:cc:dd:ee:ff",

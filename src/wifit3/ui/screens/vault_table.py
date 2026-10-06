@@ -6,6 +6,7 @@ from textual.widgets import DataTable, Tabs, Tab
 from textual.widget import Widget
 
 from wifit3.models import CaptureType, PersistedCapture
+from wifit3.persist.common import capture_index_key, is_ssid_scope_key
 from textual.message import Message
 
 class VaultTable(Widget):
@@ -48,10 +49,11 @@ class VaultTable(Widget):
     def _group_aps(self) -> Dict[str, Tuple[Optional[str], List[PersistedCapture]]]:
         groups: Dict[str, Tuple[Optional[str], List[PersistedCapture]]] = {}
         for cap in self.app.vault.all_captures():
-            ssid, caps = groups.setdefault(cap.bssid, (None, []))
+            key = capture_index_key(cap.bssid, cap.ssid)
+            ssid, caps = groups.setdefault(key, (None, []))
             caps.append(cap)
             if ssid is None and cap.ssid:
-                groups[cap.bssid] = (cap.ssid, caps)
+                groups[key] = (cap.ssid, caps)
         return groups
 
     def reload_table(self) -> None:
@@ -136,7 +138,12 @@ class VaultTable(Widget):
                 
                 # Build Row Markup
                 name = ssid or "‹hidden›"
-                bssid_suffix = f" [dim]{bssid}[/dim]" if ssid_counts.get(ssid or "", 0) > 1 else ""
+                if is_ssid_scope_key(bssid):
+                    bssid_suffix = " [dim]any AP[/dim]"
+                elif ssid_counts.get(ssid or "", 0) > 1:
+                    bssid_suffix = f" [dim]{bssid}[/dim]"
+                else:
+                    bssid_suffix = ""
                 
                 badges = []
                 if any(c.type in (CaptureType.WPS_PIN, CaptureType.WPS_PBC, CaptureType.WPA_PSK) and c.value for c in caps):

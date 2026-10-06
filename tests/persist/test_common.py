@@ -36,6 +36,12 @@ def test_legacy_capture_regex():
 
     assert LEGACY_CAPTURE_RE.match("invalid_name.txt") is None
 
+    scoped = LEGACY_CAPTURE_RE.match("Hotel_Guest_ess_1725000000_wpa_psk.txt")
+    assert scoped is not None
+    assert scoped.group("ssid") == "Hotel_Guest"
+    assert scoped.group("bssid") == "ess"
+    assert scoped.group("kind") == "wpa_psk"
+
 
 def test_aggregated_hc22000_regex():
     m = AGGREGATED_HC22000_RE.match("HomeNet_00-11-22-33-44-55.hc22000")

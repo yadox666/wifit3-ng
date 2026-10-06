@@ -223,6 +223,30 @@ async def test_connectivity_probe_classifies_expected_http_204_as_internet():
     assert result.tcp_reachable is True
 
 
+def test_resolve_credential_uses_ssid_scoped_vault_psk():
+    from wifit3.persist.vault import Vault
+
+    vault = Vault()
+    vault.save_wpa_psk(AccessPoint(bssid="", ssid="Hotel Guest"), "hotel-passphrase")
+    lobby = AccessPoint(
+        bssid="aa:bb:cc:dd:ee:01",
+        ssid="Hotel Guest",
+        encryption="WPA2",
+        akm_suites=[2],
+    )
+    other = AccessPoint(
+        bssid="aa:bb:cc:dd:ee:09",
+        ssid="Other",
+        encryption="WPA2",
+        akm_suites=[2],
+    )
+
+    assert FakeConnectCampaign.resolve_credential(lobby, vault) == "hotel-passphrase"
+    assert FakeConnectCampaign.visible(lobby, vault) is True
+    assert FakeConnectCampaign.ineligible_reason(lobby, vault) is None
+    assert FakeConnectCampaign.resolve_credential(other, vault) is None
+
+
 def test_resolve_credential_reads_wep_key_from_vault():
     ap = AccessPoint(
         bssid="aa:bb:cc:dd:ee:22", ssid="Legacy", encryption="WEP",

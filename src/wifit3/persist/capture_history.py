@@ -17,6 +17,8 @@ from wifit3.persist.common import (
     WPS_PIN_RE,
     WPS_PSK_RE,
     bssid_to_colon,
+    is_ssid_scoped_token,
+    ssid_scope_key,
 )
 from wifit3.persist.config import Config
 
@@ -183,6 +185,10 @@ def load_capture_index() -> Dict[str, List[PersistedCapture]]:
             continue
         m = LEGACY_CAPTURE_RE.match(path.name)
         if m:
+            if is_ssid_scoped_token(m.group("bssid")):
+                for capture in _parse_file(path, ""):
+                    index[ssid_scope_key(capture.ssid)].append(capture)
+                continue
             bssid = bssid_to_colon(m.group("bssid"))
             index[bssid].extend(_parse_file(path, bssid))
             continue

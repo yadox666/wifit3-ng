@@ -196,6 +196,58 @@ def test_known_psk_ssid_fallback_is_case_sensitive_and_requires_known_ssid():
     ) is None
 
 
+def test_known_psk_ssid_without_bssid_applies_to_every_ap():
+    v = Vault()
+    v.save_wpa_psk(AccessPoint(bssid="", ssid="Hotel Guest"), "hotel-passphrase")
+    lobby = AccessPoint(bssid="aa:bb:cc:dd:ee:01", ssid="Hotel Guest")
+    suite = AccessPoint(bssid="aa:bb:cc:dd:ee:02", ssid="Hotel Guest")
+
+    assert v.known_psk(lobby) == "hotel-passphrase"
+    assert v.known_psk(suite) == "hotel-passphrase"
+    assert v.has_psk(lobby) is True
+    reloaded = Vault()
+    assert reloaded.known_psk(suite) == "hotel-passphrase"
+    assert reloaded.known_psk(
+        AccessPoint(bssid="aa:bb:cc:dd:ee:03", ssid="hotel guest"),
+    ) is None
+
+
+def test_known_psk_rejects_conflicting_ssid_scoped_passphrases():
+    v = Vault()
+    v.save_wpa_psk(AccessPoint(bssid="", ssid="Hotel Guest"), "first-passphrase")
+    v.save_wpa_psk(AccessPoint(bssid="", ssid="Hotel Guest"), "second-passphrase")
+
+    assert v.known_psk(
+        AccessPoint(bssid="aa:bb:cc:dd:ee:01", ssid="Hotel Guest"),
+    ) is None
+
+
+def test_known_psk_exact_bssid_overrides_ssid_scoped_passphrase():
+    v = Vault()
+    v.save_wpa_psk(AccessPoint(bssid="", ssid="Hotel Guest"), "hotel-passphrase")
+    room = AccessPoint(bssid="aa:bb:cc:dd:ee:01", ssid="Hotel Guest")
+    v.save_wpa_psk(room, "room-passphrase")
+
+    assert v.known_psk(room) == "room-passphrase"
+    assert v.known_psk(
+        AccessPoint(bssid="aa:bb:cc:dd:ee:02", ssid="Hotel Guest"),
+    ) == "hotel-passphrase"
+
+
+def test_known_psk_ssid_scope_wins_when_other_aps_disagree():
+    v = Vault()
+    first = AccessPoint(bssid="aa:bb:cc:dd:ee:01", ssid="Hotel Guest")
+    second = AccessPoint(bssid="aa:bb:cc:dd:ee:02", ssid="Hotel Guest")
+    v.save_wpa_psk(first, "first-passphrase")
+    v.save_wpa_psk(second, "second-passphrase")
+    v.save_wpa_psk(AccessPoint(bssid="", ssid="Hotel Guest"), "hotel-passphrase")
+
+    assert v.known_psk(first) == "first-passphrase"
+    assert v.known_psk(
+        AccessPoint(bssid="aa:bb:cc:dd:ee:03", ssid="Hotel Guest"),
+    ) == "hotel-passphrase"
+
+
 def test_known_psk_rejects_ambiguous_ssid_but_exact_bssid_wins():
     v = Vault()
     first = AccessPoint(bssid="00:11:22:33:44:aa", ssid="Shared Name")

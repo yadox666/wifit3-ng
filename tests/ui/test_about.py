@@ -51,3 +51,21 @@ async def test_update_modal_opens_the_validated_release(monkeypatch):
     assert opened == [
         "https://github.com/yadox666/wifit3-ng/releases/tag/v2.0.0",
     ]
+
+
+@pytest.mark.asyncio
+async def test_update_modal_starts_verified_install(monkeypatch):
+    installed = []
+    monkeypatch.setattr(about, "can_install_update", lambda _update: True)
+
+    class InstallHost(_UpdateHost):
+        def install_update(self, update):
+            installed.append(update)
+
+    app = InstallHost()
+    async with app.run_test() as pilot:
+        await pilot.pause(0)
+        app.screen.query_one("#update-install", Button).press()
+        await pilot.pause(0)
+
+    assert [update.latest_version for update in installed] == ["2.0.0"]

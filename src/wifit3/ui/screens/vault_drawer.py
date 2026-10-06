@@ -165,13 +165,6 @@ class VaultDrawer(ModalScreen):
         self._open_import("wpa")
 
     def action_add_psk(self) -> None:
-        if self._access_point is None:
-            self.notify(
-                "Open Vault from a highlighted AP to prefill its SSID and BSSID.",
-                severity="warning",
-            )
-            self._open_import("wpa")
-            return
         self._open_import("wpa")
 
     @on(Button.Pressed, "#vault-add-psk")

@@ -15,7 +15,14 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 from wifit3.models import CaptureType, PersistedCapture
 from wifit3.persist import save
 from wifit3.persist.capture_history import load_capture_index, summarize
-from wifit3.persist.common import LEGACY_CAPTURE_RE, bssid_to_dashed, parse_hc22000, safe_ssid
+from wifit3.persist.common import (
+    LEGACY_CAPTURE_RE,
+    bssid_to_dashed,
+    capture_index_key,
+    parse_hc22000,
+    safe_ssid,
+    ssid_scope_key,
+)
 from wifit3.persist.config import Config
 from wifit3.persist.private_files import ensure_private_directory, harden_private_file
 from wifit3.persist.save import SaveResult
@@ -124,11 +131,12 @@ class Vault:
     def known_psk(self, ap: "AccessPoint") -> Optional[str]:
         """Return a usable credential for an AP.
 
-        Session and exact-BSSID credentials take precedence. If neither exists,
-        reuse one unambiguous persisted credential from the exact same SSID.
-        SSIDs are case-sensitive octet strings; hidden/unknown SSIDs never
-        inherit credentials. Conflicting credentials for one SSID are
-        deliberately rejected rather than guessed.
+        Session and exact-BSSID credentials take precedence. A passphrase saved
+        for the SSID alone then applies to every access point of that name.
+        Otherwise reuse one unambiguous persisted credential from the exact
+        same SSID. SSIDs are case-sensitive octet strings; hidden/unknown SSIDs
+        never inherit credentials. Conflicting credentials are rejected rather
+        than guessed.
         """
         session_psk = ap.wps_pbc_psk or ap.wps_pin_psk
         if session_psk:
@@ -142,6 +150,15 @@ class Vault:
             return direct
         if not ap.ssid:
             return None
+        scoped = {
+            capture.value
+            for capture in self._index.get(ssid_scope_key(ap.ssid), [])
+            if capture.type in self._PSK_TYPES and capture.value and capture.ssid == ap.ssid
+        }
+        if len(scoped) == 1:
+            return next(iter(scoped))
+        if scoped:
+            return None
         ssid_credentials = {
             capture.value
             for captures in self._index.values()
@@ -150,6 +167,7 @@ class Vault:
                 capture.type in self._PSK_TYPES
                 and capture.value
                 and capture.ssid == ap.ssid
+                and capture.bssid
             )
         }
         if len(ssid_credentials) == 1:
@@ -226,9 +244,10 @@ class Vault:
     def save_wpa_psk(self, ap: "AccessPoint", psk: str) -> Optional[SaveResult]:
         result = save.save_wpa_psk(ap, psk)
         if result and result.was_new:
-            self._index.setdefault(ap.bssid, []).insert(
+            stored_bssid = ap.bssid if (ap.bssid or "").strip() else ""
+            self._index.setdefault(capture_index_key(stored_bssid, ap.ssid), []).insert(
                 0, PersistedCapture(type=CaptureType.WPA_PSK, timestamp=int(time.time()),
-                                    path=str(result.path), bssid=ap.bssid, value=psk, ssid=ap.ssid))
+                                    path=str(result.path), bssid=stored_bssid, value=psk, ssid=ap.ssid))
         return result
 
     def save_mschapv2(

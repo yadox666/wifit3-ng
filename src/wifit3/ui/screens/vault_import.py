@@ -48,10 +48,10 @@ class VaultImportModal(ModalScreen[bool]):
             yield Label("Add credential", id="import-title")
             yield Label("Network name")
             yield Input(value=ssid or "", placeholder="SSID", id="import-ssid")
-            yield Label("Access point address")
+            yield Label(self._bssid_label(self._credential_type), id="import-bssid-label")
             yield Input(
                 value=bssid,
-                placeholder="AA:BB:CC:DD:EE:FF",
+                placeholder="Optional for WPA - blank covers every AP of this SSID",
                 id="import-bssid",
             )
             yield Label("Credential type")
@@ -72,6 +72,16 @@ class VaultImportModal(ModalScreen[bool]):
     def on_mount(self) -> None:
         if self._access_point is not None:
             self.query_one("#import-secret", Input).focus()
+
+    @staticmethod
+    def _bssid_label(kind: str) -> str:
+        if kind == "wpa":
+            return "Access point address (optional)"
+        return "Access point address"
+
+    @on(Select.Changed, "#import-type")
+    def _credential_type_changed(self, event: Select.Changed) -> None:
+        self.query_one("#import-bssid-label", Label).update(self._bssid_label(str(event.value)))
 
     @on(Button.Pressed, "#import-save")
     def save(self) -> None:
@@ -99,8 +109,11 @@ class VaultImportModal(ModalScreen[bool]):
     def _validate(self, ssid: str, bssid: str, kind: str, secret: str, pin: str) -> str:
         if not ssid or len(ssid.encode("utf-8")) > 32:
             return "SSID must contain 1 to 32 bytes"
-        if not _BSSID_RE.fullmatch(bssid):
-            return "Enter a BSSID such as AA:BB:CC:DD:EE:FF"
+        if bssid:
+            if not _BSSID_RE.fullmatch(bssid):
+                return "Enter a BSSID such as AA:BB:CC:DD:EE:FF, or leave it blank for WPA"
+        elif kind != "wpa":
+            return "WEP and WPS credentials need an access point address"
         if kind in {"wpa", "wps"}:
             if not (8 <= len(secret) <= 63 or (
                 len(secret) == 64 and all(char in "0123456789abcdefABCDEF" for char in secret)

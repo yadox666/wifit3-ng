@@ -6,6 +6,18 @@ build compared with the original
 
 ## Unreleased
 
+## 0.3.15 - 2026-10-06
+
+### Added
+
+- A Vault WPA passphrase can be saved for a network name alone. Leave the
+  access-point address blank and fake connect reuses it for every access point
+  broadcasting that SSID.
+- Frozen macOS and Linux builds can install a new release from the automatic
+  update notice. Downloads are restricted to this repository's platform asset,
+  checked against GitHub's published SHA-256 digest, and atomically replace the
+  executable after explicit user confirmation.
+
 ## 0.3.14 - 2026-10-06
 
 ### Fixed
