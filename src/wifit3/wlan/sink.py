@@ -17,8 +17,8 @@ from typing import Callable, Dict, List, Optional, Set
 
 from wifit3.chips.log_trace import TRACE   # registers Logger.trace + the level name
 from wifit3.models import (
-    AccessPoint, Client, EnterpriseSession, Handshake, HandshakeMessage, IdSource, LocationFix,
-    ProbeObservation,
+    AccessPoint, Client, EnterpriseSession, Handshake, HandshakeMessage, IdKey, IdSource,
+    LocationFix, ProbeObservation,
 )
 from wifit3.dot11.mac import mac_to_str
 from wifit3.dot11.parser import WlanFrameParser
@@ -238,11 +238,17 @@ class WlanSink:
         wps_config_methods = pkt.wps_config_methods
         wps_device_password_id = pkt.wps_device_password_id
         wps_selected_registrar = pkt.wps_selected_registrar
+        wps_state = pkt.wps_state
+        wps_uuid_e = pkt.wps_uuid_e
+        wps_rf_bands = pkt.wps_rf_bands
+        wps_os_version = pkt.wps_os_version
+        wps_response_type = pkt.wps_response_type
         wsc_manufacturer = pkt.wsc_manufacturer
         wsc_model_name = pkt.wsc_model_name
         wsc_model_number = pkt.wsc_model_number
         wsc_device_name = pkt.wsc_device_name
         wsc_device_type = pkt.wsc_device_type
+        wsc_serial_number = pkt.wsc_serial_number
 
         if bssid not in self.access_points:
             historical_ssid = (
@@ -274,6 +280,11 @@ class WlanSink:
                 wps_version=wps_version,
                 wps_config_methods=wps_config_methods,
                 wps_device_password_id=wps_device_password_id,
+                wps_state=wps_state,
+                wps_uuid_e=wps_uuid_e,
+                wps_rf_bands=wps_rf_bands,
+                wps_os_version=wps_os_version,
+                wps_response_type=wps_response_type,
                 wps_selected_registrar=wps_selected_registrar,
                 decloak_method="history" if historical_ssid else None,
             )
@@ -294,6 +305,7 @@ class WlanSink:
                     model_number=wsc_model_number,
                     device_name=wsc_device_name,
                     device_type=wsc_device_type,
+                    serial_number=wsc_serial_number,
                 )
             self.access_points[bssid] = ap
             self._record_ap_signal(ap, card_id, rssi)
@@ -325,34 +337,60 @@ class WlanSink:
             if old_channel != channel:
                 self._recompute_siblings_for(bssid)
             # Keep the strongest encryption evidence ever seen (see _enc_rank).
-            if _enc_rank(enc) >= _enc_rank(ap.encryption):
+            # Equal-rank beacon/probe-response variants are accumulated rather than
+            # replacing one another; otherwise the fingerprint oscillates per frame.
+            incoming_enc_rank = _enc_rank(enc)
+            current_enc_rank = _enc_rank(ap.encryption)
+            if incoming_enc_rank > current_enc_rank:
                 ap.encryption = enc
-                ap.akms = list(akms)
-                ap.akm_suites = list(akm_suites)
-                ap.pairwise_cipher = pairwise_cipher
-                ap.pairwise_ciphers = list(pkt.pairwise_ciphers)
-                ap.group_cipher = pkt.group_cipher
-                ap.wpa3 = wpa3
-                ap.transition_mode = transition_mode
-                ap.pmf_capable = pmf_capable
-                ap.pmf_required = pmf_required
-                ap.beacon_protection = beacon_protection
+            if incoming_enc_rank >= current_enc_rank:
+                ap.akms = sorted(set(ap.akms) | set(akms))
+                ap.akm_suites = sorted(set(ap.akm_suites) | set(akm_suites))
+                ap.pairwise_ciphers = sorted(
+                    set(ap.pairwise_ciphers) | set(pkt.pairwise_ciphers),
+                )
+                if ap.pairwise_cipher is None and pairwise_cipher is not None:
+                    ap.pairwise_cipher = pairwise_cipher
+                if ap.group_cipher is None and pkt.group_cipher is not None:
+                    ap.group_cipher = pkt.group_cipher
+                ap.wpa3 = ap.wpa3 or wpa3
+                ap.transition_mode = ap.transition_mode or transition_mode
+                ap.pmf_capable = ap.pmf_capable or pmf_capable
+                ap.pmf_required = ap.pmf_required or pmf_required
+                ap.beacon_protection = ap.beacon_protection or beacon_protection
             # Only refresh WPS when this frame carried the IE.
             if wps:
                 ap.wps = True
                 ap.wps_locked = wps_locked
-                ap.wps_version = wps_version
-                ap.wps_config_methods = wps_config_methods
                 ap.wps_device_password_id = wps_device_password_id
                 ap.wps_selected_registrar = wps_selected_registrar
-                ap.identity.update(
-                    IdSource.WSC_BEACON,
-                    manufacturer=wsc_manufacturer,
-                    model_name=wsc_model_name,
-                    model_number=wsc_model_number,
-                    device_name=wsc_device_name,
-                    device_type=wsc_device_type,
-                )
+                ap.wps_state = wps_state
+                # These are fixed device traits. Preserve/accumulate observations
+                # instead of clearing them when one WSC IE is only partial.
+                if ap.wps_version is None and wps_version is not None:
+                    ap.wps_version = wps_version
+                ap.wps_config_methods |= wps_config_methods
+                if ap.wps_uuid_e is None and wps_uuid_e is not None:
+                    ap.wps_uuid_e = wps_uuid_e
+                if wps_rf_bands is not None:
+                    ap.wps_rf_bands = (ap.wps_rf_bands or 0) | wps_rf_bands
+                if ap.wps_os_version is None and wps_os_version is not None:
+                    ap.wps_os_version = wps_os_version
+                if ap.wps_response_type is None and wps_response_type is not None:
+                    ap.wps_response_type = wps_response_type
+                for key, value in (
+                    (IdKey.MANUFACTURER, wsc_manufacturer),
+                    (IdKey.MODEL_NAME, wsc_model_name),
+                    (IdKey.MODEL_NUMBER, wsc_model_number),
+                    (IdKey.DEVICE_NAME, wsc_device_name),
+                    (IdKey.DEVICE_TYPE, wsc_device_type),
+                    (IdKey.SERIAL_NUMBER, wsc_serial_number),
+                ):
+                    if (
+                        value is not None
+                        and ap.identity.get_source_value(key, IdSource.WSC_BEACON) is None
+                    ):
+                        ap.identity.set(IdSource.WSC_BEACON, key, value)
 
         ap = self.access_points[bssid]
         ap.last_seen = time.time()
@@ -502,6 +540,14 @@ class WlanSink:
             ap = self.access_points.get(bssid)
             if ap is not None and self._is_real_ssid(pkt.ssid):
                 self._decloak(ap, pkt.ssid, frame_type)
+        if self.ap_history is not None:
+            try:
+                self.ap_history.remember_client_fingerprint(client)
+            except ApHistoryStoreError:
+                logger.warning(
+                    "Could not persist client fingerprint",
+                    exc_info=True,
+                )
         return True
 
     def _on_eapol_frame(self, pkt: Packet) -> bool:

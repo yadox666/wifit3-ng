@@ -10,11 +10,16 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from platformdirs import user_cache_dir
 
 from wifit3.models.identity import canonical_vendor
+
+# (bytes_downloaded, total_bytes_or_None) -> None. Called repeatedly during a
+# download so the UI can render a progress bar. total is None when the server
+# doesn't send a Content-Length.
+ProgressCb = Callable[[int, Optional[int]], None]
 
 _OUI_URL = "https://standards-oui.ieee.org/oui/oui.txt"
 _OUI_HOST = "standards-oui.ieee.org"
@@ -115,11 +120,19 @@ def ensure(
     now: float | None = None,
     path: Path | None = None,
     fetch: Callable[[str], bytes] | None = None,
+    progress: ProgressCb | None = None,
 ) -> OuiStatus:
-    """Load oui.txt, downloading when missing, older than 30 days, or ``force``."""
+    """Load oui.txt, downloading when missing, older than 30 days, or ``force``.
+
+    ``progress`` is forwarded to the built-in downloader so callers can render a
+    download progress bar; it is ignored when a custom ``fetch`` is supplied.
+    """
     path = cache_path() if path is None else path
     now = time.time() if now is None else now
-    fetch = _download if fetch is None else fetch
+    if fetch is None:
+        downloader: Callable[[str], bytes] = lambda url: _download(url, progress)
+    else:
+        downloader = fetch
     if not force and cache_is_fresh(path, now):
         cached = _read_cache(path)
         if cached is not None:
@@ -129,7 +142,7 @@ def ensure(
                 f"current, {len(cached)} vendors, {_updated(path, now)}; press u to refresh",
             )
     try:
-        data = fetch(_OUI_URL)
+        data = downloader(_OUI_URL)
         vendors = parse_oui_txt(_decode(data))
         if len(vendors) < MIN_VENDORS:
             raise ValueError("not an OUI database")
@@ -205,7 +218,7 @@ class _HostRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _download(url: str) -> bytes:
+def _download(url: str, progress: ProgressCb | None = None) -> bytes:
     request = urllib.request.Request(url, headers={
         "User-Agent": "wifit3",
         "Accept": "text/plain",
@@ -215,6 +228,12 @@ def _download(url: str) -> bytes:
     chunks: list[bytes] = []
     total = 0
     with opener.open(request, timeout=_TIMEOUT_S) as response:
+        header = response.headers.get("Content-Length")
+        expected = int(header) if header and header.isdigit() else None
+        if expected is not None and expected > _MAX_BYTES:
+            raise ValueError("OUI download exceeded size limit")
+        if progress is not None:
+            progress(0, expected)
         while True:
             block = response.read(64 * 1024)
             if not block:
@@ -223,6 +242,8 @@ def _download(url: str) -> bytes:
             if total > _MAX_BYTES:
                 raise ValueError("OUI download exceeded size limit")
             chunks.append(block)
+            if progress is not None:
+                progress(total, expected)
     return b"".join(chunks)
 
 

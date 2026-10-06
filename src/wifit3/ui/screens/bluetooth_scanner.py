@@ -5,19 +5,22 @@ from typing import TYPE_CHECKING
 
 from rich.markup import escape
 from rich.text import Text
-from textual import work
+from textual import on, work
 from textual.app import ComposeResult, RenderResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import Reactive
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Input, RichLog, Select
+from textual.widgets import DataTable, Footer, Input, RichLog, Select, Static
 from textual.widgets.data_table import ColumnKey
 from textual.widgets._header import HeaderClock
 
 from wifit3.ui.notification_center import WifiteHeader
+from wifit3.ui.screens.confirm_active import (
+    ConfirmEndScanModal,
+    END_BLUETOOTH_SCAN_BODY,
+)
 
-from wifit3.bluetooth.apple_identifiers import format_device_model_number
 from wifit3.bluetooth.gatt_metadata import display_model_label
 from wifit3.bluetooth.assigned_numbers import manufacturer_label, service_label, service_name
 from wifit3.bluetooth.classification import device_classification
@@ -32,7 +35,17 @@ from wifit3.targeting import (
     is_whitelisted_entry,
     match_bluetooth_device,
 )
-from wifit3.ui.bluetooth_export import export_bluetooth_bundle, export_btsnoop
+from wifit3.ui.bluetooth_detail import (
+    _is_anonymous_apple,
+    advertised_services_tooltip,
+    bluetooth_manufacturer_label,
+    displayed_service_uuids,
+    device_detail_lines,
+)
+from wifit3.ui.catalog_format import catalog_class_cell, catalog_family_cell
+from wifit3.ui.mac_format import bluetooth_identifier_text
+from wifit3.ui.search_input import SearchInput
+from wifit3.ui.bluetooth_export import export_bluetooth_bundle
 from wifit3.ui.location_format import format_position
 from wifit3.ui.signal_bar import dbm_style
 from wifit3.ui.target_filter import (
@@ -49,7 +62,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-STALE_DURATION_S = 10.0
+# Keep in sync with ``scanner.STALE_DURATION_S`` (AP row dimming).
+_AP_STALE_DURATION_S = 20.0
+_BT_SCREEN_PERSISTENCE_FACTOR = 5
+STALE_DURATION_S = _AP_STALE_DURATION_S * _BT_SCREEN_PERSISTENCE_FACTOR
+_BT_EXPIRY_FACTOR = _BT_SCREEN_PERSISTENCE_FACTOR
 
 
 def _clip(value: str, limit: int) -> str:
@@ -78,56 +95,28 @@ def _connection_error_message(error: BaseException) -> str:
 
 def _device_has_expired(device: BluetoothDevice, age: float) -> bool:
     expiry = Config.scanner_ap_expiry
+    if expiry < 0:
+        return False
+    expiry *= _BT_EXPIRY_FACTOR
     named = device.name.strip().casefold() not in {"", "<unknown>", "unknown"}
-    if expiry >= 0 and CLASSIC_RADIO in device.radio_types and named:
+    if CLASSIC_RADIO in device.radio_types and named:
         # Classic inquiry rows: keep named BT sightings longer (device may stop
         # answering inquiry while connected to a phone).
-        expiry = max(expiry, 180.0)
+        expiry = max(expiry, 180.0 * _BT_EXPIRY_FACTOR)
     elif (
-        expiry >= 0
-        and BLE_RADIO in device.radio_types
+        BLE_RADIO in device.radio_types
         and CLASSIC_RADIO not in device.radio_types
         and named
     ):
         # BLE-only rows (mouse, keyboard, TV): advertising can be sparse while bonded.
-        expiry = max(expiry, 120.0)
-    return expiry >= 0 and age >= expiry
+        expiry = max(expiry, 120.0 * _BT_EXPIRY_FACTOR)
+    return age >= expiry
 
 
 def _short_identifier(identifier: str) -> str:
     if len(identifier) <= 18:
         return identifier
     return f"{identifier[:8]}…{identifier[-4:]}"
-
-
-def _is_anonymous_apple(device: BluetoothDevice) -> bool:
-    return 0x004C in device.manufacturer_ids and device.name == "<Unknown>"
-
-
-def _discovery_source_label(source: str) -> str:
-    if source == "system+usb-hci":
-        return "system BLE + dedicated USB HCI"
-    if source == "usb-hci":
-        return "dedicated USB HCI"
-    return "system BLE"
-
-
-def _address_kind_label(address_type: str) -> str:
-    """Short, user-facing stability/privacy label for a Bluetooth address."""
-    return {
-        "public": "public/stable (OUI-based, trackable)",
-        "public-identity": "public identity/stable (trackable)",
-        "random-identity": "random identity/stable after bonding",
-        "random-static": "random static (stable until changed/restarted)",
-        "resolvable-private": "private rotating (RPA; IRK-resolvable)",
-        "non-resolvable-private": "private random (NRPA; non-resolvable)",
-        "random-reserved": "random/reserved pattern",
-        "random": "random (privacy subtype unknown)",
-        "anonymous": "anonymous (no device address)",
-        "platform-opaque": "OS-opaque UUID (MAC hidden)",
-        "unknown": "unknown",
-        "": "unknown",
-    }.get(address_type, address_type)
 
 
 def _group_anonymous_apple_devices(devices: list[BluetoothDevice]) -> list[BluetoothDevice]:
@@ -165,6 +154,53 @@ def _group_anonymous_apple_devices(devices: list[BluetoothDevice]) -> list[Bluet
     return result
 
 
+class _BluetoothScanTable(DataTable):
+    """DataTable that can move the cursor without scrolling the viewport."""
+
+    _suppress_scroll: bool = False
+
+    def __init__(self, *args, **kwargs) -> None:
+        self._service_tooltips: dict[str, str] = {}
+        super().__init__(*args, **kwargs)
+
+    def set_service_tooltip(self, row_key: str, value: str) -> None:
+        self._service_tooltips[row_key] = value
+
+    def remove_row(self, row_key) -> None:
+        self._service_tooltips.pop(str(getattr(row_key, "value", row_key)), None)
+        super().remove_row(row_key)
+
+    def clear(self, columns: bool = False):
+        self._service_tooltips.clear()
+        return super().clear(columns=columns)
+
+    def watch_hover_coordinate(self, old, value) -> None:
+        super().watch_hover_coordinate(old, value)
+        try:
+            cell_key = self.coordinate_to_cell_key(value)
+        except Exception:
+            self.tooltip = None
+            return
+        self.tooltip = (
+            self._service_tooltips.get(str(cell_key.row_key.value))
+            if cell_key.column_key.value == "services"
+            else None
+        )
+
+    def _scroll_cursor_into_view(self, animate: bool = False) -> None:
+        if self._suppress_scroll:
+            return
+        super()._scroll_cursor_into_view(animate=animate)
+
+    def pin_cursor_row(self, row: int) -> None:
+        self._suppress_scroll = True
+        self.move_cursor(row=row, animate=False)
+        self.call_after_refresh(self._release_scroll)
+
+    def _release_scroll(self) -> None:
+        self._suppress_scroll = False
+
+
 class _BluetoothSortReadout(HeaderClock):
     """Header right slot showing the active BLE table sort."""
 
@@ -189,14 +225,16 @@ class BluetoothScannerView(Screen):
     app: "WifiteApp"
 
     BINDINGS = [
-        Binding("escape", "back_to_wifi", "Wi-Fi"),
+        # Some terminals report Shift+L as the printable uppercase key instead
+        # of the modifier chord. Accept both representations.
+        Binding("escape", "back_to_wifi", "Exit"),
         Binding("enter", "connect", "Focus", show=False, priority=True),
-        Binding("a", "toggle_apple_group", "random dev-Ids"),
         Binding("s", "cycle_sort", "Sort Col"),
         Binding("o", "toggle_sort_dir", "Sort Asc/Desc"),
-        Binding("shift+t", "targets_editor", "Targets"),
+        Binding("n", "targets_editor", "Targets"),
         Binding("x", "export_scan", "Export"),
         Binding("f", "focus_filter", "Filter"),
+        Binding("y", "open_catalog", "Catalog"),
         Binding("ctrl+l", "toggle_log", "Toggle Log"),
     ]
 
@@ -206,19 +244,26 @@ class BluetoothScannerView(Screen):
     #bluetooth-filter-type { width: 14; margin-right: 1; }
     #bluetooth-filter-target { width: 18; margin-right: 1; }
     #bluetooth-filter-text { width: 1fr; }
+    #bluetooth-filter-text.-has-text { background: $surface-darken-2; }
+    #bluetooth-scan-stack { height: 1fr; }
+    #bluetooth-table { height: 2fr; }
+    #bluetooth-private-separator { height: 1; background: $primary-darken-1; margin: 0 1; }
+    #bluetooth-private-table { height: 1fr; min-height: 5; }
     #bluetooth-log { height: 15; min-height: 15; }
     """
 
     _COLUMNS = [
         ("name", "DEVICE"),
         ("model", "MODEL"),
-        ("rssi", "POWER"),
+        ("catalog_class", "CLASS"),
+        ("catalog_family", "FAMILY"),
         ("category", "RADIO / TYPE"),
-        ("advertisements", "OBS"),
+        ("manufacturer", "MANUFACTURER"),
+        ("rssi", "POWER"),
+        ("advertisements", "#ADV"),
         ("interval", "LATEST GAP"),
         ("first_seen", "FIRST SEEN"),
         ("last_seen", "LAST SEEN"),
-        ("manufacturer", "MANUFACTURER"),
         ("services", "ADVERTISED SERVICES"),
         ("identifier", "ADDRESS / ID"),
         ("location", "GPS"),
@@ -226,6 +271,8 @@ class BluetoothScannerView(Screen):
     _COLUMN_WIDTHS = {
         "name": 22,
         "model": 8,
+        "catalog_class": 16,
+        "catalog_family": 22,
         "rssi": 8,
         "category": 30,
         "advertisements": 8,
@@ -242,7 +289,8 @@ class BluetoothScannerView(Screen):
         super().__init__()
         self._rows: dict[str, tuple] = {}
         self._devices: dict[str, BluetoothDevice] = {}
-        self._apple_expanded = False
+        self._private_rows: dict[str, tuple] = {}
+        self._private_devices: dict[str, BluetoothDevice] = {}
         self._sort_idx = next(
             idx for idx, (key, _label) in enumerate(self._COLUMNS) if key == "first_seen"
         )
@@ -255,6 +303,7 @@ class BluetoothScannerView(Screen):
         self._logged_device_models: set[str] = set()
         self._last_enrichment_key: tuple | None = None
         self._model_column_width = self._COLUMN_WIDTHS["model"]
+        self._last_sort_time: float = 0.0
 
     def compose(self) -> ComposeResult:
         yield _BluetoothScannerHeader()
@@ -282,15 +331,25 @@ class BluetoothScannerView(Screen):
                     compact=True,
                     id="bluetooth-filter-target",
                 )
-                yield Input(
-                    placeholder="device, manufacturer, service, address…",
+                yield SearchInput(
+                    placeholder="device, manufacturer, service, family, address…",
                     compact=True,
                     id="bluetooth-filter-text",
                 )
-            table = DataTable(cursor_type="row", id="bluetooth-table")
-            for key, label in self._COLUMNS:
-                table.add_column(label, key=key, width=self._COLUMN_WIDTHS[key])
-            yield table
+            with Vertical(id="bluetooth-scan-stack"):
+                table = _BluetoothScanTable(cursor_type="row", id="bluetooth-table")
+                for key, label in self._COLUMNS:
+                    table.add_column(label, key=key, width=self._COLUMN_WIDTHS[key])
+                yield table
+                yield Static("", id="bluetooth-private-separator")
+                private_table = _BluetoothScanTable(
+                    cursor_type="row", id="bluetooth-private-table",
+                )
+                for key, label in self._COLUMNS:
+                    private_table.add_column(
+                        label, key=key, width=self._COLUMN_WIDTHS[key],
+                    )
+                yield private_table
             yield RichLog(id="bluetooth-log", markup=True, highlight=True)
         yield GlobalJobTracker()
         yield Footer()
@@ -317,13 +376,13 @@ class BluetoothScannerView(Screen):
                 )
             )
             + "[dim]The RADIO marker distinguishes Classic BT from BLE observations.[/dim]\n"
-            + "[dim]Use BT/BLE Scan with OS BLE enabled on splash — the dongle alone misses "
+            + "[dim]Use BT/BLE Scan with OS BLE enabled on splash - the dongle alone misses "
             "most BLE devices (mouse, keyboard, TV).[/dim]\n"
             + "[dim]Your Mac’s own mouse/keyboard often do not appear while connected to "
             "this computer (no public advertisements). Disconnect or use pairing mode "
             "to see them.[/dim]\n"
             + "[dim]Speakers (e.g. Vieta Pro): pairing mode, not connected to phone; "
-            "they show as [bold]BT[/bold] (Classic), not BLE — confirm the name appears "
+            "they show as [bold]BT[/bold] (Classic), not BLE - confirm the name appears "
             "in macOS System Settings → Bluetooth, then watch USB inquiry in the title. "
             "Filter: “Any power”.[/dim]\n"
             + "[dim]Table title shows live source health (OS BLE + USB inquiry).[/dim]\n"
@@ -348,23 +407,18 @@ class BluetoothScannerView(Screen):
         if self.app.screen is not self:
             return
         self._maybe_auto_lock_target()
-        table = self.query_one("#bluetooth-table", DataTable)
+        main_table = self.query_one("#bluetooth-table", DataTable)
+        private_table = self.query_one("#bluetooth-private-table", DataTable)
         now = time.time()
         discovered = [
             device for device in self.app.bluetooth_manager.devices()
             if not _device_has_expired(device, now - device.last_seen)
             and self._matches_filter(device)
         ]
-        displayed = discovered if self._apple_expanded else _group_anonymous_apple_devices(discovered)
-        visible = {device.identifier: device for device in displayed}
-
-        for identifier in set(self._rows) - set(visible):
-            try:
-                table.remove_row(identifier)
-            except Exception:
-                pass
-            self._rows.pop(identifier, None)
-            self._devices.pop(identifier, None)
+        main_list = [device for device in discovered if not _is_anonymous_apple(device)]
+        private_list = [device for device in discovered if _is_anonymous_apple(device)]
+        main_visible = {device.identifier: device for device in main_list}
+        private_visible = {device.identifier: device for device in private_list}
 
         manager = self.app.bluetooth_manager
         health = manager.hci_health
@@ -382,31 +436,81 @@ class BluetoothScannerView(Screen):
             parts.append("USB HCI active")
         model_segment = self._enrichment_title_segment(manager)
         if parts:
-            table.border_title = (
-                " · ".join(parts) + f" · rows {len(visible)}{model_segment}"
+            main_table.border_title = (
+                " · ".join(parts) + f" · rows {len(main_visible)}{model_segment}"
             )
         elif manager.is_os_ble_scanning:
-            table.border_title = (
+            main_table.border_title = (
                 f"OS BLE · packets {manager.observations_by_radio[BLE_RADIO]} · "
-                f"rows {len(visible)}{model_segment}"
+                f"rows {len(main_visible)}{model_segment}"
             )
+        else:
+            main_table.border_title = ""
+        private_table.border_title = (
+            f"Private / rotating IDs · rows {len(private_visible)}"
+        )
+        private_table.display = bool(private_visible)
+        self.query_one("#bluetooth-private-separator", Static).display = bool(
+            private_visible,
+        )
         self._log_enrichment_status(manager)
-        self._sync_model_column_width(table, visible)
+        self._sync_device_table(
+            main_table,
+            main_visible,
+            self._rows,
+            self._devices,
+            now,
+            show_detail_when_first=True,
+        )
+        self._sync_model_column_width(main_table, main_visible)
+        self._sync_device_table(
+            private_table,
+            private_visible,
+            self._private_rows,
+            self._private_devices,
+            now,
+            show_detail_when_first=False,
+        )
+        self._sync_model_column_width(private_table, private_visible)
+        if self._should_sort():
+            self._apply_sort(scroll_to_cursor=False)
+
+    def _sync_device_table(
+        self,
+        table: DataTable,
+        visible: dict[str, BluetoothDevice],
+        rows: dict[str, tuple],
+        devices: dict[str, BluetoothDevice],
+        now: float,
+        *,
+        show_detail_when_first: bool,
+    ) -> None:
+        for identifier in set(rows) - set(visible):
+            try:
+                table.remove_row(identifier)
+            except Exception:
+                pass
+            rows.pop(identifier, None)
+            devices.pop(identifier, None)
         for identifier, device in visible.items():
-            self._devices[identifier] = device
+            devices[identifier] = device
+            if isinstance(table, _BluetoothScanTable):
+                table.set_service_tooltip(
+                    identifier,
+                    advertised_services_tooltip(device),
+                )
             self._log_learned_model(device)
             values = self._row_values(device, now)
-            previous = self._rows.get(identifier)
+            previous = rows.get(identifier)
             if previous is None:
                 table.add_row(*values, key=identifier)
-                self._rows[identifier] = values
-                if table.row_count == 1:
+                rows[identifier] = values
+                if show_detail_when_first and table.row_count == 1:
                     self._show_device_details(device)
             elif previous != values:
                 for (key, _label), value in zip(self._COLUMNS, values):
                     table.update_cell(identifier, key, value)
-                self._rows[identifier] = values
-        self._apply_sort()
+                rows[identifier] = values
 
     def _sync_model_column_width(
         self,
@@ -473,17 +577,23 @@ class BluetoothScannerView(Screen):
             f"[bold]{escape(model_label)}[/bold]{suffix}"
         )
 
+    def _scan_tables(self) -> tuple[DataTable, DataTable]:
+        return (
+            self.query_one("#bluetooth-table", DataTable),
+            self.query_one("#bluetooth-private-table", DataTable),
+        )
+
     def _update_column_headers(self) -> None:
-        table = self.query_one("#bluetooth-table", DataTable)
         sort_key, _ = self._COLUMNS[self._sort_idx]
         arrow = "▼" if self._sort_reverse else "▲"
-        for key, label in self._COLUMNS:
-            if key in {"rssi", "advertisements", "interval", "first_seen", "last_seen"}:
-                text = f"{arrow} {label}" if key == sort_key else f"  {label}"
-                table.columns[key].label = Text(text, justify="right")
-            else:
-                text = f"{label} {arrow}" if key == sort_key else f"{label}  "
-                table.columns[key].label = Text(text)
+        for table in self._scan_tables():
+            for key, label in self._COLUMNS:
+                if key in {"rssi", "advertisements", "interval", "first_seen", "last_seen"}:
+                    text = f"{arrow} {label}" if key == sort_key else f"  {label}"
+                    table.columns[key].label = Text(text, justify="right")
+                else:
+                    text = f"{label} {arrow}" if key == sort_key else f"{label}  "
+                    table.columns[key].label = Text(text)
 
     def _sort_summary(self) -> str:
         _key, label = self._COLUMNS[self._sort_idx]
@@ -499,21 +609,47 @@ class BluetoothScannerView(Screen):
         self.notify(f"Sorted by {label} {direction}", title="Sort changed")
         self._update_sort_readout()
 
-    def _apply_sort(self) -> None:
-        table = self.query_one("#bluetooth-table", DataTable)
+    def _should_sort(self) -> bool:
+        delay = Config.scanner_sort_delay
+        if delay < 0:
+            return False
+        return (time.time() - self._last_sort_time) >= delay
+
+    def _apply_sort(self, *, scroll_to_cursor: bool = True) -> None:
+        self._last_sort_time = time.time()
+        focused = self._focused_scan_table()
+        for table, devices in (
+            (self._scan_tables()[0], self._devices),
+            (self._scan_tables()[1], self._private_devices),
+        ):
+            is_focused = table is focused
+            self._apply_sort_to_table(
+                table,
+                devices,
+                scroll_to_cursor=scroll_to_cursor and is_focused,
+                restore_cursor=is_focused or scroll_to_cursor,
+            )
+
+    def _apply_sort_to_table(
+        self,
+        table: DataTable,
+        devices: dict[str, BluetoothDevice],
+        *,
+        scroll_to_cursor: bool = True,
+        restore_cursor: bool = True,
+    ) -> None:
         if table.row_count == 0:
             return
         try:
             selected_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+            cursor_row = table.cursor_coordinate.row
         except Exception:
             selected_key = None
+            cursor_row = None
         sort_key, _ = self._COLUMNS[self._sort_idx]
         reverse = self._sort_reverse
-        # The "Ns ago" label is truncated to whole seconds, so sorting on it
-        # reshuffles devices that were first seen close together. Use the
-        # stored timestamps; first_seen never changes for a device.
         devices_by_cell = {}
-        for identifier, device in self._devices.items():
+        for identifier, device in devices.items():
             try:
                 devices_by_cell[id(table.get_cell(identifier, sort_key))] = device
             except Exception:
@@ -537,9 +673,6 @@ class BluetoothScannerView(Screen):
             elif sort_key in {"advertisements", "interval"}:
                 normalized = int(value.split()[0])
             elif sort_key in {"first_seen", "last_seen"}:
-                # A visible age is presentation only (seconds/minutes/hours).
-                # Timestamp-backed rows are handled above; never infer their
-                # order from formatted text.
                 normalized = 0
             else:
                 normalized = value.casefold()
@@ -551,14 +684,41 @@ class BluetoothScannerView(Screen):
             return (int(is_empty != reverse), normalized, tiebreak)
 
         table.sort(sort_key, "identifier", key=sort_value, reverse=reverse)
-        if selected_key is not None:
-            try:
-                table.move_cursor(row=table.get_row_index(selected_key), animate=False)
-            except Exception:
-                pass
+        if not restore_cursor or selected_key is None:
+            return
+        try:
+            new_row = table.get_row_index(selected_key)
+        except Exception:
+            return
+        if cursor_row is not None and new_row == cursor_row:
+            return
+        if scroll_to_cursor:
+            table.move_cursor(row=new_row, animate=False)
+        elif isinstance(table, _BluetoothScanTable):
+            table.pin_cursor_row(new_row)
 
     def action_cycle_sort(self) -> None:
         self._sort_idx = (self._sort_idx + 1) % len(self._COLUMNS)
+        self._update_column_headers()
+        self._apply_sort()
+        self._announce_sort()
+
+    @on(DataTable.HeaderSelected, "#bluetooth-table, #bluetooth-private-table")
+    def sort_from_header(self, event: DataTable.HeaderSelected) -> None:
+        """Select a sort column with a mouse click or terminal touch."""
+        key = str(event.column_key.value)
+        index = next(
+            (index for index, (column_key, _label) in enumerate(self._COLUMNS)
+             if column_key == key),
+            None,
+        )
+        if index is None:
+            return
+        if index == self._sort_idx:
+            self.action_toggle_sort_dir()
+            return
+        self._sort_idx = index
+        self._sort_reverse = False
         self._update_column_headers()
         self._apply_sort()
         self._announce_sort()
@@ -573,16 +733,13 @@ class BluetoothScannerView(Screen):
         age = max(0.0, now - device.last_seen)
         first_age = max(0.0, now - device.first_seen)
         is_stale = age > STALE_DURATION_S
-        manufacturer = manufacturer_label(device.manufacturer_ids, device.identifier)
+        manufacturer = bluetooth_manufacturer_label(device)
         classification = device_classification(device)
-        all_services = sorted(set(device.service_uuids) | set(device.service_data_uuids))
+        all_services = displayed_service_uuids(device)
         service_names = [service_name(uuid) for uuid in all_services]
         last_seen = "now" if age < 1 else f"{int(age)}s ago"
         first_seen = "now" if first_age < 1 else f"{int(first_age)}s ago"
-        name = (
-            "Apple private ID"
-            if self._apple_expanded and _is_anonymous_apple(device) else device.name
-        )
+        name = device.name
         name_cell = Text(no_wrap=True)
         if device.approximate_group:
             name_cell.append("≈ ", style="yellow bold")
@@ -590,7 +747,7 @@ class BluetoothScannerView(Screen):
             name_cell.append("‹unnamed›", style="dim italic")
         else:
             name_cell.append(_clip(name, 22), style="bold")
-        if device.signature_watch:
+        if device.signature_watch or device.catalog_attention:
             name_cell = Text("◆ ", style="bold yellow") + name_cell
         if device.baseline_status == "new":
             name_cell = Text("+ ", style="bold cyan") + name_cell
@@ -623,12 +780,17 @@ class BluetoothScannerView(Screen):
         if not service_names:
             services_cell.append("·", style="dim")
         services_cell.truncate(self._COLUMN_WIDTHS["services"], overflow="ellipsis")
-        identifier_cell = Text(
-            f"≈ {device.group_size} rotating IDs"
-            if device.approximate_group else _short_identifier(device.identifier),
-            style="dim",
-            no_wrap=True,
-        )
+        if device.approximate_group:
+            identifier_cell = Text(
+                f"≈ {device.group_size} rotating IDs",
+                style="dim",
+                no_wrap=True,
+            )
+        else:
+            identifier_cell = bluetooth_identifier_text(
+                device,
+                shortener=_short_identifier,
+            )
         signal_cell = Text(
             f"{device.rssi} dBm", style=dbm_style(device.rssi), justify="right",
         )
@@ -638,23 +800,26 @@ class BluetoothScannerView(Screen):
             style="bold" if model_text else "dim",
             no_wrap=False,
         )
+        category_cell = Text(no_wrap=True)
+        category_cell.append(
+            f"{device.radio_label} {classification.detail}",
+            style="cyan",
+        )
+        category_cell.truncate(self._COLUMN_WIDTHS["category"], overflow="ellipsis")
+        class_cell = catalog_class_cell(device)
+        family_cell = catalog_family_cell(device)
         cells = [
             name_cell,
             model_cell,
+            class_cell,
+            family_cell,
+            category_cell,
+            manufacturer_cell,
             signal_cell,
-            Text(
-                _clip(
-                    f"{device.radio_label} {classification.detail}",
-                    self._COLUMN_WIDTHS["category"],
-                ),
-                style="cyan",
-                no_wrap=True,
-            ),
             advertisements_cell,
             interval_cell,
             first_seen_cell,
             last_seen_cell,
-            manufacturer_cell,
             services_cell,
             identifier_cell,
             Text(
@@ -710,6 +875,10 @@ class BluetoothScannerView(Screen):
             device.radio_label,
             device.decode_state,
             device.protocol_type,
+            device.catalog_class,
+            device.catalog_live,
+            device.catalog_attention,
+            " ".join(device.catalog_labels),
             *(service_label(uuid) for uuid in services),
         )).casefold()
         return all(token in searchable for token in self._filter_text.casefold().split())
@@ -717,177 +886,34 @@ class BluetoothScannerView(Screen):
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.row_key is None:
             return
-        device = self._devices.get(str(event.row_key.value))
+        if event.data_table.id not in {"bluetooth-table", "bluetooth-private-table"}:
+            return
+        key = str(event.row_key.value)
+        device = self._devices.get(key) or self._private_devices.get(key)
         if device is not None:
             self._show_device_details(device)
 
     def _show_device_details(self, device: BluetoothDevice) -> None:
         log = self.query_one("#bluetooth-log", RichLog)
         log.clear()
-        manufacturer = manufacturer_label(device.manufacturer_ids, device.identifier) or "Unknown"
-        classification = device_classification(device)
-        category = classification.category
-        services = sorted(set(device.service_uuids) | set(device.service_data_uuids))
-        service_details = ", ".join(service_label(uuid) for uuid in services) or "None advertised"
-        tx_power = f"{device.tx_power} dBm" if device.tx_power is not None else "not advertised"
-        interval = (
-            f"{device.advertisement_interval * 1000:.0f} ms"
-            if device.advertisement_interval is not None else "waiting for another packet"
-        )
-        duration = max(0.0, device.last_seen - device.first_seen)
-        identifier = (
-            f"approximately {device.group_size} recently observed rotating identifiers"
-            if device.approximate_group else device.identifier
-        )
-        log.write(f"[bold]{device.name}[/bold]  [dim]{identifier}[/dim]")
-        log.write(
-            f"Radio: [bold cyan]{device.radio_label}[/bold cyan]  "
-            f"Discovery: [bold]{escape(_discovery_source_label(device.discovery_source))}[/bold]"
-        )
-        if device.approximate_group:
-            log.write(
-                "[bold yellow]Approximate privacy group:[/bold yellow] identifiers cannot be "
-                "proven to belong to the same physical device. Press [bold]Enter[/bold] to expand."
-            )
-        elif self._apple_expanded and _is_anonymous_apple(device):
-            log.write("[dim]Expanded Apple privacy identifier; press Enter to collapse the group.[/dim]")
-        log.write(f"Manufacturer: [bold]{manufacturer}[/bold]")
-        if device.hardware_product or device.hardware_vendor:
-            hardware = " ".join(
-                part
-                for part in (device.hardware_vendor, device.hardware_product)
-                if part
-            )
-            log.write(
-                f"Hardware identity: [bold]{escape(hardware)}[/bold]  "
-                f"Source: {escape(device.hardware_source or 'BlueZ Device ID')}"
-            )
-        if device.modalias:
-            log.write(f"BlueZ modalias: {escape(device.modalias)}")
-        device_information = [
-            (
-                "Model",
-                format_device_model_number(device.model_number, detail=True)
-                if device.model_number
-                else device.model_number,
-            ),
-            ("GATT name", device.gatt_device_name),
-            ("Manufacturer (GATT)", device.manufacturer_name),
-            ("PnP ID", device.pnp_id),
-            ("Firmware", device.firmware_revision),
-            ("Hardware", device.hardware_revision),
-            ("Software", device.software_revision),
-            ("Serial", device.serial_number),
-        ]
-        if any(value for _, value in device_information):
-            log.write(
-                "[bold cyan]GATT identity[/bold cyan] "
-                "[dim](GAP 0x1800 + Device Information 0x180A)[/dim]"
-            )
-            for label, value in device_information:
-                if value:
-                    log.write(f"  {label}: [bold]{escape(value)}[/bold]")
         hint = getattr(
             self.app.bluetooth_manager, "device_information_hint", None,
         )
-        if hint is not None:
-            log.write(f"Model (GATT 0x2A24): [bold]{escape(hint(device))}[/bold]")
-        log.write(
-            f"Probable type: [bold cyan]{escape(classification.detail)}[/bold cyan]  "
-            f"Category: [bold]{category}[/bold]  "
-            f"Evidence: {escape(classification.source)} ({classification.confidence})"
-        )
-        if classification.ambiguous:
-            log.write(
-                "[bold yellow]Ambiguous classification:[/bold yellow] equally strong "
-                "advertised evidence disagrees."
-            )
-        baseline_labels = {
-            "new": "[bold cyan]new identifier[/bold cyan]",
-            "returning": "[green]seen previously[/green]",
-            "changed": "[bold yellow]advertising profile changed[/bold yellow]",
-            "unavailable": "[dim]history unavailable[/dim]",
-        }
-        address_kind = _address_kind_label(device.address_type)
-        log.write(
-            f"Baseline: {baseline_labels.get(device.baseline_status, escape(device.baseline_status))}  "
-            f"Address type: [bold]{escape(device.address_type)}[/bold]  "
-            f"MAC kind: [bold]{escape(address_kind)}[/bold]"
-        )
-        if device.similar_identifier_count > 1 and not device.approximate_group:
-            log.write(
-                f"[yellow]Privacy history:[/yellow] {device.similar_identifier_count} identifiers "
-                "shared this advertising profile; this does not prove they are one device."
-            )
-        log.write(
-            f"Signal: [{dbm_style(device.rssi)}]{device.rssi} dBm[/]  TX: {tx_power}  "
-            f"Observations: {device.advertisement_count}  Latest gap: {interval}"
-        )
-        if device.rssi_average is not None:
-            log.write(
-                f"Signal window: average [bold]{device.rssi_average:.1f} dBm[/bold]  "
-                f"range {device.rssi_min}…{device.rssi_max} dBm  "
-                f"trend [bold]{device.rssi_trend}[/bold]  samples {device.rssi_samples}"
-            )
-        log.write(
-            f"Observed for: {duration:.1f}s  Discovery payload: "
-            f"manufacturer {device.manufacturer_data_bytes} B, service {device.service_data_bytes} B"
-        )
-        if device.class_of_device is not None:
-            log.write(f"Classic class of device: [bold]0x{device.class_of_device:06x}[/bold]")
-            log.write(
-                f"Classic inquiry: page scan repetition {device.page_scan_repetition_mode}, "
-                f"clock offset {device.clock_offset}"
-            )
-        if device.appearance is not None:
-            log.write(f"BLE Appearance: [bold]0x{device.appearance:04x}[/bold]")
-        log.write(f"Advertised services: {service_details}")
-        if device.payload_fingerprint:
-            log.write(
-                f"Payload fingerprint: [dim]{device.payload_fingerprint}[/dim]  "
-                f"Profile: [dim]{device.profile_fingerprint}[/dim]"
-            )
-        if device.is_connectable_with_bleak:
-            log.write("[dim]A complete GATT service list requires connecting to the device.[/dim]")
-        else:
-            log.write(
-                "[dim]This Classic-only observation has no BLE GATT endpoint. "
-                "Press Enter for Classic identity, HCI health, and read-only SDP Focus.[/dim]"
-            )
-        if device.related_identifiers:
-            log.write(
-                f"[yellow]Probable BT/BLE relation ({device.correlation_confidence}):[/yellow] "
-                f"{', '.join(device.related_identifiers)} · "
-                f"{', '.join(device.correlation_evidence)}"
-            )
+        for line in device_detail_lines(
+            device,
+            apple_expanded=_is_anonymous_apple(device),
+            device_information_hint=hint,
+        ):
+            log.write(line)
 
-    def action_toggle_selected_group(self) -> None:
-        table = self.query_one("#bluetooth-table", DataTable)
-        if table.row_count == 0:
-            return
-        try:
-            key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
-        except Exception:
-            return
-        device = self._devices.get(str(key))
-        if device is not None and (device.approximate_group or _is_anonymous_apple(device)):
-            self.action_toggle_apple_group()
-
-    def action_toggle_apple_group(self) -> None:
-        self._apple_expanded = not self._apple_expanded
-        self.refresh_table()
-        target = next(
-            (
-                device for device in self._devices.values()
-                if (_is_anonymous_apple(device) if self._apple_expanded else device.approximate_group)
-            ),
-            None,
-        )
-        if target is not None:
-            self._show_device_details(target)
+    def _focused_scan_table(self) -> DataTable:
+        focused = self.focused
+        if isinstance(focused, DataTable) and focused.id == "bluetooth-private-table":
+            return focused
+        return self.query_one("#bluetooth-table", DataTable)
 
     def _selected_device(self) -> BluetoothDevice | None:
-        table = self.query_one("#bluetooth-table", DataTable)
+        table = self._focused_scan_table()
         if table.row_count == 0:
             return None
         try:
@@ -895,7 +921,7 @@ class BluetoothScannerView(Screen):
         except Exception:
             return None
         identifier = str(key)
-        device = self._devices.get(identifier)
+        device = self._devices.get(identifier) or self._private_devices.get(identifier)
         if device is not None:
             return device
         for candidate in self.app.bluetooth_manager.devices():
@@ -958,7 +984,14 @@ class BluetoothScannerView(Screen):
     ) -> None:
         self._target_navigation_pending = True
         try:
-            self.app.target_store.update_missing(target, candidate.details)
+            self.app.target_store.update_member_missing(
+                target,
+                medium=candidate.medium,
+                kind=candidate.kind,
+                identifier=candidate.identifier,
+                details=candidate.details,
+                match_mode=candidate.match_mode,
+            )
             if not device.is_connectable_with_bleak:
                 self.app.bluetooth_manager.select_classic_focus(device.identifier)
                 self.app.push_screen("bluetooth-focus")
@@ -1078,16 +1111,13 @@ class BluetoothScannerView(Screen):
             return
         try:
             paths = list(export_bluetooth_bundle(devices))
-            records = self.app.bluetooth_manager.hci_capture_records
-            if records:
-                paths.append(export_btsnoop(records))
         except OSError as exc:
             self.notify(str(exc), title="Export failed", severity="error")
             return
         self.notify(
             ", ".join(path.suffix.lstrip(".").upper() for path in paths),
             title="Bluetooth scan exported",
-            timeout=6,
+            timeout=8,
         )
 
     def action_focus_filter(self) -> None:
@@ -1110,8 +1140,20 @@ class BluetoothScannerView(Screen):
             return
         self.refresh_table()
 
+    def action_open_catalog(self) -> None:
+        from wifit3.ui.screens.catalog import open_catalog
+
+        open_catalog(self)
+
     def action_back_to_wifi(self) -> None:
-        self.stop_and_return()
+        self.app.push_screen(
+            ConfirmEndScanModal(END_BLUETOOTH_SCAN_BODY),
+            self._on_end_scan_confirmed,
+        )
+
+    def _on_end_scan_confirmed(self, confirmed: bool) -> None:
+        if confirmed:
+            self.stop_and_return()
 
     @work(exclusive=True)
     async def stop_and_return(self) -> None:

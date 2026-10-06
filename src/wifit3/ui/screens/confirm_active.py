@@ -116,3 +116,62 @@ class ConfirmLeaveFocusModal(ModalScreen[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+
+END_WIFI_SCAN_BODY = (
+    "Returning to device selection will stop channel hopping, "
+    "close the adapter, and end the current scan session."
+)
+END_BLUETOOTH_SCAN_BODY = (
+    "Returning to device selection will stop Bluetooth discovery, "
+    "release the radio, and end the current scan session."
+)
+
+
+class ConfirmEndScanModal(ModalScreen[bool]):
+    """Confirm before leaving the scanner and returning to device selection."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Keep scanning"),
+        Binding("n", "cancel", "Keep scanning"),
+        Binding("y", "confirm", "End scan"),
+    ]
+
+    DEFAULT_CSS = """
+    ConfirmEndScanModal { align: center middle; }
+    ConfirmEndScanModal #end-scan-dialog {
+        width: 64; max-width: 92%; height: auto;
+        border: thick $warning; background: $surface; padding: 1 2;
+    }
+    ConfirmEndScanModal #end-scan-title {
+        text-style: bold; color: $warning; text-align: center; margin-bottom: 1;
+    }
+    ConfirmEndScanModal #end-scan-body { margin-bottom: 1; }
+    ConfirmEndScanModal #end-scan-buttons { height: auto; align: center middle; }
+    """
+
+    def __init__(self, body: str | None = None) -> None:
+        super().__init__()
+        self._body = body or END_WIFI_SCAN_BODY
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="end-scan-dialog"):
+            yield Label("End scan?", id="end-scan-title")
+            yield Label(self._body, id="end-scan-body")
+            with Horizontal(id="end-scan-buttons"):
+                yield Button("Keep scanning", id="end-scan-cancel")
+                yield Button("End scan", variant="warning", id="end-scan-confirm")
+
+    @on(Button.Pressed, "#end-scan-confirm")
+    def confirm_button(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#end-scan-cancel")
+    def cancel_button(self) -> None:
+        self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)

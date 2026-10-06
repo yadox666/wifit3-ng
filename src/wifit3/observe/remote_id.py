@@ -22,6 +22,9 @@ class RemoteIdReport:
     protocol_type: str
     summary: str
     alert: bool = True
+    live: str = ""
+    live_strong: bool = False
+    sentence: str = ""
 
 
 def summarize_remote_id(payload: bytes) -> RemoteIdReport | None:
@@ -65,6 +68,9 @@ def summarize_remote_id(payload: bytes) -> RemoteIdReport | None:
         protocol_type=f"Remote ID · {status_label}",
         summary=summary,
         alert=True,
+        live=status_label,
+        live_strong=status_label == "Emergency",
+        sentence="Remote ID status is Emergency." if status_label == "Emergency" else "",
     )
 
 

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import struct
+from dataclasses import dataclass
+from typing import Any
 
 from bluetooth_numbers import company
 
@@ -39,6 +41,18 @@ ENRICHMENT_CHARACTERISTIC_UUIDS = frozenset(
     uuid for uuids in ENRICHMENT_IDENTITY_BY_SERVICE.values() for uuid in uuids
 )
 
+# Persisted on ``devices`` and merged across observations / offline reload.
+GATT_IDENTITY_STORAGE_FIELDS: tuple[str, ...] = (
+    "model_number",
+    "serial_number",
+    "firmware_revision",
+    "hardware_revision",
+    "software_revision",
+    "manufacturer_name",
+    "gatt_device_name",
+    "pnp_id",
+)
+
 # Maps GATT short UUID → ``BluetoothDevice`` field for text/binary identity chars.
 _IDENTITY_TEXT_FIELDS = {
     "2a00": "gatt_device_name",
@@ -56,22 +70,34 @@ _PNP_ID_SOURCE = {
 }
 
 
-def decode_pnp_id(value: bytes) -> str:
+def decode_pnp_id(value: bytes, *, detail: bool = False) -> str:
     """Decode PnP ID (0x2A50) into a compact vendor/product label."""
     if len(value) < 7:
         return ""
+    from wifit3.bluetooth.microsoft_identifiers import (
+        format_pnp_label,
+        microsoft_pnp_product_name,
+    )
+
     source, vendor, product, version = struct.unpack_from("<BHHH", value)
     source_label = _PNP_ID_SOURCE.get(source, f"source {source}")
     if source == 0x01:
         vendor_label = company.get(vendor, f"company 0x{vendor:04X}")
-        return f"{vendor_label} · product 0x{product:04X} · v{version}"
-    if source == 0x02:
-        # USB vendor IDs sometimes overlap assigned-numbers company entries.
+        technical = f"{vendor_label} · product 0x{product:04X} · v{version}"
+    elif source == 0x02:
         vendor_label = company.get(vendor, f"USB vendor 0x{vendor:04X}")
-        return f"{vendor_label} · USB product 0x{product:04X} · v{version}"
-    return (
-        f"{source_label} vendor 0x{vendor:04X} · product 0x{product:04X} · v{version}"
-    )
+        technical = f"{vendor_label} · USB product 0x{product:04X} · v{version}"
+    else:
+        technical = (
+            f"{source_label} vendor 0x{vendor:04X} · "
+            f"product 0x{product:04X} · v{version}"
+        )
+    friendly = microsoft_pnp_product_name(source, vendor, product)
+    if friendly:
+        if detail:
+            return f"{friendly} ({technical})"
+        return friendly
+    return format_pnp_label(technical, detail=detail, raw=value) or technical
 
 
 def device_information_fields(inspection) -> dict[str, str]:
@@ -108,6 +134,96 @@ def gatt_identity_fields(inspection) -> dict[str, str]:
     return found
 
 
+@dataclass(frozen=True, slots=True)
+class GattIdentityParts:
+    brand: str
+    model: str
+    submodel: str
+
+
+def _field(source: Any, name: str) -> str:
+    if source is None:
+        return ""
+    if isinstance(source, dict):
+        value = source.get(name)
+    else:
+        value = getattr(source, name, "")
+    return str(value or "").strip()
+
+
+def merge_gatt_identity_fields(device: Any, *sources: Any) -> Any:
+    """Fill empty GATT identity attributes from prior observations or cache."""
+    from dataclasses import replace
+
+    updates: dict[str, str] = {}
+    for source in sources:
+        if source is None:
+            continue
+        for field in GATT_IDENTITY_STORAGE_FIELDS:
+            if updates.get(field):
+                continue
+            incoming = _field(source, field)
+            if incoming and not _field(device, field):
+                updates[field] = incoming
+    if not updates:
+        return device
+    return replace(device, **updates)
+
+
+def gatt_identity_parts(source: Any) -> GattIdentityParts:
+    """Brand / model / submodel from standardized GATT identity reads."""
+    brand = _field(source, "manufacturer_name")
+    if not brand:
+        pnp = _field(source, "pnp_id")
+        if pnp and " · " in pnp:
+            brand = pnp.split(" · ", 1)[0].strip()
+    if not brand:
+        brand = _field(source, "hardware_vendor")
+
+    raw_model = _field(source, "model_number")
+    hardware_product = _field(source, "hardware_product")
+    gatt_name = _field(source, "gatt_device_name")
+    if gatt_name.casefold() in {"", "<unknown>", "unknown", "unnamed", "bluetooth device"}:
+        gatt_name = ""
+
+    model = ""
+    submodel = ""
+    if raw_model:
+        from wifit3.bluetooth.apple_identifiers import format_device_model_number
+
+        friendly = format_device_model_number(raw_model)
+        if friendly and friendly != raw_model:
+            model = friendly
+            submodel = raw_model
+        else:
+            model = raw_model
+            if hardware_product and hardware_product.casefold() != raw_model.casefold():
+                submodel = hardware_product
+    elif gatt_name:
+        model = gatt_name
+        submodel = hardware_product
+    elif hardware_product:
+        model = hardware_product
+    elif _field(source, "pnp_id"):
+        pnp_id = _field(source, "pnp_id")
+        from wifit3.bluetooth.apple_identifiers import format_apple_pnp_label
+
+        model = format_apple_pnp_label(pnp_id) or pnp_id
+
+    return GattIdentityParts(brand=brand, model=model, submodel=submodel)
+
+
+def format_gatt_identity_line(parts: GattIdentityParts) -> str:
+    return " · ".join(
+        piece for piece in (parts.brand, parts.model, parts.submodel) if piece
+    )
+
+
+def gatt_identity_search_text(source: Any) -> str:
+    parts = gatt_identity_parts(source)
+    return " ".join(filter(None, (parts.brand, parts.model, parts.submodel)))
+
+
 def display_model_label(device, *, include_identifier: bool = False) -> str:
     """Best-effort MODEL column text from cached GATT identity (all vendors)."""
     from wifit3.bluetooth.apple_identifiers import format_device_model_number
@@ -122,6 +238,21 @@ def display_model_label(device, *, include_identifier: bool = False) -> str:
     }:
         return gatt_name
     if getattr(device, "pnp_id", ""):
+        from wifit3.bluetooth.apple_identifiers import format_apple_pnp_label
+        from wifit3.bluetooth.microsoft_identifiers import format_pnp_label
+
+        apple_label = format_apple_pnp_label(
+            device.pnp_id,
+            detail=include_identifier,
+        )
+        if apple_label:
+            return apple_label
+        label = format_pnp_label(
+            device.pnp_id,
+            detail=include_identifier,
+        )
+        if label:
+            return label
         return device.pnp_id
     return getattr(device, "hardware_product", "") or ""
 

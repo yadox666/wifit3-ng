@@ -12,6 +12,7 @@ from textual.message import Message
 from textual.widgets import Button, Label
 
 from wifit3.id import fingerprint, vendor_for_mac
+from wifit3.ui.mac_format import mac_address_text
 from ...signal_bar import FULL_SCALE_RATE, dbm_style, render_signal_bar
 from .art import BreathingArt, art_size, client_art_name
 
@@ -29,6 +30,7 @@ class ClientEndpoint(Vertical):
         label: str = "",
         power_dbm: int = -100,
         signal: float | None = None,
+        fingerprint_summary: str = "",
         identity_details: str | None = None,
         **kwargs,
     ) -> None:
@@ -37,6 +39,7 @@ class ClientEndpoint(Vertical):
         self._label = label
         self._power_dbm = power_dbm
         self._signal = signal
+        self._fingerprint_summary = fingerprint_summary
         self._identity_details = identity_details
         self._art_name = client_art_name(mac)
         self._width = art_size(self._art_name)[0]
@@ -48,7 +51,12 @@ class ClientEndpoint(Vertical):
         art.tooltip = self._identity_details
         yield art
         yield Label(self._label_markup(), classes="ap-essid", id="client-label")
-        yield Label(self._mac, classes="ap-static", id="client-mac")
+        yield Label(mac_address_text(self._mac), classes="ap-static", id="client-mac")
+        yield Label(
+            self._fingerprint_summary,
+            classes="ap-static",
+            id="client-fingerprint",
+        )
         identity = Button(self._identity_button(), id="client-identity")
         identity.styles.line_pad = 0
         identity.disabled = self._identity_details is None
@@ -70,16 +78,19 @@ class ClientEndpoint(Vertical):
         label: str,
         power_dbm: int,
         signal: float | None,
+        fingerprint_summary: str,
         identity_details: str | None,
     ) -> None:
         self.set_art(mac)
         self._mac, self._label = mac, label
         self._power_dbm, self._signal = power_dbm, signal
+        self._fingerprint_summary = fingerprint_summary
         self._identity_details = identity_details
         self.query_one("#client-art", BreathingArt).tooltip = identity_details
         self._push("#client-power", self._power_line())
         self._push("#client-label", self._label_markup())
-        self._push("#client-mac", mac)
+        self._push_mac("#client-mac", mac)
+        self._push("#client-fingerprint", fingerprint_summary)
         self._push("#client-identity", self._identity_button())
         ident_btn = self.query_one("#client-identity", Button)
         ident_btn.disabled = identity_details is None
@@ -102,6 +113,12 @@ class ClientEndpoint(Vertical):
             widget.label = value
         else:
             widget.update(value)
+
+    def _push_mac(self, sel: str, mac: str) -> None:
+        if self._last.get(sel) == mac:
+            return
+        self._last[sel] = mac
+        self.query_one(sel, Label).update(mac_address_text(mac))
 
     def _power_line(self) -> Text:
         """Rainbow meter from RSSI (packet rate is too sparse and triggered the dead ╳)."""

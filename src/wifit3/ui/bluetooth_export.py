@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-import struct
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -13,7 +12,6 @@ from wifit3.models import BluetoothDevice
 from wifit3.persist.config import Config
 from wifit3.persist.private_files import (
     ensure_private_directory,
-    open_private_binary,
     open_private_text_write,
     write_private_text,
 )
@@ -36,6 +34,7 @@ def _record(device: BluetoothDevice) -> dict:
     return {
         "name": device.name,
         "identifier": device.identifier,
+        "ble_mac": device.ble_mac,
         "radio": device.radio_label,
         "discovery_source": device.discovery_source,
         "address_type": device.address_type,
@@ -53,6 +52,12 @@ def _record(device: BluetoothDevice) -> dict:
         "protocol_type": device.protocol_type,
         "protocol_source": device.protocol_source,
         "protocol_confidence": device.protocol_confidence,
+        "decode_state": device.decode_state,
+        "catalog": list(device.catalog_labels),
+        "catalog_class": device.catalog_class,
+        "catalog_live": device.catalog_live,
+        "catalog_attention": device.catalog_attention,
+        "catalog_sentence": device.catalog_sentence,
         "bluez_modalias": device.modalias,
         "hardware_vendor": device.hardware_vendor,
         "hardware_product": device.hardware_product,
@@ -111,7 +116,7 @@ def _csv_record(record: dict) -> dict:
     converted = dict(record)
     for key in (
         "advertised_services", "service_uuids", "service_data_uuids",
-        "related_identifiers", "correlation_evidence",
+        "related_identifiers", "correlation_evidence", "catalog",
     ):
         converted[key] = "; ".join(record[key])
     converted["positions"] = json.dumps(record["positions"], separators=(",", ":"))
@@ -165,26 +170,6 @@ def export_bluetooth_bundle(
     return csv_path, json_path, jsonl_path
 
 
-def export_btsnoop(records: Iterable[HciCaptureRecord]) -> Path:
-    """Write bounded USB HCI traffic in Wireshark-readable btsnoop format."""
-    exported_at = datetime.now(timezone.utc)
-    directory = Path(Config.captures_dir) / "scan_exports"
-    ensure_private_directory(directory)
-    path = directory / f"bluetooth_hci_{exported_at.strftime('%Y%m%d_%H%M%S_%f')}.btsnoop"
-    epoch_delta_us = 0x00DC_DDB3_0F2F_8000
-    with open_private_binary(path) as stream:
-        stream.write(b"btsnoop\x00" + struct.pack(">II", 1, 1002))
-        for record in records:
-            packet = bytes((record.packet_type,)) + record.payload
-            flags = (1 if record.incoming else 0) | (
-                2 if record.packet_type in {0x01, 0x04} else 0
-            )
-            timestamp = int(record.timestamp * 1_000_000) + epoch_delta_us
-            stream.write(struct.pack(
-                ">IIIIQ", len(packet), len(packet), flags, 0, timestamp,
-            ))
-            stream.write(packet)
-    return path
 
 
 def _record_fields() -> tuple[str, ...]:
@@ -193,7 +178,9 @@ def _record_fields() -> tuple[str, ...]:
         "baseline_status", "profile_changed", "manufacturer", "probable_type",
         "exact_type", "classification_source", "classification_confidence",
         "classification_ambiguous", "protocol_category", "protocol_type",
-        "protocol_source", "protocol_confidence", "bluez_modalias",
+        "protocol_source", "protocol_confidence", "decode_state",
+        "catalog", "catalog_class", "catalog_live", "catalog_attention",
+        "catalog_sentence", "bluez_modalias",
         "hardware_vendor", "hardware_product", "hardware_identity_source",
         "signal_dbm", "signal_average_dbm", "signal_min_dbm", "signal_max_dbm",
         "signal_samples", "signal_trend", "class_of_device", "appearance",

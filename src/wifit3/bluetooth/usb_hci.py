@@ -145,6 +145,13 @@ def classic_observation_from_device(
         clock_offset=device.clock_offset or 0,
         decode_state=device.decode_state,
         signature_watch="1" if device.signature_watch else "",
+        catalog_labels=tuple(device.catalog_labels),
+        catalog_class=device.catalog_class,
+        catalog_notes=device.catalog_notes,
+        catalog_attention=device.catalog_attention,
+        catalog_live=device.catalog_live,
+        catalog_live_strong=device.catalog_live_strong,
+        catalog_sentence=device.catalog_sentence,
     )
 
 
@@ -323,8 +330,6 @@ class UsbHciScanner:
         self.sdp_trace: list[str] = []
         self._capture_records: deque[HciCaptureRecord] = deque(maxlen=50_000)
         self._lab_debug: Any = None
-        self._pairing_context: Any = None
-        self._bias_posture_context: Any = None
         self._session_link_keys: dict[str, bytes] = {}
         if bond_store is None:
             from wifit3.persist.bluetooth_bonds import BluetoothBondStore
@@ -354,6 +359,9 @@ class UsbHciScanner:
         # When OS Bleak scans BLE, USB HCI skips legacy LE scan so Classic inquiry
         # does not fight the same radio (and extended advertising stays on the OS path).
         self._usb_le_scan_enabled = controller.supports_le
+        # The user can restrict this dongle to Classic- or BLE-only discovery from
+        # the startup picker; both default on for whatever the controller supports.
+        self._usb_classic_scan_enabled = controller.supports_classic
         self._load_persisted_bonds()
 
     def _load_persisted_bonds(self) -> None:
@@ -380,8 +388,24 @@ class UsbHciScanner:
         """Classic BR/EDR on USB; let the OS adapter run BLE discovery."""
         self._usb_le_scan_enabled = False
 
+    def set_scan_radios(self, *, le: bool, classic: bool) -> None:
+        """Restrict which radios this dongle actively discovers on.
+
+        Capability always wins: a Classic-only dongle can never be told to do
+        BLE discovery. Lab/connect operations are routed independently and are
+        not gated by these flags.
+        """
+        self._usb_le_scan_enabled = bool(le) and self.controller.supports_le
+        self._usb_classic_scan_enabled = bool(classic) and self.controller.supports_classic
+
+    def _le_scan_active(self) -> bool:
+        return self.controller.supports_le and self._usb_le_scan_enabled
+
+    def _classic_scan_active(self) -> bool:
+        return self.controller.supports_classic and self._usb_classic_scan_enabled
+
     def _classic_inquiry_length(self) -> int:
-        if self._usb_le_scan_enabled and self.controller.supports_le:
+        if self._le_scan_active():
             return CLASSIC_INQUIRY_LENGTH_SHORT
         return CLASSIC_INQUIRY_LENGTH_FULL
 
@@ -455,7 +479,7 @@ class UsbHciScanner:
             mtu = int.from_bytes(le_buffer[1:3], "little")
             credits = le_buffer[3]
         if mtu <= 0 or credits <= 0:
-            # Shared buffer pool (LE values zero) — use the BR/EDR buffers.
+            # Shared buffer pool (LE values zero) - use the BR/EDR buffers.
             try:
                 buffer_size = self._command(HCI_READ_BUFFER_SIZE)
             except UsbBluetoothError:
@@ -643,122 +667,6 @@ class UsbHciScanner:
                 )
             except UsbBluetoothError:
                 pass
-
-    def run_classic_pairing_session(
-        self,
-        acl_handle: int,
-        identifier: str,
-        timeout_s: float = 45.0,
-        *,
-        pin_entry=None,
-        ssp_only: bool = False,
-        io_capability: int | None = None,
-        mitm: bool = False,
-        passkey_provider=None,
-        confirm_provider=None,
-    ):
-        from wifit3.bluetooth.lab.pairing import ClassicPairingContext
-        from wifit3.bluetooth.hci_protocol import IO_CAPABILITY_NO_INPUT_NO_OUTPUT
-
-        if io_capability is None:
-            io_capability = IO_CAPABILITY_NO_INPUT_NO_OUTPUT
-        ctx = ClassicPairingContext(
-            self,
-            acl_handle,
-            identifier,
-            pin_entry=pin_entry,
-            ssp_only=ssp_only,
-            io_capability=io_capability,
-            mitm=mitm,
-            passkey_provider=passkey_provider,
-            confirm_provider=confirm_provider,
-        )
-        self._pairing_context = ctx
-        ctx.request_authentication()
-        deadline = time.monotonic() + max(5.0, timeout_s)
-        try:
-            while time.monotonic() < deadline and not ctx.done:
-                if self._pending_events:
-                    code, parameters = self._pending_events.popleft()
-                else:
-                    packet = self._read_event(
-                        max(1, int((deadline - time.monotonic()) * 1000)),
-                    )
-                    if packet is None:
-                        continue
-                    parsed = self._parse_event_packet(packet)
-                    if parsed is None:
-                        continue
-                    code, parameters = parsed
-                if code == EVENT_DISCONNECTION_COMPLETE:
-                    self._handle_aux_hci_event(code, parameters, acl_handle)
-                    if ctx.done:
-                        break
-                    continue
-                if not self._handle_aux_hci_event(code, parameters, acl_handle):
-                    if code in (
-                        EVENT_AUTHENTICATION_COMPLETE,
-                        EVENT_ENCRYPTION_CHANGE,
-                    ):
-                        ctx.handle_event(code, parameters)
-            summary = ctx.finalize()
-            if ctx._link_key is not None:
-                self.remember_session_link_key(
-                    identifier,
-                    ctx._link_key,
-                    key_type=getattr(ctx, "_link_key_type", None),
-                )
-            return summary
-        finally:
-            self._pairing_context = None
-            ctx._link_key = None
-
-    def run_bias_posture_session(
-        self,
-        acl_handle: int,
-        identifier: str,
-        timeout_s: float = 10.0,
-    ):
-        from wifit3.bluetooth.lab.bias_posture import BiasPostureContext
-
-        bonded = self.has_session_link_key(identifier)
-        ctx = BiasPostureContext(
-            self,
-            acl_handle,
-            identifier,
-            session_bond_available=bonded,
-        )
-        self._bias_posture_context = ctx
-        ctx.request_authentication()
-        deadline = time.monotonic() + max(4.0, timeout_s)
-        try:
-            while time.monotonic() < deadline and not ctx.done:
-                if self._pending_events:
-                    code, parameters = self._pending_events.popleft()
-                else:
-                    packet = self._read_event(
-                        max(1, int((deadline - time.monotonic()) * 1000)),
-                    )
-                    if packet is None:
-                        continue
-                    parsed = self._parse_event_packet(packet)
-                    if parsed is None:
-                        continue
-                    code, parameters = parsed
-                if code == EVENT_DISCONNECTION_COMPLETE:
-                    self._handle_aux_hci_event(code, parameters, acl_handle)
-                    if ctx.done:
-                        break
-                    continue
-                if not self._handle_aux_hci_event(code, parameters, acl_handle):
-                    if code in (
-                        EVENT_AUTHENTICATION_COMPLETE,
-                        EVENT_ENCRYPTION_CHANGE,
-                    ):
-                        ctx.handle_event(code, parameters)
-            return ctx.finalize()
-        finally:
-            self._bias_posture_context = None
 
     def _parse_event_packet(self, packet: bytes) -> tuple[int, bytes] | None:
         try:
@@ -1014,24 +922,24 @@ class UsbHciScanner:
     def _quiet_rf_discovery(self) -> None:
         if self._device is None:
             return
-        if self.controller.supports_le and self._usb_le_scan_enabled:
+        if self._le_scan_active():
             try:
                 self._command(HCI_LE_SET_SCAN_ENABLE, b"\x00\x00")
             except UsbBluetoothError:
                 pass
-        if self.controller.supports_classic:
+        if self._classic_scan_active():
             try:
                 self._command(HCI_INQUIRY_CANCEL)
             except UsbBluetoothError:
                 pass
 
     def _resume_rf_discovery(self) -> None:
-        if self.controller.supports_le and self._usb_le_scan_enabled:
+        if self._le_scan_active():
             try:
                 self._command(HCI_LE_SET_SCAN_ENABLE, b"\x01\x00")
             except UsbBluetoothError:
                 logger.debug("Could not resume LE scan after lab", exc_info=True)
-        if self.controller.supports_classic:
+        if self._classic_scan_active():
             try:
                 self._run_classic_inquiry()
             except UsbBluetoothError:
@@ -1050,11 +958,7 @@ class UsbHciScanner:
 
     @property
     def lab(self):
-        if self._lab_facade is None:
-            from wifit3.bluetooth.lab.facade import UsbHciLabFacade
-
-            self._lab_facade = UsbHciLabFacade(self)
-        return self._lab_facade
+        return None
 
     def _open_and_start(self) -> None:
         if self._device is None:
@@ -1074,11 +978,11 @@ class UsbHciScanner:
         if self.controller.supports_classic:
             inquiry_mode = b"\x02" if self.controller.supports_le else b"\x01"
             self._command(HCI_WRITE_INQUIRY_MODE, inquiry_mode)
-        if self.controller.supports_le and self._usb_le_scan_enabled:
+        if self._le_scan_active():
             self._command(HCI_LE_SET_EVENT_MASK, LE_EVENT_MASK_SCAN_AND_CONNECT)
             self._command(HCI_LE_SET_SCAN_PARAMETERS, LE_SCAN_PARAMETERS)
             self._command(HCI_LE_SET_SCAN_ENABLE, b"\x01\x00")
-        if self.controller.supports_classic:
+        if self._classic_scan_active():
             self._run_classic_inquiry()
 
     def _reset_controller(self) -> None:
@@ -1178,14 +1082,14 @@ class UsbHciScanner:
             else:
                 raise UsbBluetoothError(
                     f"Could not detach {self.controller.chipset} from the OS Bluetooth driver; "
-                    "click ⎋ on the adapter in the startup Bluetooth list to release it from the OS, replug after "
+                    "click ↻ on the adapter in the startup Bluetooth list to release it from the OS, replug after "
                     "stopping OS use, or bind it to WinUSB on Windows"
                 ) from exc
         try:
             usb.util.claim_interface(device, self._interface_number)
         except usb.core.USBError as exc:
             raise UsbBluetoothError(
-                f"Could not claim {self.controller.chipset}; click ⎋ on the adapter in the "
+                f"Could not claim {self.controller.chipset}; click ↻ on the adapter in the "
                 "startup Bluetooth list to release it from the OS, use a dedicated adapter, "
                 "or bind it to WinUSB on Windows"
             ) from exc
@@ -1459,7 +1363,7 @@ class UsbHciScanner:
         running inquiry continuously starves LE advertisement reception. Between
         inquiry cycles we leave the LE scan (already enabled) a dedicated window.
         """
-        if not self._running or not self.controller.supports_classic:
+        if not self._running or not self._classic_scan_active():
             return
         if self._remote_name_pending is not None:
             return
@@ -1475,8 +1379,7 @@ class UsbHciScanner:
                 logger.debug("Inquiry cancel before restart failed", exc_info=True)
             self._classic_inquiry_active = False
         if (
-            self._usb_le_scan_enabled
-            and self.controller.supports_le
+            self._le_scan_active()
             and self._last_inquiry_complete_at is not None
             and now - self._last_inquiry_complete_at < _LE_SCAN_DWELL_S
         ):
@@ -1496,7 +1399,7 @@ class UsbHciScanner:
         scanning keeps its dwell; here we only issue one queued remote-name
         request (when remote-name resolution is explicitly enabled).
         """
-        if not self._running or not self.controller.supports_classic:
+        if not self._running or not self._classic_scan_active():
             return
         self._maybe_recover_stalled_remote_name()
         if self._remote_name_pending is not None:
@@ -1653,7 +1556,7 @@ class UsbHciScanner:
                 )
                 return adopted
             self.lab_step(
-                "Classic ACL: controller reports an existing link — "
+                "Classic ACL: controller reports an existing link - "
                 "tearing down stale ACL and re-paging (HCI 0x0b)…",
             )
             self._recover_stale_classic_acl(address)
@@ -2303,20 +2206,6 @@ class UsbHciScanner:
                         self._acl_credits + completed,
                     )
             return True
-        if self._pairing_context is not None:
-            if event_code == EVENT_DISCONNECTION_COMPLETE:
-                self._pairing_context.on_disconnection(disconnect_reason)
-                return True
-            if self._pairing_context.handle_event(event_code, parameters):
-                return True
-        if self._bias_posture_context is not None:
-            if event_code == EVENT_DISCONNECTION_COMPLETE:
-                self._bias_posture_context.on_disconnection()
-                return True
-            if self._bias_posture_context.handle_event(event_code, parameters):
-                return True
-        if self._bias_posture_context is not None:
-            return False
         if (
             event_code == EVENT_LINK_KEY_REQUEST
             and len(parameters) >= 6
@@ -2325,13 +2214,11 @@ class UsbHciScanner:
             return True
         negative_opcode = _PAIRING_NEGATIVE_REPLIES.get(event_code)
         if negative_opcode is not None and len(parameters) >= 6:
-            from wifit3.bluetooth.lab.pairing import pairing_event_label
-
             self.lab_debug_event(
                 "pairing",
                 "declined_read_only",
                 hci_event=event_code,
-                request=pairing_event_label(event_code),
+                request=f"0x{event_code:02x}",
             )
             reply = parameters[:6]
             if event_code == 0x31:
@@ -2380,12 +2267,12 @@ class UsbHciScanner:
 
     def _stop_and_close(self, close: bool = True) -> None:
         if self._device is not None:
-            if self.controller.supports_classic:
+            if self._classic_scan_active():
                 try:
                     self._command(HCI_INQUIRY_CANCEL)
                 except Exception:
                     pass
-            if self.controller.supports_le and self._usb_le_scan_enabled:
+            if self._le_scan_active():
                 try:
                     self._command(HCI_LE_SET_SCAN_ENABLE, b"\x00\x00")
                 except Exception:

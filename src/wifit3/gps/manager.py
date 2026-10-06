@@ -50,10 +50,15 @@ class GpsManager:
         self,
         *,
         port: str = "",
+        enabled: bool = True,
         on_detected: Callable[[GpsStatus], None] | None = None,
         on_error: Callable[[str], None] | None = None,
     ) -> None:
         self.configured_port = port.strip()
+        # Still detects/reads the receiver while disabled (cheap, and keeps the
+        # splash panel showing real device info); ``enabled`` only gates whether
+        # the rest of wifit3 (location tagging, fix_provider) is allowed to use it.
+        self.enabled = enabled
         self.on_detected = on_detected
         self.on_error = on_error
         self.latest_fix: LocationFix | None = None
@@ -64,6 +69,9 @@ class GpsManager:
     @property
     def dependency_available(self) -> bool:
         return serial is not None and list_ports is not None
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = enabled
 
     @property
     def is_searching(self) -> bool:

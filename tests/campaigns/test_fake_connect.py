@@ -1,4 +1,5 @@
 import asyncio
+import struct
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -468,6 +469,161 @@ async def test_arp_sweep_collects_responders(monkeypatch):
     await campaign._sweep_arp_neighbors(iface, bssid, lease)
 
     assert (responder_ip, "aa:bb:cc:00:11:22") in campaign.arp_neighbors
+
+
+async def test_bonjour_discovery_correlates_service_with_arp_neighbor(monkeypatch):
+    from wifit3.dot11.connectivity import build_udp_frame
+
+    ap = AccessPoint(
+        bssid="aa:bb:cc:dd:ee:ff", ssid="Cafe", channel=6, encryption="OPEN",
+    )
+    campaign = FakeConnectCampaign(
+        _Array([ap]), ap, source_mac=bytes.fromhex("020000000001"),
+    )
+    campaign.arp_neighbors = [
+        ("192.168.0.5", "aa:bb:cc:00:11:22"),
+    ]
+    monkeypatch.setattr(
+        "wifit3.campaigns.fake_connect.BONJOUR_DISCOVERY_SECONDS", 0.01,
+    )
+    bssid = bytes.fromhex("aabbccddeeff")
+
+    def dns_name(value):
+        return b"".join(
+            bytes((len(label),)) + label.encode("ascii")
+            for label in value.split(".")
+        ) + b"\x00"
+
+    owner = dns_name("_services._dns-sd._udp.local")
+    target = dns_name("_airplay._tcp.local")
+    answer = owner + struct.pack("!HHIH", 12, 1, 120, len(target)) + target
+    dns = struct.pack("!HHHHHH", 0, 0x8400, 0, 1, 0, 0) + answer
+
+    def on_frame(frame_iface, _frame):
+        frame_iface.emit(build_udp_frame(
+            bssid,
+            bytes.fromhex("aabbcc001122"),
+            bytes.fromhex("01005e0000fb"),
+            "192.168.0.5",
+            "224.0.0.251",
+            5353,
+            5353,
+            dns,
+            ident=1,
+        ))
+
+    iface = _AckIface(on_frame=on_frame)
+    lease = DhcpOffer(
+        offered_ip="192.168.0.79",
+        server="192.168.0.1",
+        subnet_mask="255.255.255.0",
+        routers=("192.168.0.1",),
+        dns_servers=("192.168.0.1",),
+        domain=None,
+        portal=None,
+        lease_seconds=3600,
+    )
+
+    await campaign._discover_bonjour(iface, bssid, lease)
+
+    assert campaign.bonjour_services == [
+        ("192.168.0.5", "aa:bb:cc:00:11:22", "_airplay._tcp.local"),
+    ]
+
+
+async def test_additional_local_discovery_classifies_host_roles(monkeypatch):
+    from wifit3.dot11.connectivity import build_udp_frame
+
+    ap = AccessPoint(
+        bssid="aa:bb:cc:dd:ee:ff", ssid="Cafe", channel=6, encryption="OPEN",
+    )
+    campaign = FakeConnectCampaign(
+        _Array([ap]), ap, source_mac=bytes.fromhex("020000000001"),
+    )
+    neighbor_mac = bytes.fromhex("aabbcc001122")
+    campaign.arp_neighbors = [
+        ("192.168.0.5", "aa:bb:cc:00:11:22"),
+    ]
+    monkeypatch.setattr(
+        "wifit3.campaigns.fake_connect.LOCAL_DISCOVERY_SECONDS", 0.0,
+    )
+    monkeypatch.setattr(
+        "wifit3.campaigns.fake_connect.NBNS_DISCOVERY_PACING_SECONDS", 0.0,
+    )
+    bssid = bytes.fromhex("aabbccddeeff")
+
+    def reply(frame_iface, source_port, service_port, body):
+        frame_iface.emit(build_udp_frame(
+            bssid,
+            neighbor_mac,
+            campaign.source_mac,
+            "192.168.0.5",
+            "192.168.0.79",
+            service_port,
+            source_port,
+            body,
+            ident=1,
+        ))
+
+    def on_frame(frame_iface, frame):
+        source_port, dest_port = struct.unpack("!HH", frame[52:56])
+        if dest_port == 1900:
+            reply(
+                frame_iface,
+                source_port,
+                1900,
+                b"HTTP/1.1 200 OK\r\n"
+                b"ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n",
+            )
+        elif dest_port == 3702:
+            reply(
+                frame_iface,
+                source_port,
+                3702,
+                b"<d:ProbeMatches><d:Types>dn:NetworkVideoTransmitter</d:Types>"
+                b"</d:ProbeMatches>",
+            )
+        elif dest_port == 137:
+            transaction_id = struct.unpack("!H", frame[60:62])[0]
+            entry = b"PRIVATE-NAME   " + b"\x20\x04\x00"
+            rdata = b"\x01" + entry + neighbor_mac
+            answer = (
+                b"\x00"
+                + struct.pack("!HHIH", 0x21, 1, 120, len(rdata))
+                + rdata
+            )
+            reply(
+                frame_iface,
+                source_port,
+                137,
+                struct.pack(
+                    "!HHHHHH", transaction_id, 0x8500, 0, 1, 0, 0,
+                ) + answer,
+            )
+
+    iface = _AckIface(on_frame=on_frame)
+    lease = DhcpOffer(
+        offered_ip="192.168.0.79",
+        server="192.168.0.1",
+        subnet_mask="255.255.255.0",
+        routers=("192.168.0.1",),
+        dns_servers=("192.168.0.1",),
+        domain=None,
+        portal=None,
+        lease_seconds=3600,
+    )
+
+    await campaign._discover_ssdp(iface, bssid, lease)
+    await campaign._discover_wsd(iface, bssid, lease)
+    await campaign._discover_nbns(iface, bssid, lease)
+    campaign._classify_discovered_hosts()
+
+    assert {role for _ip, _mac, role in campaign.device_roles} == {
+        "camera",
+        "file_sharing",
+        "media_renderer",
+    }
+    assert "PRIVATE-NAME" not in str(campaign.discovered_services)
 
 
 async def test_arp_sweep_decodes_encrypted_replies(monkeypatch):

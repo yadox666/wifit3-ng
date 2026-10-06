@@ -2,6 +2,7 @@
 AP loses its table row but keeps its registry entry, so widening the filter brings
 it straight back without having to rediscover it."""
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from textual.app import App
@@ -9,7 +10,10 @@ from textual.widgets import DataTable
 
 from wifit3.models import AccessPoint, IdKey, IdSource
 from wifit3.persist.vault import Vault
-from wifit3.ui.screens.filter import EncryptionFilter, ScanFilter
+from wifit3.ui.screens.filter import (
+    EncryptionFilter,
+    ScanFilter,
+)
 from wifit3.ui.screens.scanner import ScannerView
 
 
@@ -18,7 +22,7 @@ class _FakeIface:
         self.supported_channels = supported
         self.current_channel = supported[0] if supported else 1
         self.chipset = "test"
-        self.instance_key = ("test",)
+        self.instance_key = ("test", id(self))
         self._is_hopping = True
         self.stop_calls = 0
         self.start_calls = 0
@@ -27,7 +31,9 @@ class _FakeIface:
         self.stop_calls += 1
         self._is_hopping = False
 
-    async def start_hopping(self, channels=None, interval=0.25):
+    async def start_hopping(
+        self, channels=None, interval=0.25, member_channels=None,
+    ):
         self.start_calls += 1
         self._is_hopping = True
 
@@ -48,7 +54,9 @@ class _FakeArray:
     def select_iface(self, channel):
         return next((iface for iface in self.members if channel in iface.supported_channels), None)
 
-    async def start_hopping(self, channels=None, interval=0.25, **kwargs):
+    async def start_hopping(
+        self, channels=None, interval=0.25, member_channels=None,
+    ):
         self.start_calls += 1
 
     async def stop_hopping(self):
@@ -73,8 +81,28 @@ class _ScannerHost(App):
     def persist_config(self) -> None:
         pass
 
+    def sdr_jam_available(self) -> bool:
+        return False
+
     def on_mount(self) -> None:
         self.push_screen(ScannerView())
+
+
+def test_scan_band_plan_logs_only_when_configuration_changes(monkeypatch):
+    scanner = ScannerView()
+    writes = []
+    log = SimpleNamespace(write=writes.append)
+    monkeypatch.setattr(scanner, "query_one", lambda *_args, **_kwargs: log)
+    member = SimpleNamespace(instance_key="wlan1", name="wlan1")
+    array = SimpleNamespace(members=[member])
+
+    scanner._log_scan_band_plan(array, {"wlan1": "5g"})
+    scanner._log_scan_band_plan(array, {"wlan1": "5g"})
+    scanner._log_scan_band_plan(array, {"wlan1": "all"})
+
+    assert len(writes) == 2
+    assert "5 GHz" in writes[0]
+    assert "all bands" in writes[1]
 
 
 @pytest.mark.asyncio
@@ -104,6 +132,32 @@ async def test_encryption_filter_hides_rows_but_keeps_registry():
         scanner.refresh_table()
         assert table.row_count == 2
         assert open_ap.bssid in scanner.ap_cache
+
+
+@pytest.mark.asyncio
+async def test_catalog_family_filter_limits_visible_aps():
+    flock = AccessPoint(
+        bssid="b4:1e:52:10:20:30", ssid="Flock-ABC123", channel=6, akms=["PSK"],
+    )
+    other = AccessPoint(
+        bssid="aa:bb:cc:00:00:99", ssid="OpenNet", channel=6, encryption="OPEN",
+    )
+
+    app = _ScannerHost(_FakeArray([flock, other], [1, 6, 11]))
+    async with app.run_test() as pilot:
+        await pilot.pause(0)
+        scanner = app.screen
+        table = scanner.query_one("#ap-table", DataTable)
+
+        scanner.refresh_table()
+        assert table.row_count == 2
+
+        scanner._scan_filter = ScanFilter(catalog_family_id="flock-cameras")
+        scanner.refresh_table()
+        assert table.row_count == 1
+        assert flock.bssid in scanner.ap_cache
+        assert other.bssid not in scanner.ap_cache
+        assert other.bssid in app.array.access_points
 
 
 @pytest.mark.asyncio
@@ -165,3 +219,34 @@ def test_scanner_identity_cell_oui_fallback():
     scanner._theme_fg = "white"
     ap = AccessPoint(bssid="00:03:93:11:22:33", ssid="Alice’s iPhone")
     assert scanner._identity_cell(ap).plain == "Apple"
+
+
+def test_scanner_capture_badges_live_in_cap_column_not_ssid():
+    ap = AccessPoint(bssid="aa:bb:cc:dd:ee:ff", ssid="Net")
+    scanner = ScannerView()
+    scanner._theme_fg = "white"
+    scanner._ssid_chips_markup = (
+        lambda _ap: "[green]✓HS[/green] [green]✓PMK[/green] [green]✓PSK[/green]"
+    )
+    cap = scanner._captures_cell(ap)
+    ssid = scanner._ssid_cell(ap)
+    assert "✓HS" in cap.plain
+    assert "✓PMK" in cap.plain
+    assert "✓PSK" in cap.plain
+    assert "✓HS" not in ssid.plain
+    assert ssid.plain.strip() == "Net"
+
+
+def test_scanner_catalog_class_and_family_columns_separate_from_identity():
+    scanner = ScannerView()
+    scanner._theme_fg = "white"
+    ap = AccessPoint(bssid="b4:1e:52:10:20:30", ssid="Flock-ABC123")
+    ap.identity.set(IdSource.WSC_BEACON, IdKey.MANUFACTURER, "Flock Safety")
+    ap.capabilities.catalog_labels = ("Flock Safety Cameras",)
+    ap.capabilities.catalog_class = "Surveillance"
+    ap.capabilities.catalog_attention = "Roadside camera match."
+    assert scanner._identity_cell(ap).plain == "Flock Safety"
+    assert scanner._catalog_class_cell(ap).plain == "Surveillance"
+    family = scanner._catalog_family_cell(ap)
+    assert "Flock Safety Cameras" in family.plain
+    assert "◆" in family.plain

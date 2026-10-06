@@ -173,7 +173,49 @@ def test_manager_collects_bluez_class_appearance_and_address_type():
     assert observed.protocol_type == "Apple Proximity Pairing audio"
 
 
-def test_corebluetooth_metadata_exposes_connectable_and_mac_when_available():
+def test_platform_identity_uses_public_bleak_address_when_present(monkeypatch):
+    # On backends where Bleak exposes a real cross-platform BD_ADDR (e.g. BlueZ on
+    # Linux or WinRT on Windows), the public ``address`` is used directly and the
+    # macOS-only backend lookup is never reached — even if the host is macOS.
+    monkeypatch.setattr("wifit3.bluetooth.manager.sys.platform", "darwin")
+
+    class _Central:
+        def retrieveAddressForPeripheral_(self, candidate):  # pragma: no cover
+            raise AssertionError("public address must be preferred")
+
+    platform_device = SimpleNamespace(
+        address="40:22:33:44:55:66",
+        details=(object(), SimpleNamespace(central_manager=_Central())),
+    )
+    identity, mac = _platform_ble_identity(platform_device)
+
+    assert mac == "40:22:33:44:55:66"
+    assert identity == "system address=40:22:33:44:55:66"
+
+
+def test_platform_identity_skips_backend_lookup_off_macos(monkeypatch):
+    # On non-macOS platforms a non-MAC public address simply reports "unavailable"
+    # without ever touching a backend-private selector.
+    monkeypatch.setattr("wifit3.bluetooth.manager.sys.platform", "linux")
+
+    class _Central:
+        def retrieveAddressForPeripheral_(self, candidate):  # pragma: no cover
+            raise AssertionError("backend lookup must not run off macOS")
+
+    platform_device = SimpleNamespace(
+        address="356CF960-45E2-5E8F-DE3B-EDA564085A97",
+        details=(object(), SimpleNamespace(central_manager=_Central())),
+    )
+    identity, mac = _platform_ble_identity(platform_device)
+
+    assert mac is None
+    assert identity == (
+        "system identifier=356CF960-45E2-5E8F-DE3B-EDA564085A97; MAC unavailable"
+    )
+
+
+def test_corebluetooth_metadata_exposes_connectable_and_mac_when_available(monkeypatch):
+    monkeypatch.setattr("wifit3.bluetooth.manager.sys.platform", "darwin")
     peripheral = object()
 
     class _Central:
@@ -689,6 +731,103 @@ def test_macos_reserves_dual_mode_controller_during_discovery(monkeypatch):
     assert len(scanners) == 1
 
 
+def test_macos_recovers_dual_mode_controller_after_initial_claim_failure(monkeypatch):
+    """A controller held by macOS is reclaimed in the same discovery pass."""
+    controller = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+    )
+    scanners = []
+
+    class RecoverableScanner:
+        def __init__(self, selected, callback):
+            self.controller = selected
+            self.callback = callback
+            self.reserve_calls = 0
+            self.reclaim_calls = 0
+            self.release_calls = 0
+            scanners.append(self)
+
+        def reserve(self):
+            self.reserve_calls += 1
+            raise RuntimeError("Could not claim RTL8761BU")
+
+        def reclaim_from_os(self):
+            self.reclaim_calls += 1
+
+        def release(self):
+            self.release_calls += 1
+
+    monkeypatch.setattr("wifit3.bluetooth.manager.sys.platform", "darwin")
+    manager = BluetoothManager(
+        usb_controller_finder=lambda: [controller],
+        usb_scanner_factory=RecoverableScanner,
+    )
+
+    assert manager.available_usb_controllers() == [controller]
+    assert scanners[0].reserve_calls == 1
+    assert scanners[0].release_calls == 1
+    assert scanners[0].reclaim_calls == 1
+    assert manager.usb_reservation_held(controller)
+    assert controller.instance_key not in manager.usb_not_claimed_keys()
+
+
+def test_macos_reclaim_failure_explains_dependency_free_retry(monkeypatch):
+    controller = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+    )
+
+    class BusyScanner:
+        def __init__(self, selected, callback):
+            self.controller = selected
+
+        def reclaim_from_os(self):
+            raise RuntimeError("Could not claim RTL8761BU")
+
+    monkeypatch.setattr("wifit3.bluetooth.manager.sys.platform", "darwin")
+    manager = BluetoothManager(usb_scanner_factory=BusyScanner)
+
+    ok, message = manager.reclaim_usb_controller(controller)
+
+    assert ok is False
+    assert "System Settings" in message
+    assert "click ↻ again" in message
+    assert controller.instance_key in manager.usb_not_claimed_keys()
+
+
+def test_advertisement_resolves_ble_mac_for_macos_corebluetooth_uuid(monkeypatch):
+    monkeypatch.setattr("wifit3.bluetooth.manager.sys.platform", "darwin")
+    peripheral = object()
+    uuid = "356CF960-45E2-5E8F-DE3B-EDA564085A97"
+
+    class _Central:
+        def retrieveAddressForPeripheral_(self, candidate):
+            assert candidate is peripheral
+            return bytes.fromhex("AABBCCDDEEFF")
+
+    platform_device = SimpleNamespace(
+        address=uuid,
+        name="Phone",
+        details=(peripheral, SimpleNamespace(central_manager=_Central())),
+    )
+    manager = BluetoothManager()
+    manager._on_advertisement(
+        platform_device,
+        SimpleNamespace(
+            local_name="Phone",
+            rssi=-50,
+            service_uuids=[],
+            service_data={},
+            manufacturer_data={},
+            tx_power=None,
+            platform_data=(),
+        ),
+    )
+
+    observed = manager.devices()[0]
+    assert observed.identifier == uuid
+    assert observed.ble_mac == "AA:BB:CC:DD:EE:FF"
+
+
 def test_usb_and_ble_observations_merge_as_dual_mode():
     manager = BluetoothManager()
     platform_device = SimpleNamespace(address="AA:BB:CC:DD:EE:FF", name=None)
@@ -712,6 +851,7 @@ def test_usb_and_ble_observations_merge_as_dual_mode():
     assert observed.name == "Headset"
     assert observed.discovery_source == "system+usb-hci"
     assert observed.is_connectable_with_bleak
+    assert observed.ble_mac == "AA:BB:CC:DD:EE:FF"
 
 
 def test_usb_then_ble_observations_keep_both_radios_and_sources():
@@ -737,6 +877,170 @@ def test_usb_then_ble_observations_keep_both_radios_and_sources():
     assert observed.radio_label == "BT+BLE"
     assert observed.discovery_source == "system+usb-hci"
     assert observed.is_connectable_with_bleak
+
+
+@pytest.mark.asyncio
+async def test_observation_sources_identify_active_radios():
+    controller = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+        supports_classic=True, supports_le=True,
+    )
+    usb_scanner = None
+
+    class UsbScanner:
+        def __init__(self, selected, callback):
+            nonlocal usb_scanner
+            usb_scanner = self
+            self.controller = selected
+            self.callback = callback
+
+        def use_os_ble_for_le_discovery(self):
+            pass
+
+        async def start(self):
+            pass
+
+        async def stop(self):
+            pass
+
+    manager = BluetoothManager(
+        scanner_factory=lambda **kwargs: _Scanner(**kwargs),
+        usb_scanner_factory=UsbScanner,
+    )
+    await manager.start_usb(controller)
+
+    manager._on_advertisement(
+        SimpleNamespace(address="AA:BB:CC:DD:EE:FF", name=None),
+        SimpleNamespace(
+            local_name="Headset",
+            rssi=-45,
+            service_uuids=[],
+            service_data={},
+            manufacturer_data={},
+            tx_power=None,
+        ),
+    )
+    usb_scanner.callback(DiscoveryObservation(
+        identifier="AA:BB:CC:DD:EE:FF",
+        radio_type="BT",
+        rssi=-48,
+    ))
+
+    observed = manager.devices()[0]
+    assert observed.observation_sources == ("os", "usb:realtek")
+    await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_two_usb_controllers_scan_concurrently_with_source_attribution():
+    sena = UsbBluetoothController(
+        0x0A12, 0x0001, "BlueCore4-ROM", "Sena", "Parani-UD100", 1, 2,
+        supports_classic=True, supports_le=False,
+    )
+    realtek = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Adapter", 1, 3,
+        supports_classic=True, supports_le=True,
+    )
+    scanners: dict[tuple, object] = {}
+
+    class UsbScanner:
+        def __init__(self, controller, callback):
+            self.controller = controller
+            self.callback = callback
+            self.is_scanning = False
+            scanners[controller.instance_key] = self
+
+        def use_os_ble_for_le_discovery(self):
+            pass
+
+        async def start(self):
+            self.is_scanning = True
+
+        async def stop(self):
+            self.is_scanning = False
+
+    manager = BluetoothManager(usb_scanner_factory=UsbScanner, os_ble_enabled=False)
+    failures = await manager.start_parallel(os_ble=False, controllers=[sena, realtek])
+
+    assert failures == []
+    assert manager.is_usb_scanning
+    assert set(manager.active_radio_types()) == {"BT", "BLE"}
+    assert "BlueCore4-ROM" in manager.backend_name
+    assert "RTL8761BU" in manager.backend_name
+
+    scanners[sena.instance_key].callback(DiscoveryObservation(
+        identifier="AA:BB:CC:DD:EE:01", radio_type="BT", rssi=-50,
+    ))
+    scanners[realtek.instance_key].callback(DiscoveryObservation(
+        identifier="AA:BB:CC:DD:EE:02", radio_type="BLE", rssi=-40,
+    ))
+
+    by_id = {device.identifier: device for device in manager.devices()}
+    assert by_id["AA:BB:CC:DD:EE:01"].observation_sources == ("usb:sena",)
+    assert by_id["AA:BB:CC:DD:EE:02"].observation_sources == ("usb:realtek",)
+
+    await manager.stop()
+    assert not manager.is_usb_scanning
+    assert all(not scanner.is_scanning for scanner in scanners.values())
+
+
+@pytest.mark.asyncio
+async def test_usb_scan_mode_restricts_radios():
+    """Setting a dual-mode dongle to Classic-only must stop BLE discovery."""
+    from wifit3.bluetooth import scan_modes
+
+    realtek = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Adapter", 1, 3,
+        supports_classic=True, supports_le=True,
+    )
+
+    class UsbScanner:
+        def __init__(self, controller, callback):
+            self.controller = controller
+            self.callback = callback
+            self.is_scanning = False
+            self._usb_le_scan_enabled = controller.supports_le
+            self._usb_classic_scan_enabled = controller.supports_classic
+
+        def set_scan_radios(self, *, le, classic):
+            self._usb_le_scan_enabled = bool(le) and self.controller.supports_le
+            self._usb_classic_scan_enabled = (
+                bool(classic) and self.controller.supports_classic
+            )
+
+        async def start(self):
+            self.is_scanning = True
+
+        async def stop(self):
+            self.is_scanning = False
+
+    manager = BluetoothManager(usb_scanner_factory=UsbScanner, os_ble_enabled=False)
+    # Pre-select Classic-only before starting.
+    manager.set_usb_scan_mode(realtek, scan_modes.BT)
+    await manager.start_parallel(os_ble=False, controllers=[realtek])
+
+    assert set(manager.active_radio_types()) == {"BT"}
+
+    # Switch to BLE-only on the live scanner; behavior changes immediately.
+    manager.set_usb_scan_mode(realtek, scan_modes.BLE)
+    assert set(manager.active_radio_types()) == {"BLE"}
+
+    await manager.stop()
+
+
+def test_observation_sources_disambiguate_two_realteks():
+    first = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Adapter", 1, 3,
+    )
+    second = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Adapter", 1, 4,
+    )
+    manager = BluetoothManager()
+    # Simulate the startup picker having enumerated both dongles.
+    manager._remember_known_controllers([first, second])
+
+    assert manager._source_id_for_controller(first) == "usb:realtek-1"
+    assert manager._source_id_for_controller(second) == "usb:realtek-2"
 
 
 def test_separate_classic_and_ble_addresses_are_probabilistically_linked():
@@ -853,7 +1157,6 @@ def _os_uuid_device():
     )
 
 
-@pytest.mark.asyncio
 def _device_information_inspection(device):
     from wifit3.models import (
         BluetoothCharacteristic,
@@ -900,6 +1203,10 @@ def test_connection_update_caches_device_information_onto_scan_row():
     assert cached.hardware_revision == "1.0"
     assert cached.software_revision == "11.0.1"
     assert manager._device_information[device.identifier]["model_number"] == "Watch7,15"
+    assert cached.service_uuids == (
+        "0000180a-0000-1000-8000-00805f9b34fb",
+    )
+    assert device.identifier in manager._gatt_services_enriched
 
 
 class _FakeDisChar:
@@ -1200,6 +1507,7 @@ def test_device_information_candidates_exclude_noncandidates():
     for device in (connectable, cached, classic):
         manager._devices[device.identifier] = device
     manager._device_information[cached.identifier] = {"model_number": "known"}
+    manager._gatt_services_enriched.add(cached.identifier)
 
     candidate_ids = {d.identifier for d in manager._device_information_candidates()}
     assert connectable.identifier in candidate_ids

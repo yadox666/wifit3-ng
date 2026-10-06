@@ -5,6 +5,7 @@ from typing import Any
 
 from wifit3.models import AccessPoint, BluetoothDevice, Client
 from wifit3.persist.targets import SavedTarget, TargetStore
+from wifit3.observe.product_catalog import matched_wifi_family_ids
 from wifit3.targeting import (
     is_target_entry,
     is_whitelisted_entry,
@@ -12,6 +13,8 @@ from wifit3.targeting import (
     match_access_point,
     match_bluetooth_device,
     match_client,
+    target_matches_bluetooth_device,
+    target_matches_wifi_ap,
 )
 
 TARGET_ANY = "__targets__"
@@ -66,7 +69,14 @@ def ap_matches_target_filter(
 ) -> bool:
     if not filter_id or store is None:
         return True
-    return _passes(match_access_point(store, ap), filter_id)
+    if filter_id in (TARGET_ANY, TARGET_ANY_WHITELIST):
+        return _passes(match_access_point(store, ap), filter_id)
+    target = store.get(filter_id)
+    if target is None:
+        return False
+    if not target_matches_wifi_ap(target, ap):
+        return False
+    return _passes(target, filter_id)
 
 
 def client_matches_target_filter(
@@ -102,7 +112,91 @@ def bluetooth_matches_target_filter(
 ) -> bool:
     if not filter_id or store is None:
         return True
-    return _passes(match_bluetooth_device(store, device), filter_id)
+    if filter_id in (TARGET_ANY, TARGET_ANY_WHITELIST):
+        return _passes(match_bluetooth_device(store, device), filter_id)
+    target = store.get(filter_id)
+    if target is None:
+        return False
+    if not target_matches_bluetooth_device(target, device):
+        return False
+    return _passes(target, filter_id)
+
+
+def _offline_record_candidates(
+    store: TargetStore,
+    kind: str,
+    record: dict[str, Any],
+) -> list[SavedTarget]:
+    if kind == "aps":
+        bssid = str(record.get("bssid", ""))
+        candidates: list[SavedTarget | None] = []
+        if bssid:
+            candidates.append(store.find("wifi", "ap", bssid))
+        ssid = record.get("ssid")
+        if ssid:
+            candidates.append(store.find_by_name("wifi", "ap", str(ssid)))
+        caps = record.get("capabilities")
+        caps_dict = caps if isinstance(caps, dict) else {}
+        vendor_ouis = {
+            str(item) for item in (caps_dict.get("vendor_ouis") or []) if item
+        }
+        family_id = str(caps_dict.get("catalog_family_id") or "").strip()
+        for fid in matched_wifi_family_ids(
+            str(ssid or ""),
+            bssid,
+            vendor_ouis,
+            catalog_family_id=family_id,
+        ):
+            candidates.append(store.find("catalog", "family", fid))
+        seen: set[str] = set()
+        out: list[SavedTarget] = []
+        for item in candidates:
+            if item is not None and item.enabled and item.id not in seen:
+                seen.add(item.id)
+                out.append(item)
+        return out
+    if kind == "clients":
+        mac = str(record.get("client_mac", ""))
+        candidates: list[SavedTarget | None] = []
+        if mac:
+            candidates.append(store.find("wifi", "client", mac))
+        for ssid in record.get("probed_ssids") or []:
+            candidates.append(store.find_by_probe(str(ssid)))
+            candidates.append(store.find_by_name("wifi", "ap", str(ssid)))
+        for item in record.get("access_points") or []:
+            if not isinstance(item, dict):
+                continue
+            ssid = item.get("ssid")
+            if ssid:
+                candidates.append(store.find_by_name("wifi", "ap", str(ssid)))
+        return [
+            item for item in candidates
+            if item is not None and item.enabled
+        ]
+    identifier = str(record.get("identifier", ""))
+    name = record.get("name")
+    matched = store.find("bluetooth", "device", identifier) if identifier else None
+    if matched is None and name and name != "<Unknown>":
+        matched = store.find_by_name("bluetooth", "device", str(name))
+    return [matched] if matched is not None and matched.enabled else []
+
+
+def match_offline_record(
+    store: TargetStore | None,
+    kind: str,
+    record: dict[str, Any],
+) -> SavedTarget | None:
+    """Saved target or whitelist group for an offline history row, if any."""
+    if store is None:
+        return None
+    candidates = _offline_record_candidates(store, kind, record)
+    for target in candidates:
+        if is_target_entry(target):
+            return target
+    for target in candidates:
+        if is_whitelisted_entry(target):
+            return target
+    return None
 
 
 def offline_record_matches_target_filter(
@@ -114,32 +208,22 @@ def offline_record_matches_target_filter(
     if not filter_id or store is None:
         return True
     if kind == "aps":
-        bssid = str(record.get("bssid", ""))
-        matched = store.find("wifi", "ap", bssid) if bssid else None
-        ssid = record.get("ssid")
-        if matched is None and ssid:
-            matched = store.find_by_name("wifi", "ap", str(ssid))
-        return _passes(matched, filter_id)
+        candidates = _offline_record_candidates(store, kind, record)
+        if not candidates:
+            if filter_id in (TARGET_ANY, TARGET_ANY_WHITELIST):
+                return False
+            return _passes(None, filter_id)
+        return any(_passes(item, filter_id) for item in candidates)
     if kind == "clients":
-        mac = str(record.get("client_mac", ""))
-        candidates: list[SavedTarget | None] = [store.find("wifi", "client", mac)]
-        for ssid in record.get("probed_ssids") or []:
-            candidates.append(store.find_by_probe(str(ssid)))
-            candidates.append(store.find_by_name("wifi", "ap", str(ssid)))
-        for item in record.get("access_points") or []:
-            if not isinstance(item, dict):
-                continue
-            ssid = item.get("ssid")
-            if ssid:
-                candidates.append(store.find_by_name("wifi", "ap", str(ssid)))
+        candidates = _offline_record_candidates(store, kind, record)
         if filter_id == TARGET_ANY:
             return any(is_target_entry(item) for item in candidates)
         if filter_id == TARGET_ANY_WHITELIST:
             return any(is_whitelisted_entry(item) for item in candidates)
         return any(_passes(item, filter_id) for item in candidates)
-    identifier = str(record.get("identifier", ""))
-    name = record.get("name")
-    matched = store.find("bluetooth", "device", identifier) if identifier else None
-    if matched is None and name and name != "<Unknown>":
-        matched = store.find_by_name("bluetooth", "device", str(name))
-    return _passes(matched, filter_id)
+    candidates = _offline_record_candidates(store, kind, record)
+    if not candidates:
+        if filter_id in (TARGET_ANY, TARGET_ANY_WHITELIST):
+            return False
+        return _passes(None, filter_id)
+    return any(_passes(item, filter_id) for item in candidates)

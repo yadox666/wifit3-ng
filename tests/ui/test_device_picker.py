@@ -4,7 +4,31 @@ from textual.widgets import Checkbox
 
 from wifit3.models.device_id import DeviceID
 from wifit3.ui.app import WifiteApp
+from wifit3.ui.screens.device_picker import default_scan_bands
 from wifit3.ui.screens.splash import SplashView
+
+
+def test_dual_band_card_defaults_to_the_uncovered_band(monkeypatch):
+    only_24 = DeviceID(1, 1, "ONLY24", bus=1, address=1)
+    dual = DeviceID(2, 2, "DUAL", bus=1, address=2)
+    only_5 = DeviceID(3, 3, "ONLY5", bus=1, address=3)
+    other_dual = DeviceID(4, 4, "DUAL2", bus=1, address=4)
+    bands = {
+        (1, 1): frozenset({"2g"}),
+        (2, 2): frozenset({"2g", "5g"}),
+        (3, 3): frozenset({"5g"}),
+        (4, 4): frozenset({"2g", "5g"}),
+    }
+    monkeypatch.setattr(
+        "wifit3.ui.screens.device_picker.hardware_scan_bands",
+        lambda vid, pid: bands[(vid, pid)],
+    )
+
+    assert default_scan_bands([only_24, dual]) == {dual.instance_key: "5g"}
+    assert default_scan_bands([only_5, dual]) == {dual.instance_key: "2g"}
+    assert default_scan_bands([only_24, only_5, dual]) == {}
+    assert default_scan_bands([dual, other_dual]) == {}
+    assert default_scan_bands([dual]) == {}
 
 
 def _cards():
@@ -31,7 +55,6 @@ async def test_band_segments_are_one_line_and_clickable():
         # Frame plus one line per card. No hint row, no padded buttons.
         assert picker.region.height == 4
         assert picker.region.width <= 80
-        assert picker.border_subtitle.endswith("(reg)")
         assert picker.query_one("#device-row-0").region.height == 1
         assert picker.query_one("#device-band-0").region.height == 1
 
@@ -41,6 +64,8 @@ async def test_band_segments_are_one_line_and_clickable():
         assert {opt.band_key for opt in dual.query(".band-opt")} == {"all", "2g", "5g"}
         assert [opt.band_key for opt in only_24.query(".band-opt")] == ["2g"]
         assert only_24.has_class("-fixed")
+        # The 2.4-only card already covers 2.4 GHz, so the dual-band card starts on 5 GHz.
+        assert dual.value == "5g"
 
         await pilot.click("#device-band-0 .band-5g")
         await pilot.pause()
@@ -60,6 +85,27 @@ async def test_band_segments_are_one_line_and_clickable():
         await pilot.press("right")
         await pilot.pause()
         assert picker.collect_band_plan()[ar9271.instance_key] == "all"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_highlight_marker_only_appears_with_more_than_one_card():
+    """A lone card carries no highlight cursor; the marker returns with a choice."""
+    app = WifiteApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        splash = app.screen
+        assert isinstance(splash, SplashView)
+
+        splash.render_devices(_cards()[:1])
+        await pilot.pause()
+        assert not splash.query_one("#device-row-0").has_class("-focus")
+
+        splash.render_devices(_cards())
+        await pilot.pause()
+        focused = [
+            r for r in splash.query(".device-row") if r.has_class("-focus")
+        ]
+        assert len(focused) == 1
 
 
 @pytest.mark.asyncio

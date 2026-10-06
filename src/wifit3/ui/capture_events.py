@@ -50,6 +50,9 @@ CAPTURE_TOAST_TITLES = {
     CaptureKind.WEP_KEY:   "WEP key recovered",
 }
 
+# Non-blocking capture-win toasts (scanner + focus).
+CAPTURE_TOAST_TIMEOUT: float = 8.0
+
 
 @dataclass(frozen=True)
 class CaptureEvent:

@@ -47,3 +47,41 @@ def test_client_and_bluetooth_filters():
     assert record_matches("bluetooth", device, OfflineFilters(bt_radio="both"))
     assert not record_matches("bluetooth", device, OfflineFilters(bt_radio="ble"))
     assert record_matches("bluetooth", device, OfflineFilters(text="180f"))
+
+
+def test_offline_search_matches_catalog_family():
+    access_point = {
+        "bssid": "b4:1e:52:10:20:30",
+        "ssid": "hidden",
+        "encryption": "WPA2",
+        "capabilities": {
+            "catalog_labels": ["Flock Safety Cameras"],
+            "catalog_class": "Surveillance",
+            "catalog_attention": "Roadside camera match.",
+        },
+    }
+    assert record_matches("aps", access_point, OfflineFilters(text="flock"))
+    assert record_matches("aps", access_point, OfflineFilters(text="surveillance"))
+    assert not record_matches("aps", access_point, OfflineFilters(text="airtag"))
+    assert record_matches(
+        "aps", access_point, OfflineFilters(catalog_class="Surveillance"),
+    )
+    assert not record_matches(
+        "aps", access_point, OfflineFilters(catalog_class="Audio"),
+    )
+
+    device = {
+        "identifier": "aa:bb:cc:dd:ee:ff",
+        "name": "Tag",
+        "radio_types": ["BLE"],
+        "catalog": {
+            "labels": ["Penguin"],
+            "class": "Surveillance",
+            "attention": "Flock-family external battery",
+        },
+    }
+    assert record_matches("bluetooth", device, OfflineFilters(text="penguin"))
+    assert record_matches("bluetooth", device, OfflineFilters(text="battery"))
+    assert record_matches(
+        "bluetooth", device, OfflineFilters(catalog_class="Surveillance"),
+    )

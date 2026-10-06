@@ -98,11 +98,17 @@ def _detail_markup(
 
 
 def format_encryption_markup(
-    ap: AccessPoint, detailed: bool = False, muted: str = "dim"
+    ap: AccessPoint,
+    detailed: bool = False,
+    muted: str = "dim",
+    *,
+    weak: bool = False,
 ) -> str:
     """Return Rich-markup for the ENCRYPT cell.
     ``detailed=False`` (scanner) drops the pairwise cipher entirely.
-    ``muted`` overrides the default Rich ``"dim"`` attribute."""
+    ``muted`` overrides the default Rich ``"dim"`` attribute.
+    ``weak=True`` (scanner) paints the primary label bright red instead of
+    appending a separate !WEAK marker."""
     akms_tok = _simplified_akms(ap.akms)
     cipher = ap.pairwise_cipher
     show_cipher = detailed and cipher is not None
@@ -124,17 +130,23 @@ def format_encryption_markup(
     if enc_type is EncryptionType.OWE:
         return f"[{_NO_ATTACK_YET}]OWE[/{_NO_ATTACK_YET}]"
 
-    # Any RSN-based modern WPA2: attackable.
+    # Any RSN-based modern WPA2: attackable (or red when passively weak).
     if enc_type is EncryptionType.WPA2:
-        head = f"[{_ATTACKABLE}]WPA2[/{_ATTACKABLE}]"
+        if weak:
+            head = "[bright_red]WPA2[/bright_red]"
+        else:
+            head = f"[{_ATTACKABLE}]WPA2[/{_ATTACKABLE}]"
         return head + _detail_markup(akms_tok, cipher, show_cipher, muted)
 
     if enc_type is EncryptionType.OPEN:
         return "[bright_red]OPEN[/bright_red]"
 
     if enc_type is EncryptionType.WEP:
-        # Attackable now (IV capture → replay → crack).
-        head = f"[{_ATTACKABLE}]WEP[/{_ATTACKABLE}]"
+        # Attackable now (IV capture → replay → crack); red when flagged weak.
+        if weak:
+            head = "[bright_red]WEP[/bright_red]"
+        else:
+            head = f"[{_ATTACKABLE}]WEP[/{_ATTACKABLE}]"
         if detailed:
             return head
         n = ap.wep.unique_ivs if ap.wep else 0

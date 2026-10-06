@@ -35,7 +35,7 @@ class CardsColumn(Vertical):
     """Shows every pool card side-by-side when two or more are attached."""
 
     DEFAULT_CSS = """
-    CardsColumn { width: auto; height: auto; align: center middle; }
+    CardsColumn { width: auto; height: 100%; align: center top; }
     CardsColumn #cards-inner { width: auto; height: auto; }
     CardsColumn .card-slot { width: 20; align: center middle; }
     CardsColumn .card-channel { text-style: bold; color: $accent; }
@@ -44,13 +44,13 @@ class CardsColumn(Vertical):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="cards-inner"):
-            yield CardEndpoint(id="card-slot-0", classes="card-slot")
-            second = CardEndpoint(
-                id="card-slot-1", classes="card-slot",
-                enable_picker=False, chipset="",
-            )
-            second.display = False
-            yield second
+                yield CardEndpoint(id="card-slot-0", classes="card-slot")
+                second = CardEndpoint(
+                    id="card-slot-1", classes="card-slot",
+                    enable_picker=False, chipset="",
+                )
+                second.display = False
+                yield second
 
     def on_mount(self) -> None:
         self._slot(1).display = False
@@ -64,6 +64,10 @@ class CardsColumn(Vertical):
 
     def flicker(self) -> None:
         self._slot(0).flicker()
+
+        if not self.query_one("#hackrf-endpoint", HackRfEndpoint).display:
+            return
+        self.query_one("#hackrf-endpoint", HackRfEndpoint).pulse()
 
     def update_bssid(self, bssid: str | None) -> None:
         self._slot(0).update_bssid(bssid)
@@ -80,7 +84,9 @@ class CardsColumn(Vertical):
         dual = len(members) >= 2
         slot1 = self._slot(1)
         slot1.display = dual
-        self.styles.width = 40 if dual else 20
+        hackrf_visible = self.query_one("#hackrf-endpoint", HackRfEndpoint).display
+        wifi_w = 40 if dual else 20
+        self.styles.width = (20 + wifi_w) if hackrf_visible else wifi_w
 
         ordered = _ordered_members(members, primary)
         if not dual:

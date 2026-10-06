@@ -13,6 +13,8 @@ from textual.widgets import Button, Input, Label, Static, Tooltip
 from rich.text import Text
 
 from wifit3.id import Fingerprint, vendor_for_mac
+from wifit3.ui.mac_format import mac_address_text
+from wifit3.ui.search_input import SearchInput, sync_search_input_has_text
 from ...signal_bar import dbm_style
 from ... import focus_model as fm
 
@@ -74,7 +76,7 @@ class ClientWidget(Horizontal):
             else self._fp.emoji if self._fp else ""
         )
         self._fp_label = Label(badge, classes="cl-fp")
-        self._mac_label = Label(self._mac, classes="cl-bssid")
+        self._mac_label = Label(mac_address_text(self._mac), classes="cl-bssid")
         self._mfr_label = Label(self._manufacturer, classes="cl-mfr")
         power = "--" if self._is_fake or self._is_historical else str(self._power)
         self._pwr_label = Label(
@@ -218,9 +220,11 @@ class FingerprintModal(ModalScreen[None]):
         heading = f"{self._fp.emoji} {self._fp.label}" if self._fp else self._mac
         rows = [Label(heading)]
         rows.extend(Label(line) for line in self._details.splitlines()[1:] if line)
+        oui = Text("OUI: ", style="dim")
+        oui.append_text(mac_address_text(self._mac[:8], style="dim"))
         box = Vertical(
             *rows,
-            Label(f"[dim]OUI: {self._mac[:8]}[/dim]"),
+            Label(oui),
             id="fp-box",
         )
         box.styles.offset = self._offset
@@ -256,11 +260,16 @@ class ClientsList(Vertical):
         border: none; padding: 0 1; margin: 0;
         background: transparent;
     }
+    ClientsList #client-web-search.-has-text {
+        background: $surface-darken-2;
+    }
     ClientsList #clear-client-web-search {
-        width: 3; min-width: 3; height: 1; min-height: 1;
+        width: 3; min-width: 3; max-width: 3;
+        height: 1; min-height: 1;
         border: none; padding: 0; margin: 0;
         background: transparent;
         color: $text-muted;
+        content-align: center middle;
     }
     ClientsList #clear-client-web-search:hover,
     ClientsList #clear-client-web-search:focus {
@@ -285,6 +294,22 @@ class ClientsList(Vertical):
     ClientsList #website-content {
         width: 100%; height: auto;
     }
+    ClientsList #client-rows-live,
+    ClientsList #client-rows-history {
+        height: auto;
+        width: 100%;
+    }
+    ClientsList #clients-history-separator {
+        width: 100%;
+        height: 1;
+        text-align: center;
+        content-align: center middle;
+        color: $text-muted;
+        text-style: bold;
+        border-top: solid $primary-darken-1;
+        margin: 1 0 0 0;
+        padding-top: 0;
+    }
     """
 
     def __init__(self, clients, **kwargs) -> None:
@@ -300,7 +325,7 @@ class ClientsList(Vertical):
 
     def compose(self) -> ComposeResult:
         search_box = Horizontal(
-            Input(
+            SearchInput(
                 placeholder="Search clients and website URLs…",
                 compact=True,
                 id="client-web-search",
@@ -309,6 +334,7 @@ class ClientsList(Vertical):
                 "×",
                 id="clear-client-web-search",
                 tooltip="Clear search",
+                compact=True,
             ),
             id="client-web-search-box",
         )
@@ -327,12 +353,22 @@ class ClientsList(Vertical):
                 yield Label("PWR", classes="cl-pwr")
                 yield Label("PKT", classes="cl-pkts")
                 yield Label("", classes="cl-action")
-            rows = []
+            live_rows = []
+            history_rows = []
             for c in self._clients:
                 widget = ClientWidget(c)
                 self._rows[c.mac] = widget
-                rows.append(widget)
-            yield VerticalScroll(*rows, id="client-rows")
+                if getattr(c, "historical", False):
+                    history_rows.append(widget)
+                else:
+                    live_rows.append(widget)
+            with VerticalScroll(id="client-rows"):
+                yield Vertical(*live_rows, id="client-rows-live")
+                yield Static(
+                    "CLIENTS HISTORY",
+                    id="clients-history-separator",
+                )
+                yield Vertical(*history_rows, id="client-rows-history")
         websites = Vertical(
             Label("WEBSITES (0)", id="website-title"),
             VerticalScroll(
@@ -346,10 +382,21 @@ class ClientsList(Vertical):
 
     def on_mount(self) -> None:
         self._update_title()
+        self._update_history_separator()
 
-    def _rows_host(self) -> VerticalScroll:
-        """The scroll container the client rows live in (new rows mount here)."""
-        return self.query_one("#client-rows", VerticalScroll)
+    def _client_row_host(self, client) -> Vertical:
+        historical = bool(getattr(client, "historical", False))
+        selector = "#client-rows-history" if historical else "#client-rows-live"
+        return self.query_one(selector, Vertical)
+
+    def _update_history_separator(self) -> None:
+        if not self.is_mounted:
+            return
+        separator = self.query_one("#clients-history-separator", Static)
+        has_history = any(
+            row._is_historical and row.display for row in self._rows.values()
+        )
+        separator.display = has_history
 
     def sync(self, clients) -> None:
         """Reconcile client row information to match ``clients``."""
@@ -368,11 +415,12 @@ class ClientsList(Vertical):
                     continue
                 widget = ClientWidget(c)
                 self._rows[c.mac] = widget
-                self._rows_host().mount(widget)
+                self._client_row_host(c).mount(widget)
             else:
                 row.update_stats(c.signal, c.packets)
         self._apply_client_ipv4_hints()
         self._apply_client_filter()
+        self._update_history_separator()
         self._update_title()
 
     def _remove_row(self, mac: str) -> None:
@@ -396,7 +444,12 @@ class ClientsList(Vertical):
             banner.update("")
             return
         ssid = ap.ssid or "‹hidden›"
-        banner.update(f"🛜 AP  {ssid}  ·  {ap.bssid}")
+        banner.update(
+            Text("🛜 AP  ", style="bold")
+            + Text(ssid, style="bold")
+            + Text("  ·  ", style="dim")
+            + mac_address_text(ap.bssid, style="dim"),
+        )
         banner.display = True
 
     def set_open_network_metadata(
@@ -445,6 +498,7 @@ class ClientsList(Vertical):
         event.stop()
         search = self.query_one("#client-web-search", Input)
         search.value = ""
+        sync_search_input_has_text(search)
         search.focus()
 
     def _apply_filter(self) -> None:
@@ -474,6 +528,7 @@ class ClientsList(Vertical):
             ipv4 = self._ipv4_hint_for_mac(row._mac)
             searchable = f"{row._mac} {row._manufacturer} {ipv4}".casefold()
             row.display = all(token in searchable for token in tokens)
+        self._update_history_separator()
 
     def _paint_websites(self) -> None:
         if not self.is_mounted:

@@ -9,6 +9,8 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Label
 
+from wifit3.ui.mac_format import mac_address_text
+
 from .art import BreathingArt, display_name
 from .tx_picker import TxDevicePicker
 
@@ -80,7 +82,11 @@ class CardEndpoint(Vertical):
             yield Label(self._chipset, classes="card-slot-name", id="card-slot-name")
         # Always present (the card MAC is static per card) so a later tick can
         # show/hide it; hidden when the driver doesn't expose its own BSSID.
-        bssid = Label(self._bssid or "", classes="card-static", id="card-bssid")
+        bssid = Label(
+            mac_address_text(self._bssid) if self._bssid else "",
+            classes="card-static",
+            id="card-bssid",
+        )
         bssid.display = bool(self._bssid)
         yield bssid
         # The dynamic line ("● replaying" etc) is always composed so update()
@@ -136,7 +142,7 @@ class CardEndpoint(Vertical):
     def update_bssid(self, bssid: str | None) -> None:
         """Re-apply the card's own BSSID line. Shows only for a single card (a multi-card pool has
         no single MAC). The pool can change under us (plug/unplug) while Focus is open."""
-        if self._push("#card-bssid", bssid or ""):
+        if self._push_mac("#card-bssid", bssid or ""):
             self.query_one("#card-bssid", Label).display = bool(bssid)
 
     def set_art(self, name: str) -> None:
@@ -149,6 +155,13 @@ class CardEndpoint(Vertical):
             return False
         self._last[sel] = value
         self.query_one(sel, Label).update(value)
+        return True
+
+    def _push_mac(self, sel: str, mac: str) -> bool:
+        if self._last.get(sel) == mac:
+            return False
+        self._last[sel] = mac
+        self.query_one(sel, Label).update(mac_address_text(mac) if mac else "")
         return True
 
     def flicker(self) -> None:

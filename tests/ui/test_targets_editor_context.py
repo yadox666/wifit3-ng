@@ -20,6 +20,9 @@ class _Host(App):
     def on_mount(self) -> None:
         self.push_screen(TargetsEditorDrawer(prefill=self.candidate))
 
+    def clear_target_sighting(self, _target_id: str) -> None:
+        pass
+
 
 def _candidate() -> TargetCandidate:
     return TargetCandidate(
@@ -55,6 +58,41 @@ async def test_new_uses_row_context_without_starting_in_draft(tmp_path):
     app.target_store.close()
 
 
+@pytest.mark.asyncio
+async def test_add_selection_button_adds_device_to_selected_group(tmp_path):
+    app = _Host(tmp_path / "targets.sqlite3", _candidate())
+    group = app.target_store.upsert(
+        alias="yadox",
+        medium="wifi",
+        kind="client",
+        identifier="02:11:22:33:44:55",
+        details={},
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        button = modal.query_one("#targets-add-member", Button)
+        assert button.label.plain == "＋ Add selection to group"
+        button.press()
+        await pilot.pause()
+
+        restored = app.target_store.get(group.id)
+        assert restored is not None
+        assert {
+            (member.medium, member.kind, member.identifier)
+            for member in restored.members
+        } == {
+            ("wifi", "client", "02:11:22:33:44:55"),
+            ("wifi", "ap", "aa:bb:cc:dd:ee:ff"),
+        }
+        assert "2 device(s)" in modal.query_one(
+            "#targets-detail-meta",
+            Static,
+        ).render().plain
+    app.target_store.close()
+
+
 def test_scanners_expose_only_the_targets_menu_binding():
     for screen_type in (ScannerView, BluetoothScannerView, OfflineDatabaseView):
         bindings = [
@@ -62,7 +100,7 @@ def test_scanners_expose_only_the_targets_menu_binding():
             for binding in screen_type.BINDINGS
             if "target" in binding.action
         ]
-        assert bindings == [("shift+t", "targets_editor")]
+        assert bindings == [("n", "targets_editor")]
 
 
 @pytest.mark.asyncio

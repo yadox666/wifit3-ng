@@ -36,3 +36,5 @@ def test_client_probes_truncated():
         ),
     )
     assert "A, B, C (+1 more)" in pairs["Probed SSIDs"]
+
+

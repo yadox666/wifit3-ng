@@ -12,13 +12,16 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Label, Select, Static, Tab, Tabs
 
 from wifit3.persist.targets import SavedTarget, TargetStoreError
+from wifit3.ui.search_input import SearchInput
 from wifit3.targeting import (
     TargetCandidate,
-    editor_category,
+    catalog_family_candidate,
+    editor_categories,
     editor_category_label,
     observation_display_markup,
     observation_kind_subtitle,
 )
+from wifit3.ui.screens.catalog_assign_modal import CatalogAssignModal
 
 
 class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
@@ -67,6 +70,9 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
     }
     #targets-search {
         margin: 0 0 1 0;
+    }
+    #targets-search.-has-text {
+        background: $surface-darken-2;
     }
     #targets-table {
         height: 1fr;
@@ -198,7 +204,7 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
         align: center middle;
     }
     #targets-list-actions Button {
-        width: 100%;
+        width: 1fr;
         margin: 0;
     }
     #targets-detail-error {
@@ -236,19 +242,31 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
             with Horizontal(id="targets-editor-body"):
                 with Vertical(id="targets-list-pane"):
                     yield Label("Saved entries", id="targets-list-title")
-                    yield Input(placeholder="Search alias or identifier…", id="targets-search")
+                    yield SearchInput(
+                        placeholder="Search alias or identifier…",
+                        id="targets-search",
+                    )
                     yield Tabs(
                         Tab("All", id="tab-all"),
                         Tab("AP", id="tab-ap"),
                         Tab("STA", id="tab-sta"),
                         Tab("BLE", id="tab-ble"),
                         Tab("BT", id="tab-bt"),
+                        Tab("Catalog", id="tab-catalog"),
                         Tab("Whitelist", id="tab-whitelist"),
                         id="targets-tabs",
                     )
                     yield DataTable(id="targets-table", cursor_type="row", zebra_stripes=True)
                     with Horizontal(id="targets-list-actions"):
                         yield Button("＋ New", id="targets-new", variant="primary")
+                        yield Button(
+                            "＋ Add selection to group",
+                            id="targets-add-member",
+                        )
+                        yield Button(
+                            "＋ Add catalog family to group",
+                            id="targets-add-catalog-family",
+                        )
                 with Vertical(id="targets-detail-pane"):
                     with Vertical(id="targets-detail-header"):
                         yield Label("Select an entry", id="targets-detail-title")
@@ -281,6 +299,7 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
                                     ("Wi-Fi AP", "wifi:ap"),
                                     ("Wi-Fi STA", "wifi:client"),
                                     ("Bluetooth", "bluetooth:device"),
+                                    ("Catalog family", "catalog:family"),
                                 ],
                                 id="targets-kind",
                                 value="wifi:ap",
@@ -303,10 +322,11 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
         table.add_columns("ALIAS", "ROLE", "TYPE")
         new_button = self.query_one("#targets-new", Button)
         if self._context_candidate is not None:
-            new_button.label = "＋ New from selection"
+            new_button.label = "＋ New group from selection"
             new_button.tooltip = self._context_candidate.title
         else:
             new_button.label = "＋ New manual target"
+            self.query_one("#targets-add-member", Button).display = False
         self._reload_table(select_id=self._select_id)
         self.call_after_refresh(self._focus_list)
 
@@ -346,6 +366,7 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
             "tab-sta": "sta",
             "tab-ble": "ble",
             "tab-bt": "bt",
+            "tab-catalog": "catalog",
             "tab-whitelist": "whitelist",
         }
         self._category = mapping.get(event.tab.id or "", "all")
@@ -379,14 +400,24 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
             else:
                 items = [
                     item for item in items
-                    if item.role == "target" and editor_category(item) == self._category
+                    if (
+                        item.role == "target"
+                        and self._category in editor_categories(item)
+                    )
                 ]
         if self._search:
             items = [
                 item for item in items
                 if self._search in item.alias.casefold()
-                or self._search in item.identifier.casefold()
-                or self._search in editor_category_label(editor_category(item)).casefold()
+                or any(
+                    self._search in member.identifier.casefold()
+                    for member in item.members
+                )
+                or any(
+                    self._search
+                    in editor_category_label(category).casefold()
+                    for category in editor_categories(item)
+                )
             ]
         return items
 
@@ -398,9 +429,16 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
             table.add_row(
                 target.alias,
                 role,
-                editor_category_label(editor_category(target)),
+                " / ".join(
+                    editor_category_label(category)
+                    for category in sorted(editor_categories(target))
+                ),
                 key=target.id,
             )
+        add_member = self.query_one("#targets-add-member", Button)
+        add_catalog = self.query_one("#targets-add-catalog-family", Button)
+        add_member.disabled = self._context_candidate is None or table.row_count == 0
+        add_catalog.disabled = table.row_count == 0
         self._suppress_row_highlight = True
         try:
             if table.row_count:
@@ -500,13 +538,13 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
         manual = not candidate.identifier
         self._set_draft_presentation(True, manual=manual)
         self.query_one("#targets-detail-title", Label).update("New target")
-        self.query_one("#targets-detail-meta", Label).update(
-            (
-                "SSID rule · all matching APs"
-                if candidate.details.get("infrastructure")
-                else observation_kind_subtitle(candidate.medium, candidate.kind)
-            ),
-        )
+        if candidate.medium == "catalog" and candidate.kind == "family":
+            subtitle = "Catalog family · Wi‑Fi AP and Bluetooth"
+        elif candidate.details.get("infrastructure"):
+            subtitle = "SSID rule · all matching APs"
+        else:
+            subtitle = observation_kind_subtitle(candidate.medium, candidate.kind)
+        self.query_one("#targets-detail-meta", Label).update(subtitle)
         self._set_observation_summary(
             candidate.medium,
             candidate.kind,
@@ -533,15 +571,29 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
         self.query_one("#targets-detail-title", Label).update(target.alias)
         role = "Whitelist" if target.role == "whitelist" else "Target"
         self.query_one("#targets-detail-meta", Label).update(
-            f"{role} · last seen in range {last_lock}"
+            f"{role} · {len(target.members)} device(s) · "
+            f"last seen in range {last_lock}"
         )
-        self._set_observation_summary(
-            target.medium,
-            target.kind,
-            target.details,
-            identifier=target.identifier,
-            headline=target.alias,
-            draft_layout=False,
+        card = self.query_one("#targets-observed-card", Container)
+        card.border_title = f"Stored devices · {len(target.members)}"
+        summaries = []
+        for member in target.members:
+            headline = str(
+                member.details.get("ssid")
+                or member.details.get("name")
+                or member.details.get("model_name")
+                or member.identifier
+            )
+            summaries.append(observation_display_markup(
+                member.medium,
+                member.kind,
+                member.details,
+                identifier=member.identifier,
+                headline=headline,
+                layout="card",
+            ))
+        self.query_one("#targets-detail-fields", Static).update(
+            "\n\n[dim]────────────────[/dim]\n\n".join(summaries),
         )
         self.query_one("#targets-alias", Input).value = target.alias
         self.query_one("#targets-role", Select).value = target.role
@@ -571,6 +623,58 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
         )
         self.query_one("#targets-role", Select).value = self._draft_role
         self.query_one("#targets-alias", Input).focus()
+
+    def _add_candidate_to_group(self, candidate: TargetCandidate) -> None:
+        target = self.app.target_store.get(self._selected_target_id())
+        if target is None:
+            self.query_one("#targets-detail-error", Label).update(
+                "Select a saved target group first",
+            )
+            return
+        try:
+            saved = self.app.target_store.upsert(
+                alias=target.alias,
+                medium=candidate.medium,
+                kind=candidate.kind,
+                identifier=candidate.identifier,
+                details=dict(candidate.details),
+                role=target.role,
+                match_mode=candidate.match_mode,
+            )
+        except TargetStoreError as exc:
+            self.query_one("#targets-detail-error", Label).update(str(exc))
+            return
+        self.app.clear_target_sighting(saved.id)
+        self._reload_table(select_id=saved.id)
+        self.notify(
+            f"Added {candidate.title} to {saved.alias}",
+            title="Targets",
+        )
+        self._refresh_target_filters()
+        if self._on_saved is not None:
+            self._on_saved(saved)
+
+    @on(Button.Pressed, "#targets-add-member")
+    def add_selection_to_group(self) -> None:
+        candidate = self._context_candidate
+        if candidate is None:
+            self.query_one("#targets-detail-error", Label).update(
+                "Open targets from a scan row to add a device",
+            )
+            return
+        self._add_candidate_to_group(candidate)
+
+    @on(Button.Pressed, "#targets-add-catalog-family")
+    def add_catalog_family_to_group(self) -> None:
+        def _done(family_id: str | None) -> None:
+            if not family_id:
+                return
+            self._add_candidate_to_group(catalog_family_candidate(family_id))
+
+        self.app.push_screen(
+            CatalogAssignModal(subject="Add catalog family to target group"),
+            _done,
+        )
 
     @on(Button.Pressed, "#targets-save")
     def save_pressed(self) -> None:
@@ -612,9 +716,13 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
         except ValueError:
             self.query_one("#targets-detail-error", Label).update("Invalid type")
             return
+        if medium == "catalog" and kind == "family":
+            match_mode = "id"
         details: dict[str, Any] = {}
         if self._draft is not None:
             details = dict(self._draft.details)
+        elif medium == "catalog" and kind == "family":
+            details = dict(catalog_family_candidate(identifier).details)
             if match_mode == "name" and kind == "ap":
                 details.setdefault("ssid", identifier)
             if match_mode == "name" and kind == "device":
@@ -652,6 +760,7 @@ class TargetsEditorDrawer(ModalScreen[SavedTarget | None]):
         store = self.app.target_store
         for bar in self.app.query(FilterBar):
             bar.refresh_target_options()
+            bar.refresh_catalog_family_options()
         for bar in self.app.query(OfflineFilterBar):
             bar.refresh_target_options()
         for select in self.app.query("#bluetooth-filter-target"):

@@ -11,9 +11,12 @@ from textual.containers import Horizontal
 from textual.message import Message
 from textual.widgets import Button, Input, Label, Select
 
+from wifit3.ui.search_input import SearchInput, sync_search_input_has_text
+
 from wifit3.models import AccessPoint
 from wifit3.id import vendor_for_mac
 from wifit3.ui.encryption_format import EncryptionType
+from wifit3.observe.product_catalog import catalog_family_select_options, matched_wifi_family_ids
 from wifit3.ui.target_filter import build_target_select_options, refresh_target_select
 from wifit3.wlan.channels import band_ranges
 
@@ -69,6 +72,18 @@ class ScanFilter:
     wps: Optional[bool] = None
     association: str = "all"
     target_id: str = ""
+    catalog_family_id: str = ""
+
+    def catalog_family_matches(self, ap: AccessPoint) -> bool:
+        wanted = (self.catalog_family_id or "").strip()
+        if not wanted:
+            return True
+        return wanted in matched_wifi_family_ids(
+            ap.ssid,
+            ap.bssid,
+            ap.capabilities.vendor_ouis,
+            catalog_family_id=ap.capabilities.catalog_family_id,
+        )
 
     def matches(self, ap: AccessPoint, *, ssid: Optional[str] = None) -> bool:
         """``ssid`` overrides ap.ssid so a hidden AP is searchable by its guessed name."""
@@ -77,6 +92,12 @@ class ScanFilter:
             vendor_for_mac(ap.bssid),
             ap.identity.summary,
             ap.country_code,
+            ap.capabilities.remote_id,
+            ap.capabilities.signature_label,
+            ap.capabilities.catalog_class,
+            ap.capabilities.catalog_live,
+            ap.capabilities.catalog_attention,
+            " ".join(ap.capabilities.catalog_labels),
         )))
         return (
             self.encryption.matches(ap)
@@ -103,9 +124,45 @@ class FilterBar(Horizontal):
     FilterBar > Select { width: 12; margin-right: 1; }
     FilterBar > #filter-wps { width: 10; }
     FilterBar > #filter-association { width: 14; }
+    FilterBar > #filter-catalog-family { width: 26; }
     FilterBar > #filter-target { width: 18; margin-right: 1; }
     FilterBar > #filter-channels { margin-right: 1; }
-    FilterBar > Input { width: 1fr; min-width: 18; }
+    FilterBar > #filter-text-box {
+        width: 1fr;
+        min-width: 18;
+        height: auto;
+        padding: 0;
+        margin: 0;
+    }
+    FilterBar #filter-text {
+        width: 1fr;
+        min-width: 12;
+        border: none;
+        padding: 0 1;
+        margin: 0;
+        background: transparent;
+    }
+    FilterBar #filter-text.-has-text {
+        background: $surface-darken-2;
+    }
+    FilterBar #clear-filter-text {
+        width: 3;
+        min-width: 3;
+        max-width: 3;
+        height: 1;
+        min-height: 1;
+        border: none;
+        padding: 0;
+        margin: 0;
+        background: transparent;
+        color: $text-muted;
+        content-align: center middle;
+    }
+    FilterBar #clear-filter-text:hover,
+    FilterBar #clear-filter-text:focus {
+        background: $primary;
+        color: $text;
+    }
     FilterBar Select.-expanded SelectOverlay { border: round $primary !important; background: $surface; }
     """
 
@@ -143,6 +200,13 @@ class FilterBar(Horizontal):
             [("Any WPS", "all"), ("WPS only", "yes"), ("No WPS", "no")],
             value="all", allow_blank=False, id="filter-wps", compact=True,
         )
+        yield Select(
+            list(catalog_family_select_options()),
+            value="",
+            allow_blank=False,
+            id="filter-catalog-family",
+            compact=True,
+        )
         association = Select(
             [("Any client", "all"), ("Connected", "connected"),
              ("Unassociated", "unassociated")],
@@ -158,10 +222,36 @@ class FilterBar(Horizontal):
             compact=True,
         )
         yield Button(self._channels_text(None), id="filter-channels", compact=True)
-        yield Input(placeholder="SSID, vendor, country…", id="filter-text", compact=True)
+        yield Horizontal(
+            SearchInput(
+                placeholder="SSID, vendor, country, family…",
+                id="filter-text",
+                compact=True,
+            ),
+            Button(
+                "×",
+                id="clear-filter-text",
+                tooltip="Clear search",
+                compact=True,
+            ),
+            id="filter-text-box",
+        )
 
     def on_mount(self) -> None:
         self.refresh_target_options()
+        self.refresh_catalog_family_options()
+
+    def refresh_catalog_family_options(self) -> None:
+        select = self.query_one("#filter-catalog-family", Select)
+        current = str(select.value or "")
+        options = list(catalog_family_select_options())
+        select.set_options(options)
+        valid = {value for _label, value in options}
+        if current not in valid:
+            current = ""
+            select.value = ""
+        else:
+            select.value = current
 
     def refresh_target_options(self) -> None:
         store = getattr(self.app, "target_store", None)
@@ -181,10 +271,15 @@ class FilterBar(Horizontal):
         text.placeholder = (
             "client, AP, vendor, or probe…"
             if view_mode == "clients"
-            else "SSID, vendor, country…"
+            else "SSID, vendor, country, family…"
         )
         self._update_title()
         self.query_one("#filter-association", Select).display = view_mode == "clients"
+        self.query_one("#filter-catalog-family", Select).display = view_mode != "clients"
+        if view_mode == "clients":
+            catalog = self.query_one("#filter-catalog-family", Select)
+            with catalog.prevent(Select.Changed):
+                catalog.value = ""
 
     def set_paused(self, paused: bool) -> None:
         self._paused = paused
@@ -222,8 +317,17 @@ class FilterBar(Horizontal):
         self._emit_scan_filter()
         self._focus_table()
 
-    def on_button_pressed(self) -> None:
-        self.post_message(self.EditChannels())
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "clear-filter-text":
+            event.stop()
+            search = self.query_one("#filter-text", Input)
+            if search.value:
+                search.value = ""
+            sync_search_input_has_text(search)
+            search.focus()
+            return
+        if event.button.id == "filter-channels":
+            self.post_message(self.EditChannels())
 
     def _emit_scan_filter(self) -> None:
         text = self.query_one("#filter-text", Input).value
@@ -233,6 +337,9 @@ class FilterBar(Horizontal):
         wps = None if raw_wps == "all" else raw_wps == "yes"
         association = str(self.query_one("#filter-association", Select).value)
         target_id = str(self.query_one("#filter-target", Select).value or "")
+        catalog_family_id = str(
+            self.query_one("#filter-catalog-family", Select).value or "",
+        )
         self.post_message(self.ScanFilterChanged(
             ScanFilter(
                 text=text,
@@ -241,6 +348,7 @@ class FilterBar(Horizontal):
                 wps=wps,
                 association=association,
                 target_id=target_id,
+                catalog_family_id=catalog_family_id,
             )
         ))
 

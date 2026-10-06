@@ -31,6 +31,17 @@ class LocationFix:
         )
 
 
+def positions_digest(positions: list[SignalPosition]) -> str:
+    """Stable signature for the latest fix (history write coalescing)."""
+    if not positions:
+        return ""
+    latest = max(positions, key=lambda item: item.observed_at)
+    return (
+        f"{latest.latitude:.7f}:{latest.longitude:.7f}:"
+        f"{latest.accuracy_m:.2f}:{latest.observed_at:.3f}"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SignalPosition:
     latitude: float

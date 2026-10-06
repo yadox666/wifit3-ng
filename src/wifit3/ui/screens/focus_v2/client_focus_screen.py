@@ -16,6 +16,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Static
 
+from wifit3.ui.catalog_format import catalog_status_line
 from wifit3.ui.notification_center import WifiteHeader
 
 from wifit3.campaigns import treelog
@@ -31,7 +32,11 @@ from wifit3.safety import deauth_limits
 from wifit3.ui.network_metadata_panel import NetworkMetadataPanel, client_network_details
 from wifit3.ui.open_probe_honeypot import start_open_probe_test
 from wifit3.ui.recording_indicator import pcap_progress, recording_indicator
-from wifit3.targeting import is_wifi_ap_whitelisted, is_wifi_client_whitelisted
+from wifit3.targeting import (
+    client_candidate,
+    is_wifi_ap_whitelisted,
+    is_wifi_client_whitelisted,
+)
 from wifit3.ui.screens.confirm_active import ConfirmActiveActionModal, ConfirmLeaveFocusModal
 from wifit3.ui.screens.open_probe_modal import OpenProbeSsidModal
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
@@ -77,6 +82,7 @@ class ClientFocusView(Screen):
         Binding("D", "deauth_ap", "Deauth AP", show=True),
         Binding("a", "toggle_probe_honeypot", "Probe honeypot", show=True),
         Binding("x", "toggle_capture", "Capture PCAP", show=True),
+        Binding("y", "open_catalog", "Catalog", show=True),
         Binding("shift+t", "targets_editor", "Targets", show=True),
     ]
 
@@ -340,9 +346,16 @@ class ClientFocusView(Screen):
             self._open_probe_campaign is not None
             and not self._open_probe_campaign.done
         )
-        return fm.client_status_headlines(
+        headlines = fm.client_status_headlines(
             client, self._target_ap, honeypot_active=active,
         )
+        ap = self._target_ap
+        if ap is None:
+            return headlines
+        line = catalog_status_line(ap.capabilities)
+        if line:
+            return [line, *headlines][:3]
+        return headlines
 
     @staticmethod
     def _render_status(status: list[str]) -> Text:
@@ -513,7 +526,20 @@ class ClientFocusView(Screen):
         return actions
 
     def action_targets_editor(self) -> None:
-        self.app.open_targets_editor()
+        client = self._live_client() or self._target_client
+        self.app.open_targets_editor(
+            prefill=(
+                client_candidate(client, self._target_ap)
+                if client is not None
+                else None
+            ),
+        )
+
+    def action_open_catalog(self) -> None:
+        from wifit3.ui.screens.catalog import open_catalog
+
+        open_catalog(self)
+
 
     async def action_go_back(self) -> None:
         running = self._running_actions_on_leave()

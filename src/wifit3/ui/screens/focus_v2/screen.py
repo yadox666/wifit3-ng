@@ -206,6 +206,7 @@ class FocusViewV2(Screen):
         Binding("x", "capture_packets", "Capture PCAP", show=True),
         Binding("s", "silence", "Silence", show=True),
         Binding("s", "unsilence", "unSilence", show=True),
+        Binding("v", "open_vault", "Vault", show=True),
         Binding("shift+t", "targets_editor", "Targets", show=True),
     ]
 
@@ -2145,6 +2146,27 @@ class FocusViewV2(Screen):
                 arp_neighbors, now=now,
             )
             camp.arp_neighbors_recorded = True
+        bonjour_services = getattr(camp, "bonjour_services", None)
+        if (
+            bonjour_services
+            and not getattr(camp, "bonjour_services_recorded", False)
+        ):
+            changed |= store.metadata.observe_bonjour_services(
+                bonjour_services,
+                now=now,
+            )
+            camp.bonjour_services_recorded = True
+        discovered_services = getattr(camp, "discovered_services", None)
+        if (
+            discovered_services
+            and not getattr(camp, "local_services_recorded", False)
+        ):
+            changed |= store.metadata.observe_local_discovery(
+                discovered_services,
+                getattr(camp, "device_roles", ()),
+                now=now,
+            )
+            camp.local_services_recorded = True
         if not changed:
             return
         try:
@@ -2395,6 +2417,11 @@ class FocusViewV2(Screen):
 
     def action_targets_editor(self) -> None:
         self.app.open_targets_editor()
+
+    def action_open_vault(self) -> None:
+        self.app.action_toggle_vault(
+            self._target_ap or getattr(self.app, "target_ap", None),
+        )
 
     async def action_go_back(self) -> None:
         running = self._running_actions_on_leave()

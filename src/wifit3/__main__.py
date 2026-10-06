@@ -42,8 +42,8 @@ async def _smoke() -> None:
         raise RuntimeError("chip discovery found no driver packages (PyInstaller bundling break)")
 
 
-def main() -> None:
-    """Parse CLI args, then run the headless smoke test or launch the TUI."""
+def build_parser():
+    """CLI for ``python -m wifit3`` and ``./start.sh``."""
     import argparse
 
     from wifit3 import __version__
@@ -54,7 +54,35 @@ def main() -> None:
     parser.add_argument("--quiet", action="store_true", help="Do not emit any logs")
     parser.add_argument("--debug", action="store_true", help="Emit verbose debug logs")
     parser.add_argument("--trace", action="store_true", help="Emit very verbose trace logs")
+    parser.add_argument(
+        "--background",
+        action="store_true",
+        help="Stay on the startup screen and record enabled Wi-Fi, BLE, and Bluetooth radios",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="With --background, monitor Wi-Fi, Bluetooth Classic, and BLE",
+    )
+    parser.add_argument(
+        "--case",
+        action="store_true",
+        help="Prompt for scan session name and notes at startup (default: auto-generated name)",
+    )
+    return parser
+
+
+def check_cli(parser, args) -> None:
+    """Reject flag combinations that do not name a mode."""
+    if args.all and not args.background:
+        parser.error("--all requires --background")
+
+
+def main() -> None:
+    """Parse CLI args, then run the headless smoke test or launch the TUI."""
+    parser = build_parser()
     args = parser.parse_args()
+    check_cli(parser, args)
 
     if args.smoke:
         import asyncio
@@ -74,7 +102,31 @@ def main() -> None:
     if args.quiet:
         cli_log_level = "quiet"
 
-    WifiteApp(cli_log_level=cli_log_level).run()
+    import asyncio
+    import os
+
+    # Own the event loop instead of letting app.run() call asyncio.run(). On exit,
+    # asyncio.run() drains the default thread-pool executor (and the interpreter's
+    # concurrent.futures atexit hook joins it again) - if a background worker is
+    # blocked in a syscall (a serial-GPS or USB read), that join hangs for minutes
+    # and Ctrl+C just stacks more KeyboardInterrupts. Passing our own loop takes
+    # Textual's run_until_complete() path (no executor drain); the TUI has already
+    # restored the terminal by the time run() returns, so we exit immediately and
+    # skip the thread-join entirely.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    app = WifiteApp(
+        cli_log_level=cli_log_level,
+        background=args.background,
+        background_all=args.all,
+        case_prompt=args.case,
+    )
+    try:
+        app.run(loop=loop)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        os._exit(app.return_code or 0)
 
 
 if __name__ == "__main__":

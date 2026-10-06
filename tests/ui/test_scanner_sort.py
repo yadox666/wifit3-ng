@@ -5,11 +5,12 @@ from typing import List, Optional
 import pytest
 from textual.app import App
 from textual.widgets import DataTable
+from textual.widgets.data_table import ColumnKey
 
 from wifit3.models import AccessPoint, Client
 from wifit3.persist.config import Config
 from wifit3.persist.vault import Vault
-from wifit3.ui.screens.scanner import ScannerView, _ChannelReadout
+from wifit3.ui.screens.scanner import ScannerView, _APScanTable, _ChannelReadout
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +42,7 @@ class _FakeIface:
         self.supported_channels = supported
         self.current_channel = supported[0] if supported else 1
         self.chipset = "test"
-        self.instance_key = ("test",)
+        self.instance_key = ("test", id(self))
         self._is_hopping = True
 
     async def stop_hopping(self) -> None:
@@ -62,7 +63,9 @@ class _FakeArray:
     def get_access_points(self, include_eviltwin: bool = True) -> List[AccessPoint]:
         return list(self.access_points.values())
 
-    async def start_hopping(self, channels=None, interval=0.25, **kwargs) -> None:
+    async def start_hopping(
+        self, channels=None, interval=0.25, member_channels=None,
+    ) -> None:
         pass
 
     async def stop_hopping(self) -> None:
@@ -75,9 +78,16 @@ class _ScannerHost(App):
         self.array = array
         self.pbc_enabled = True
         self.vault = Vault()
+        self.vault_context = None
 
     def persist_config(self) -> None:
         pass
+
+    def action_toggle_vault(self, access_point=None) -> None:
+        self.vault_context = access_point
+
+    def sdr_jam_available(self) -> bool:
+        return False
 
     def on_mount(self) -> None:
         self.push_screen(ScannerView())
@@ -99,12 +109,35 @@ async def test_sort_change_shows_toast_and_header_status():
 
         assert readout.channels.startswith("Sorted: POWER (>)")
         scanner.action_cycle_sort()
-        assert readout.channels.startswith("Sorted: BEACONS (>)")
-        assert toasts[-1] == ("Sort changed", "Sorted by BEACONS descending")
+        assert readout.channels.startswith("Sorted: CC (>)")
+        assert toasts[-1] == ("Sort changed", "Sorted by CC descending")
 
         scanner.action_toggle_sort_dir()
-        assert readout.channels.startswith("Sorted: BEACONS (<)")
-        assert toasts[-1] == ("Sort changed", "Sorted by BEACONS ascending")
+        assert readout.channels.startswith("Sorted: CC (<)")
+        assert toasts[-1] == ("Sort changed", "Sorted by CC ascending")
+
+
+@pytest.mark.asyncio
+async def test_touching_wifi_header_selects_and_reverses_sort():
+    app = _ScannerHost(_FakeArray([], [1, 6, 11]))
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0)
+        scanner = app.screen
+        table = scanner.query_one("#ap-table", DataTable)
+        column_key = next(key for key in table.columns if key.value == "ssid")
+        event = DataTable.HeaderSelected(
+            table,
+            column_key,
+            table.get_column_index(column_key),
+            table.columns[column_key].label,
+        )
+
+        scanner.sort_from_header(event)
+        assert table.columns[column_key].label.plain == "▲ SSID"
+
+        scanner.sort_from_header(event)
+        assert table.columns[column_key].label.plain == "▼ SSID"
 
 
 @pytest.mark.asyncio
@@ -123,6 +156,27 @@ async def test_sort_aps_short_circuits_when_order_unchanged():
         # Re-running sort when data has not moved returns False (no-op short circuit)
         order_changed = table.sort_aps("signal", lambda bssid, val: (0, scanner.ap_cache[bssid].signal), reverse=True)
         assert order_changed is False
+
+
+@pytest.mark.asyncio
+async def test_ap_scan_ends_with_unclipped_client_manufacturer():
+    ap = _make_ap("aa:bb:cc:00:00:01", ssid="Visible AP", signal=-50)
+    app = _ScannerHost(_FakeArray([ap], []))
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        scanner = app.screen
+        table = scanner.query_one("#ap-table", DataTable)
+        scanner.refresh_table()
+
+        keys = [key for key, _label in scanner._COLUMNS]
+        assert keys[-1] == "stations"
+        assert keys.index("bssid") < keys.index("stations")
+        assert table.get_cell(ap.bssid, "bssid").plain == ap.bssid
+
+        long_manufacturers = "Manufacturer One · Manufacturer Two · Manufacturer Three"
+        scanner._station_labels[ap.bssid] = long_manufacturers
+        assert scanner._render_cell(ap, "stations", False).plain == long_manufacturers
 
 
 @pytest.mark.asyncio
@@ -216,6 +270,23 @@ async def test_selected_ap_bssid_follows_its_row_during_resort():
         assert table.cursor_coordinate.row == 0
         selected = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
         assert selected == "aa:bb:cc:00:00:02"
+
+
+@pytest.mark.asyncio
+async def test_open_vault_carries_highlighted_ap_context():
+    first = _make_ap("aa:bb:cc:00:00:01", ssid="First", signal=-40)
+    selected = _make_ap("aa:bb:cc:00:00:02", ssid="Selected", signal=-60)
+    app = _ScannerHost(_FakeArray([first, selected], []))
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        scanner = app.screen
+        table = scanner.query_one("#ap-table", DataTable)
+        table.move_cursor(row=1, animate=False)
+
+        scanner.action_open_vault()
+
+        assert app.vault_context is selected
 
 
 @pytest.mark.asyncio
@@ -345,6 +416,7 @@ async def test_guess_stays_with_infrastructure_when_collapsed_and_expanded():
             hidden.bssid,
             quieter.bssid,
         ]
+        assert table.get_cell(group_key, "bssid").plain == "3 BSSIDs"
 
         table.move_cursor(row=collapsed.index(group_key), animate=False)
         scanner.action_toggle_infrastructure()
@@ -358,10 +430,19 @@ async def test_guess_stays_with_infrastructure_when_collapsed_and_expanded():
             tail.bssid,
             quieter.bssid,
         ]
-        assert table.get_cell(lead.bssid, "ssid").plain == "MOVISTAR-WIFI6-A250"
-        assert table.get_cell(named.bssid, "ssid").plain == "└ MOVISTAR-WIFI6-A250"
-        assert table.get_cell(tail.bssid, "ssid").plain == "└ MOVISTAR-WIFI6-A250"
-        assert table.get_cell(hidden.bssid, "ssid").plain == "MOVISTAR-WIFI6-A250 [guess]"
+        assert table.get_cell(lead.bssid, "ssid").plain == "  MOVISTAR-WIFI6-A250"
+        assert table.get_cell(named.bssid, "ssid").plain == "  └ MOVISTAR-WIFI6-A250"
+        assert table.get_cell(tail.bssid, "ssid").plain == "  └ MOVISTAR-WIFI6-A250"
+        assert table.get_cell(hidden.bssid, "ssid").plain == "  MOVISTAR-WIFI6-A250 [guess]"
+        bssid_col = table.columns[ColumnKey("bssid")]
+        assert bssid_col.content_width <= _APScanTable.BSSID_COL_WIDTH
+
+        bssid_col.content_width = 60
+        table.move_cursor(row=expanded.index(lead.bssid), animate=False)
+        scanner.action_toggle_infrastructure()
+        await pilot.pause(0)
+        assert table.get_cell(group_key, "bssid").plain == "3 BSSIDs"
+        assert bssid_col.content_width <= _APScanTable.BSSID_COL_WIDTH
 
 
 @pytest.mark.asyncio

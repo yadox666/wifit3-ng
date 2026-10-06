@@ -63,7 +63,7 @@ def _rsn_ie(
 def _wps_ie(*, locked: bool = False, version2: bool = False,
             configured: bool = True, manufacturer: bytes = b"",
             model_name: bytes = b"", model_number: bytes = b"",
-            device_name: bytes = b"") -> bytes:
+            device_name: bytes = b"", serial_number: bytes = b"") -> bytes:
     """Build a WPS vendor IE (tag 221, OUI 00:50:F2, OUI-type 4) with the
     nested big-endian TLVs. AP Setup Locked is always emitted (as real APs
     do) so both the locked and unlocked decode paths are exercised."""
@@ -75,6 +75,10 @@ def _wps_ie(*, locked: bool = False, version2: bool = False,
     body += tlv(0x1057, b"\x01" if locked else b"\x00")          # AP Setup Locked
     body += tlv(0x1008, b"\x00\x84")                             # Config Methods
     body += tlv(0x1012, b"\x00\x00")                             # Device Password ID (PIN)
+    body += tlv(0x1047, bytes(range(16)))                         # UUID-E
+    body += tlv(0x103C, b"\x03")                                 # RF bands
+    body += tlv(0x102D, b"\x80\x00\x00\x01")                     # OS version
+    body += tlv(0x103B, b"\x03")                                 # Response type
     if manufacturer:
         body += tlv(0x1021, manufacturer)
     if model_name:
@@ -83,6 +87,8 @@ def _wps_ie(*, locked: bool = False, version2: bool = False,
         body += tlv(0x1024, model_number)
     if device_name:
         body += tlv(0x1011, device_name)
+    if serial_number:
+        body += tlv(0x1042, serial_number)
     if version2:
         body += tlv(0x1049, b"\x00\x37\x2a" + b"\x00\x01\x20")  # Vendor Ext → Version2
     payload = b"\x00\x50\xf2\x04" + body
@@ -95,6 +101,11 @@ def test_wps_open_beacon():
     assert r.wps is True
     assert r.wps_locked is False
     assert r.wps_version == "1.0"
+    assert r.wps_state == 2
+    assert r.wps_uuid_e == bytes(range(16)).hex()
+    assert r.wps_rf_bands == 3
+    assert r.wps_os_version == 0x80000001
+    assert r.wps_response_type == 3
 
 
 def test_beacon_timestamp_is_parsed_as_ap_uptime_microseconds():
@@ -169,12 +180,13 @@ def test_wps_version2_beacon():
 def test_wps_identity_fields_beacon():
     r = WlanFrameParser.parse_80211_frame(_build_beacon(wpa_vendor_ie=_wps_ie(
         manufacturer=b"MikroTik", model_name=b"RouterBOARD", model_number=b"RB951",
-        device_name=b"Office AP\x00",
+        device_name=b"Office AP\x00", serial_number=b"SERIAL-1",
     )), -50)
     assert r.wsc_manufacturer == "MikroTik"
     assert r.wsc_model_name == "RouterBOARD"
     assert r.wsc_model_number == "RB951"
     assert r.wsc_device_name == "Office AP"
+    assert r.wsc_serial_number == "SERIAL-1"
 
 
 def test_no_wps_ie_absent():
@@ -397,15 +409,18 @@ def test_assoc_req_extracts_client_radio_power_and_feature_capabilities():
     mobility = bytes([54, 3, 1, 2, 3])
     ext = bytes([127, 3, 0, 0, 0x08])
     wmm = bytes.fromhex("DD060050F2020101")
+    he_cap = bytes([255, 7, 35, 1, 2, 3, 4, 5, 6])
     parsed = WlanFrameParser.parse_80211_frame(
         _build_assoc_req(
             _rsn_ie(akms=(0x08,), rsn_caps=0x0080),
-            extra_ies=ht + power + channels + rm + mobility + ext + wmm,
+            extra_ies=(
+                ht + power + channels + rm + mobility + ext + wmm + he_cap
+            ),
         ),
         -50,
     )
     caps = parsed.capabilities
-    assert caps.phy_modes == {"802.11n"}
+    assert caps.phy_modes == {"802.11ax", "802.11n"}
     assert caps.channel_widths_mhz == {20, 40}
     assert caps.max_spatial_streams == 2
     assert (caps.power_min_dbm, caps.power_max_dbm) == (-10, 20)
@@ -414,6 +429,16 @@ def test_assoc_req_extracts_client_radio_power_and_feature_capabilities():
     assert caps.pmf_capable and not caps.pmf_required
     assert caps.listen_interval == 1
     assert {"ESS", "Privacy"} <= caps.capability_flags
+    assert {
+        "ht_cap", "rm_cap", "extended_cap", "he_mac_cap",
+    } <= set(caps.client_ie_hashes)
+    assert all(
+        len(digest) == 64
+        for digests in caps.client_ie_hashes.values()
+        for digest in digests
+    )
+    assert "00:50:F2:02" in caps.client_vendor_tokens
+    assert len(caps.client_ie_order_hashes) == 1
 
 
 def test_assoc_req_extracts_client_wps_identity():

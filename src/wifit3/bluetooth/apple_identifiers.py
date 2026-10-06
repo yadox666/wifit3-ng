@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 from functools import lru_cache
 from importlib import resources
 
@@ -16,6 +17,11 @@ _APPLE_IDENTIFIER = re.compile(
     r"Mac|RealityDevice|iBridge|HomePod|iProd)\d",
     re.IGNORECASE,
 )
+_APPLE_PNP_PRODUCT = re.compile(
+    r"Apple(?:, Inc\.)?\s*·\s*product 0x([0-9A-Fa-f]+)",
+    re.IGNORECASE,
+)
+_BT_APPLE_VENDOR = 0x004C
 
 _DATASETS = (
     "ios-device-identifiers.json",
@@ -67,4 +73,28 @@ def format_device_model_number(
         return raw
     if detail:
         return f"{friendly} ({raw})"
+    return friendly
+
+
+def format_apple_pnp_label(
+    decoded: str,
+    *,
+    detail: bool = False,
+    raw: bytes | None = None,
+) -> str | None:
+    """Format an Apple PnP ID without guessing an unpublished product model."""
+    product: int | None = None
+    if raw and len(raw) >= 7:
+        source, vendor, product_id, _version = struct.unpack_from("<BHHH", raw)
+        if source == 0x01 and vendor == _BT_APPLE_VENDOR:
+            product = product_id
+    if product is None:
+        match = _APPLE_PNP_PRODUCT.search(decoded or "")
+        if match:
+            product = int(match.group(1), 16)
+    if product is None:
+        return None
+    friendly = f"Apple Bluetooth device (PID 0x{product:04X})"
+    if detail and decoded.strip():
+        return f"{friendly} ({decoded.strip()})"
     return friendly

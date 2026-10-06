@@ -25,6 +25,14 @@ class _Host(App):
     """Minimal host: push the v2 screen straight in (no device manager)."""
     target_ap = None
     array = None
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.vault_context = None
+
+    def action_toggle_vault(self, access_point=None) -> None:
+        self.vault_context = access_point
+
     def on_mount(self) -> None:
         self.push_screen(FocusViewV2())
 
@@ -71,6 +79,21 @@ async def test_layout_geometry():
             expected_center = min(_CENTER_MAX, max(_CENTER_MIN, avail - _BOTTOM_MIN))
             assert mid.height == expected_center
             assert bot.height == avail - expected_center
+
+
+async def test_focus_vault_uses_current_ap_as_psk_context():
+    app = _Host()
+    ap = AccessPoint(
+        bssid="aa:bb:cc:dd:ee:ff",
+        ssid="Focused Network",
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.screen._target_ap = ap
+        app.screen.action_open_vault()
+
+        assert app.vault_context is ap
 
 
 async def test_client_connector_is_overlaid_only_while_clients_exist():

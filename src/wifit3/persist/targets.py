@@ -19,15 +19,24 @@ TARGETS_PATH = Path(user_data_dir("wifit3", appauthor=False)) / "targets.sqlite3
 LEGACY_TARGETS_PATH = (
     Path(user_config_dir("wifit3", appauthor=False)) / "targets.json"
 )
-TARGETS_VERSION = 2
-_VALID_MEDIA = {"wifi", "bluetooth"}
-_VALID_KINDS = {"ap", "client", "device"}
+TARGETS_VERSION = 3
+_VALID_MEDIA = {"wifi", "bluetooth", "catalog"}
+_VALID_KINDS = {"ap", "client", "device", "family"}
 _VALID_ROLES = {"target", "whitelist"}
 _VALID_MATCH_MODES = {"id", "name", "probe"}
 
 
 class TargetStoreError(RuntimeError):
     pass
+
+
+@dataclass
+class TargetMember:
+    medium: str
+    kind: str
+    identifier: str
+    details: dict[str, Any] = field(default_factory=dict)
+    match_mode: str = "id"
 
 
 @dataclass
@@ -45,6 +54,69 @@ class SavedTarget:
     enabled: bool = True
     role: str = "target"
     match_mode: str = "id"
+    members: list[TargetMember] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.members:
+            self.members = [TargetMember(
+                medium=self.medium,
+                kind=self.kind,
+                identifier=self.identifier,
+                details=self.details,
+                match_mode=self.match_mode,
+            )]
+
+
+def _member_payload(member: TargetMember) -> dict[str, Any]:
+    return {
+        "medium": member.medium,
+        "kind": member.kind,
+        "identifier": member.identifier,
+        "details": member.details,
+        "match_mode": member.match_mode,
+    }
+
+
+def _member_from_payload(raw: object) -> TargetMember | None:
+    if not isinstance(raw, dict):
+        return None
+    medium = str(raw.get("medium", ""))
+    kind = str(raw.get("kind", ""))
+    identifier = str(raw.get("identifier", "")).strip()
+    match_mode = str(raw.get("match_mode", "id"))
+    details = raw.get("details", {})
+    if (
+        medium not in _VALID_MEDIA
+        or kind not in _VALID_KINDS
+        or not identifier
+        or match_mode not in _VALID_MATCH_MODES
+        or not isinstance(details, dict)
+    ):
+        return None
+    return TargetMember(
+        medium=medium,
+        kind=kind,
+        identifier=identifier,
+        details=dict(details),
+        match_mode=match_mode,
+    )
+
+
+def _sync_primary(target: SavedTarget) -> None:
+    if not target.members:
+        target.members.append(TargetMember(
+            medium=target.medium,
+            kind=target.kind,
+            identifier=target.identifier,
+            details=target.details,
+            match_mode=target.match_mode,
+        ))
+    primary = target.members[0]
+    target.medium = primary.medium
+    target.kind = primary.kind
+    target.identifier = primary.identifier
+    target.details = primary.details
+    target.match_mode = primary.match_mode
 
 
 def _fill_empty(existing: dict[str, Any], incoming: dict[str, Any]) -> bool:
@@ -57,6 +129,58 @@ def _fill_empty(existing: dict[str, Any], incoming: dict[str, Any]) -> bool:
             if value is not None and value != "" and value != []:
                 existing[key] = value
                 changed = True
+    return changed
+
+
+def _merge_target_details(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+) -> bool:
+    """Fill observations and retain the most complete passive fingerprints."""
+    fingerprint_keys = {
+        "wifi_fingerprint",
+        "wifi_radio_fingerprint",
+        "bluetooth_fingerprint",
+    }
+    list_keys = {"known_macs"}
+    ordinary = {
+        key: value for key, value in incoming.items()
+        if key not in fingerprint_keys | list_keys
+    }
+    changed = _fill_empty(existing, ordinary)
+    for key in list_keys:
+        candidate = incoming.get(key)
+        if not isinstance(candidate, list):
+            continue
+        current = existing.get(key)
+        merged = list(current) if isinstance(current, list) else []
+        folded = {str(value).casefold() for value in merged}
+        list_changed = False
+        for value in candidate:
+            if isinstance(value, str) and value.casefold() not in folded:
+                merged.append(value)
+                folded.add(value.casefold())
+                list_changed = True
+        if merged and (list_changed or not isinstance(current, list)):
+            existing[key] = merged
+            changed = True
+    for key in fingerprint_keys:
+        candidate = incoming.get(key)
+        if not isinstance(candidate, dict):
+            continue
+        current = existing.get(key)
+        try:
+            candidate_score = int(candidate.get("completeness_percent", 0))
+            current_score = (
+                int(current.get("completeness_percent", 0))
+                if isinstance(current, dict)
+                else -1
+            )
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(current, dict) or candidate_score >= current_score:
+            existing[key] = dict(candidate)
+            changed = True
     return changed
 
 
@@ -89,9 +213,10 @@ class TargetStore:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA secure_delete = ON")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version > 2:
+            if version > TARGETS_VERSION:
                 raise TargetStoreError(
-                    f"Targets database schema {version} is newer than supported 2",
+                    f"Targets database schema {version} is newer than "
+                    f"supported {TARGETS_VERSION}",
                 )
             connection.execute(
                 """
@@ -108,7 +233,8 @@ class TargetStore:
                     priority INTEGER NOT NULL,
                     enabled INTEGER NOT NULL,
                     role TEXT NOT NULL DEFAULT 'target',
-                    match_mode TEXT NOT NULL DEFAULT 'id'
+                    match_mode TEXT NOT NULL DEFAULT 'id',
+                    members_json TEXT NOT NULL DEFAULT '[]'
                 )
                 """
             )
@@ -119,7 +245,7 @@ class TargetStore:
                 """
             )
             if version == 0:
-                connection.execute("PRAGMA user_version = 2")
+                connection.execute("PRAGMA user_version = 3")
             elif version == 1:
                 columns = {
                     row[1]
@@ -133,7 +259,25 @@ class TargetStore:
                     connection.execute(
                         "ALTER TABLE targets ADD COLUMN match_mode TEXT NOT NULL DEFAULT 'id'"
                     )
-                connection.execute("PRAGMA user_version = 2")
+                if "members_json" not in columns:
+                    connection.execute(
+                        "ALTER TABLE targets ADD COLUMN "
+                        "members_json TEXT NOT NULL DEFAULT '[]'"
+                    )
+                connection.execute("PRAGMA user_version = 3")
+            elif version == 2:
+                columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(targets)"
+                    ).fetchall()
+                }
+                if "members_json" not in columns:
+                    connection.execute(
+                        "ALTER TABLE targets ADD COLUMN "
+                        "members_json TEXT NOT NULL DEFAULT '[]'"
+                    )
+                connection.execute("PRAGMA user_version = 3")
             connection.commit()
             try:
                 os.chmod(self.path, 0o600)
@@ -163,6 +307,16 @@ class TargetStore:
         for row in rows:
             try:
                 details = json.loads(row["details_json"])
+                raw_members = (
+                    json.loads(row["members_json"])
+                    if "members_json" in row.keys()
+                    else []
+                )
+                members = [
+                    member
+                    for raw in raw_members
+                    if (member := _member_from_payload(raw)) is not None
+                ]
                 target = SavedTarget(
                     id=str(row["id"]),
                     alias=str(row["alias"]),
@@ -183,7 +337,9 @@ class TargetStore:
                         str(row["match_mode"])
                         if "match_mode" in row.keys() else "id"
                     ),
+                    members=members,
                 )
+                _sync_primary(target)
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
             if target.role not in _VALID_ROLES:
@@ -206,14 +362,16 @@ class TargetStore:
             raise TargetStoreError("Targets database is unavailable")
         try:
             with self._lock, connection:
+                for target in self.targets:
+                    _sync_primary(target)
                 connection.execute("DELETE FROM targets")
                 connection.executemany(
                     """
                     INSERT INTO targets (
                         id, alias, medium, kind, identifier, details_json,
                         created_at, updated_at, last_locked_at, priority, enabled,
-                        role, match_mode
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        role, match_mode, members_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -224,6 +382,13 @@ class TargetStore:
                             target.last_locked_at, target.priority,
                             int(target.enabled),
                             target.role, target.match_mode,
+                            json.dumps(
+                                [
+                                    _member_payload(member)
+                                    for member in target.members
+                                ],
+                                ensure_ascii=False,
+                            ),
                         )
                         for target in self.targets
                     ],
@@ -239,8 +404,10 @@ class TargetStore:
         except (OSError, json.JSONDecodeError) as exc:
             self.errors.append(f"Could not migrate targets.json: {exc}")
             return
-        legacy_version = payload.get("version") if isinstance(payload, dict) else None
-        if not isinstance(payload, dict) or legacy_version not in (1, TARGETS_VERSION):
+        if (
+            not isinstance(payload, dict)
+            or payload.get("version") not in {1, TARGETS_VERSION}
+        ):
             self.errors.append("Unsupported targets.json version")
             return
         connection = self._connection
@@ -272,15 +439,44 @@ class TargetStore:
         except OSError as exc:
             self.errors.append(f"Could not remove migrated targets.json: {exc}")
 
-    def find(self, medium: str, kind: str, identifier: str) -> SavedTarget | None:
+    def member(
+        self,
+        target: SavedTarget,
+        medium: str,
+        kind: str,
+        identifier: str,
+        *,
+        match_mode: str = "id",
+    ) -> TargetMember | None:
         normalized = identifier.casefold()
         return next(
             (
+                member for member in target.members
+                if member.medium == medium
+                and member.kind == kind
+                and member.match_mode == match_mode
+                and member.identifier.casefold() == normalized
+            ),
+            None,
+        )
+
+    def find(self, medium: str, kind: str, identifier: str) -> SavedTarget | None:
+        return next(
+            (
                 target for target in self.targets
-                if target.medium == medium
-                and target.kind == kind
-                and target.match_mode == "id"
-                and target.identifier.casefold() == normalized
+                if self.member(target, medium, kind, identifier) is not None
+            ),
+            None,
+        )
+
+    def find_by_alias(self, alias: str) -> SavedTarget | None:
+        normalized = alias.strip().casefold()
+        if not normalized:
+            return None
+        return next(
+            (
+                target for target in self.targets
+                if target.alias.casefold() == normalized
             ),
             None,
         )
@@ -292,10 +488,13 @@ class TargetStore:
         return next(
             (
                 target for target in self.targets
-                if target.medium == medium
-                and target.kind == kind
-                and target.match_mode == "name"
-                and target.identifier.casefold() == normalized
+                if self.member(
+                    target,
+                    medium,
+                    kind,
+                    normalized,
+                    match_mode="name",
+                ) is not None
             ),
             None,
         )
@@ -307,10 +506,13 @@ class TargetStore:
         return next(
             (
                 target for target in self.targets
-                if target.medium == "wifi"
-                and target.kind == "client"
-                and target.match_mode == "probe"
-                and target.identifier.casefold() == normalized
+                if self.member(
+                    target,
+                    "wifi",
+                    "client",
+                    normalized,
+                    match_mode="probe",
+                ) is not None
             ),
             None,
         )
@@ -346,16 +548,29 @@ class TargetStore:
         if not identifier.strip():
             raise TargetStoreError("Target identifier is required")
         identifier = identifier.strip()
-        if match_mode == "id":
-            target = self.find(medium, kind, identifier)
+        if medium == "catalog" and kind == "family":
+            if match_mode != "id":
+                raise TargetStoreError("Catalog family entries use ID match only")
+            exact_target = self.find(medium, kind, identifier)
+        elif match_mode == "id":
+            exact_target = self.find(medium, kind, identifier)
         elif match_mode == "name":
-            target = self.find_by_name(medium, kind, identifier)
+            exact_target = self.find_by_name(medium, kind, identifier)
         elif match_mode == "probe":
             if medium != "wifi" or kind != "client":
                 raise TargetStoreError("Probe match applies only to Wi-Fi STA entries")
-            target = self.find_by_probe(identifier)
+            exact_target = self.find_by_probe(identifier)
         else:
             raise TargetStoreError("Unsupported match mode")
+        alias_target = self.find_by_alias(alias)
+        if (
+            exact_target is not None
+            and alias_target is not None
+            and exact_target.id != alias_target.id
+        ):
+            self._merge_groups(alias_target, exact_target)
+            exact_target = alias_target
+        target = exact_target or alias_target
         now = time.time()
         if target is None:
             target = SavedTarget(
@@ -375,17 +590,110 @@ class TargetStore:
         else:
             target.alias = alias
             target.role = role
-            target.match_mode = match_mode
-            if _fill_empty(target.details, details):
-                target.updated_at = now
+            member = self.member(
+                target,
+                medium,
+                kind,
+                identifier,
+                match_mode=match_mode,
+            )
+            if member is None:
+                target.members.append(TargetMember(
+                    medium=medium,
+                    kind=kind,
+                    identifier=identifier,
+                    details=dict(details),
+                    match_mode=match_mode,
+                ))
             else:
-                target.updated_at = now
+                _merge_target_details(member.details, details)
+            _sync_primary(target)
+            target.updated_at = now
         self.save()
         return target
 
+    def _merge_groups(
+        self,
+        destination: SavedTarget,
+        source: SavedTarget,
+    ) -> None:
+        for incoming in source.members:
+            current = self.member(
+                destination,
+                incoming.medium,
+                incoming.kind,
+                incoming.identifier,
+                match_mode=incoming.match_mode,
+            )
+            if current is None:
+                destination.members.append(incoming)
+            else:
+                _merge_target_details(current.details, incoming.details)
+        destination.created_at = min(
+            destination.created_at,
+            source.created_at,
+        )
+        destination.updated_at = max(
+            destination.updated_at,
+            source.updated_at,
+        )
+        locks = [
+            value for value in (
+                destination.last_locked_at,
+                source.last_locked_at,
+            )
+            if value is not None
+        ]
+        destination.last_locked_at = max(locks) if locks else None
+        destination.priority = min(destination.priority, source.priority)
+        self.targets = [
+            target for target in self.targets
+            if target.id != source.id
+        ]
+        for priority, target in enumerate(
+            sorted(self.targets, key=lambda item: item.priority),
+        ):
+            target.priority = priority
+        _sync_primary(destination)
+
     def update_missing(self, target: SavedTarget, details: dict[str, Any]) -> bool:
-        changed = _fill_empty(target.details, details)
+        changed = _merge_target_details(target.details, details)
         if changed:
+            target.updated_at = time.time()
+            self.save()
+        return changed
+
+    def update_member_missing(
+        self,
+        target: SavedTarget,
+        *,
+        medium: str,
+        kind: str,
+        identifier: str,
+        details: dict[str, Any],
+        match_mode: str = "id",
+    ) -> bool:
+        member = self.member(
+            target,
+            medium,
+            kind,
+            identifier,
+            match_mode=match_mode,
+        )
+        changed = False
+        if member is None:
+            target.members.append(TargetMember(
+                medium=medium,
+                kind=kind,
+                identifier=identifier,
+                details=dict(details),
+                match_mode=match_mode,
+            ))
+            changed = True
+        else:
+            changed = _merge_target_details(member.details, details)
+        if changed:
+            _sync_primary(target)
             target.updated_at = time.time()
             self.save()
         return changed
@@ -407,17 +715,26 @@ class TargetStore:
     def ordered(self, medium: str | None = None) -> list[SavedTarget]:
         targets = (
             self.targets
-            if medium is None
-            else [target for target in self.targets if target.medium == medium]
+            if medium is None else [
+                target for target in self.targets
+                if any(member.medium == medium for member in target.members)
+            ]
         )
         return sorted(targets, key=lambda target: (target.priority, target.created_at))
 
     def clear_medium(self, medium: str) -> None:
         if medium not in _VALID_MEDIA:
             raise TargetStoreError("Unsupported target medium")
-        self.targets = [
-            target for target in self.targets if target.medium != medium
-        ]
+        retained: list[SavedTarget] = []
+        for target in self.targets:
+            target.members = [
+                member for member in target.members
+                if member.medium != medium
+            ]
+            if target.members:
+                _sync_primary(target)
+                retained.append(target)
+        self.targets = retained
         for priority, target in enumerate(self.targets):
             target.priority = priority
         self.save()

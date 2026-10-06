@@ -85,7 +85,7 @@ class UsbBluetoothConnection:
                     att.parse_error_response(data)
                 )
                 raise UsbBluetoothConnectionError(
-                    f"{att.att_error_name(error_code)} — request opcode "
+                    f"{att.att_error_name(error_code)} - request opcode "
                     f"0x{request_opcode:02x}, handle 0x{attribute_handle:04x}",
                 )
             if opcode != att.ATT_READ_RESPONSE:

@@ -13,7 +13,6 @@ from textual.reactive import reactive
 from textual.widgets import Checkbox, Static
 
 from wifit3.models.device_id import DeviceID
-from wifit3.wlan.regulatory import splash_regulatory_subtitle
 
 # Short labels: the control is one line, so the words have to stay obvious at a glance.
 _BANDS: tuple[tuple[str, str], ...] = (
@@ -84,6 +83,34 @@ def band_choices(dev: DeviceID) -> tuple[tuple[str, str], ...]:
     return ((_BAND_ONLY[only], only),)
 
 
+def default_scan_bands(devices: Sequence[DeviceID]) -> dict[tuple, str]:
+    """Pin each dual-band card to the band no single-band card already covers.
+
+    A 2.4 GHz-only adapter next to a dual-band adapter selects 5 GHz on the
+    dual-band card. A 5 GHz-only adapter selects 2.4 GHz. When both bands
+    already have a dedicated card, or every card is dual-band, the dual-band
+    cards stay on all channels.
+    """
+    if len(devices) < 2:
+        return {}
+    classified = [(dev, hardware_scan_bands(dev.vid, dev.pid)) for dev in devices]
+    covered: set[str] = set()
+    for _dev, bands in classified:
+        if bands == frozenset({"2g"}):
+            covered.add("2g")
+        elif bands == frozenset({"5g"}):
+            covered.add("5g")
+    missing = frozenset({"2g", "5g"}) - covered
+    if len(missing) != 1 or not covered:
+        return {}
+    target = next(iter(missing))
+    return {
+        dev.instance_key: target
+        for dev, bands in classified
+        if bands == frozenset({"2g", "5g"})
+    }
+
+
 def _row_id(index: int) -> str:
     return f"device-row-{index}"
 
@@ -123,6 +150,8 @@ class _BandOpt(Static):
             index = picker.row_index_at(bar)
             if index is not None:
                 picker.highlighted = index
+                if len(bar.choices) > 1:
+                    picker.note_manual_band(index)
 
 
 class ScanBandBar(Horizontal):
@@ -290,6 +319,7 @@ class DevicePicker(Vertical):
         self._devices: list[DeviceID] = []
         self._checked_by_key: dict[tuple, bool] = {}
         self._band_by_key: dict[tuple, str] = {}
+        self._band_manual: set[tuple] = set()
         self._preferred_width = _PICKER_MIN
 
     @property
@@ -306,17 +336,6 @@ class DevicePicker(Vertical):
         self.display = False
         self.border_title = ""
         self.border_subtitle = ""
-        self._attached_for_regulatory = None
-
-    def refresh_regulatory_from_array(self, members) -> None:
-        """After bring-up, show whether each card applied ``wifi_regulatory_country``."""
-        self._attached_for_regulatory = list(members) if members else None
-        if self._devices:
-            self._refresh_regulatory_subtitle()
-
-    def _refresh_regulatory_subtitle(self) -> None:
-        attached = getattr(self, "_attached_for_regulatory", None)
-        self.border_subtitle = splash_regulatory_subtitle(attached)
 
     def set_devices(self, devices: Sequence[DeviceID]) -> None:
         self._devices = list(devices)
@@ -328,16 +347,19 @@ class DevicePicker(Vertical):
             return
         self.display = True
         self.border_title = "Wi‑Fi adapters"
-        self._refresh_regulatory_subtitle()
         self._preferred_width = _fit_width(devices)
         self.styles.width = self._preferred_width
+        defaults = default_scan_bands(devices)
         for index, dev in enumerate(devices):
             key = dev.instance_key
             if key not in self._checked_by_key:
                 self._checked_by_key[key] = True
             choices = band_choices(dev)
             allowed = {band_key for _label, band_key in choices}
-            band = self._band_by_key.get(key, "all")
+            if key in self._band_manual:
+                band = self._band_by_key.get(key, "all")
+            else:
+                band = defaults.get(key, "all")
             if band not in allowed:
                 band = "all"
             row = Horizontal(classes="device-row", id=_row_id(index))
@@ -368,7 +390,9 @@ class DevicePicker(Vertical):
                 name = row.query_one(".device-name", Static)
             except Exception:
                 continue
-            focused = index == self.highlighted
+            # Only show the highlight cursor when there's an actual choice to
+            # navigate; a lone row shouldn't carry a selection marker.
+            focused = index == self.highlighted and len(self._devices) > 1
             row.set_class(focused, "-focus")
             try:
                 checked = self.query_one(f"#{_checkbox_id(index)}", Checkbox).value
@@ -433,6 +457,21 @@ class DevicePicker(Vertical):
             return
         current = keys.index(bar.value)
         bar.value = keys[(current + delta) % len(keys)]
+        self.note_manual_band(index)
+
+    def note_manual_band(self, index: int) -> None:
+        """Remember a band the operator picked, so a later refresh does not overwrite it."""
+        if not self._devices:
+            return
+        index = min(max(0, index), len(self._devices) - 1)
+        try:
+            bar = self.query_one(f"#{_band_bar_id(index)}", ScanBandBar)
+            band = bar.value
+        except Exception:
+            return
+        key = self._devices[index].instance_key
+        self._band_by_key[key] = band
+        self._band_manual.add(key)
 
     def focus_list(self) -> None:
         if not self._devices:

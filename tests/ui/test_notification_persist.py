@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 import pytest
-from textual.widgets import DataTable, Static
+from textual.widgets import Button, DataTable, Static
 
 from wifit3.ui.app import WifiteApp, _notification_should_persist
 from wifit3.ui.notification_center import NotificationHistoryModal
@@ -14,6 +14,21 @@ def test_should_persist_defaults_to_warning_and_error_only():
     assert _notification_should_persist("error", None) is True
     assert _notification_should_persist("information", True) is True
     assert _notification_should_persist("error", False) is False
+
+
+def test_notification_store_supplies_title_when_missing(tmp_path):
+    from wifit3.persist.notifications import NotificationStore
+
+    store = NotificationStore(tmp_path / "notifications.sqlite3")
+    warning = store.append("Radio is busy", severity="warning")
+    information = store.append("Scan started", severity="info")
+
+    assert warning.title == "Warning"
+    assert information.title == "Information"
+    assert [item.title for item in store.recent()] == [
+        "Information",
+        "Warning",
+    ]
 
 
 @pytest.mark.asyncio
@@ -43,7 +58,10 @@ async def test_information_toast_not_stored_unless_persist(tmp_path, monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
-async def test_notification_row_expands_and_copies_full_message(tmp_path, monkeypatch):
+async def test_notification_row_always_previews_and_copies_full_message(
+    tmp_path,
+    monkeypatch,
+):
     from wifit3.persist.notifications import NotificationStore
 
     store_path = tmp_path / "notifications.sqlite3"
@@ -69,12 +87,20 @@ async def test_notification_row_expands_and_copies_full_message(tmp_path, monkey
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, NotificationHistoryModal)
+        assert app.notification_store.unread_count() == 1
+        mark_read = modal.query_one("#notify-mark-read", Button)
+        assert not mark_read.disabled
         table = modal.query_one("#notify-table", DataTable)
+        assert [key.value for key in table.columns] == ["when", "title", "level"]
+        assert table.get_row_at(0)[2].plain == "error"
+        assert modal.query_one(
+            "#notify-detail-message",
+            Static,
+        ).render().plain == message
         table.focus()
         await pilot.press("enter")
         await pilot.pause()
 
-        assert modal.query_one("#notify-detail").has_class("expanded")
         assert modal.query_one(
             "#notify-detail-message",
             Static,
@@ -84,3 +110,8 @@ async def test_notification_row_expands_and_copies_full_message(tmp_path, monkey
         assert len(copied) == 1
         assert "Classic SDP failed" in copied[0]
         assert message in copied[0]
+
+        mark_read.press()
+        await pilot.pause()
+        assert app.notification_store.unread_count() == 0
+        assert mark_read.disabled

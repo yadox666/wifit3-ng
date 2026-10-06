@@ -29,6 +29,8 @@ async def test_single_card_channel_is_visible_on_first_paint():
     async with app.run_test() as pilot:
         await pilot.pause(0)
         readout = app.query_one(_ChannelReadout)
+        # The readout renders a trailing "  |  " separator so it sits cleanly
+        # next to the NotificationBell icon in the header's right slot.
         assert readout.channels == "CH:  1  |  "
         assert readout.region.width > 0
 

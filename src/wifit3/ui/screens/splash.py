@@ -4,8 +4,9 @@ import sys
 from pathlib import Path
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.screen import Screen
-from textual.widgets import Static, Label, Footer, Button, Checkbox
+from textual.widgets import Static, Label, Footer, Button, Checkbox, ProgressBar
 from textual.containers import Vertical, Center, Horizontal
 from textual import events, work
 from rich.style import Style
@@ -17,6 +18,8 @@ from wifit3.ui.ansi_art import make_black_transparent, recolor_logo
 from wifit3.ui.screens.setup_error import SetupErrorDialog
 from wifit3.ui.vault.global_tracker import GlobalJobTracker
 from wifit3.bluetooth import BluetoothScanError
+from wifit3.bluetooth import scan_modes
+from wifit3.bluetooth.usb_hci import UsbBluetoothController
 from wifit3.device.manager import Status
 from wifit3.id import oui_db
 from wifit3.ui.notification_center import WifiteHeader
@@ -24,7 +27,9 @@ from wifit3.ui.screens.bluetooth_picker import BluetoothPicker
 from wifit3.ui.screens.device_picker import DevicePicker
 from wifit3.ui.screens.gps_picker import GpsPicker
 from wifit3.ui.screens.os_ble_picker import OsBlePicker
+from wifit3.ui.screens.background_monitor_modal import BackgroundMonitorModal
 from wifit3.ui.screens.sdr_picker import SdrPicker
+from wifit3.models.bluetooth_device import BLE_RADIO, CLASSIC_RADIO
 from wifit3.persist.config import Config
 from wifit3.wlan.scan_plan import member_channels_for_scan
 
@@ -32,6 +37,11 @@ if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
 
 logger = logging.getLogger(__name__)
+
+# Give up the OUI refresh if the download hasn't even begun streaming bytes within
+# this many seconds (a dead/blocked connection), and tell the user instead of
+# leaving the bar spinning. Once bytes start flowing we let it run to completion.
+OUI_START_TIMEOUT_S = 10.0
 
 _NG_BADGE_COLUMN = 48
 
@@ -53,7 +63,7 @@ def _bluetooth_usb_claim_alert(controller, error: Exception) -> str | None:
     )
     return (
         f"Your {device_name} is still owned by the OS. "
-        "Click ⎋ on that adapter in the Bluetooth adapters list to release it "
+        "Click ↻ on that adapter in the Bluetooth adapters list to release it "
         "(on macOS this briefly turns Bluetooth off), or unplug and re-plug once."
     )
 
@@ -145,25 +155,6 @@ def _add_ng_badge(logo: Text) -> Text:
     return Text("\n").join(lines)
 
 
-def _add_private_edition_badge(logo: Text) -> Text:
-    """Bottom-right lab marker (two lines inside a small frame)."""
-    lines = logo.split("\n")
-    accent = Style(color="#ff00aa")
-    white = Style(bold=True, color="#ffffff")
-    badge = [
-        Text("┌─────────┐", style=accent),
-        Text("│ ", style=accent) + Text("PRIVATE", style=white) + Text(" │", style=accent),
-        Text("│ ", style=accent) + Text("EDITION", style=white) + Text(" │", style=accent),
-        Text("└─────────┘", style=accent),
-    ]
-    if len(lines) < len(badge):
-        return logo
-    column = max(len(line) for line in lines) - len(badge[0])
-    if column < 0:
-        column = 0
-    _overlay_badge(lines, len(lines) - len(badge), column, badge)
-    return Text("\n").join(lines)
-
 LOGO = load_logo()
 
 class SplashView(Screen):
@@ -183,9 +174,8 @@ class SplashView(Screen):
 
     BINDINGS = [
         Binding("w", "start", "Wi-Fi"),
-        Binding("b", "start_bluetooth", "BLE"),
+        Binding("b", "start_bluetooth", "Bluetooth"),
         Binding("g", "start_background", "Background"),
-        Binding("d", "start_usb_bluetooth", "BT + BLE"),
         Binding("r", "start_spectrum", "RF Spectrum"),
         Binding("o", "offline", "Offline DB"),
         Binding("u", "update_oui", "Update OUI DB"),
@@ -204,6 +194,7 @@ class SplashView(Screen):
         self._background_active = False
         self._background_stop_event: asyncio.Event | None = None
         self._background_timer = None
+        self._background_modal: BackgroundMonitorModal | None = None
         self._bt_autoreclaim_done = False
 
     def compose(self) -> ComposeResult:
@@ -230,13 +221,18 @@ class SplashView(Screen):
             with Center():
                 with Horizontal(id="primary-actions"):
                     yield Button(
-                        Text.from_markup("START [bold bright_yellow]W[/]I-FI"),
+                        Text.from_markup("[bold bright_yellow]W[/]I-FI"),
                         id="start-btn",
                         variant="success",
                     )
                     yield Button(
-                        Text.from_markup("SCAN [bold bright_yellow]B[/]LE"),
+                        Text.from_markup("[bold bright_yellow]B[/]LE"),
                         id="bluetooth-btn",
+                        variant="primary",
+                    )
+                    yield Button(
+                        Text.from_markup("[bold bright_yellow]R[/]F-SPECTRUM"),
+                        id="spectrum-btn",
                         variant="primary",
                     )
                     yield Button(
@@ -249,6 +245,11 @@ class SplashView(Screen):
                         id="offline-btn",
                         variant="default",
                     )
+            with Center():
+                # Small, centered OUI-download progress, hidden until 'u' is pressed.
+                with Vertical(id="oui-progress"):
+                    yield Label("", id="oui-progress-status")
+                    yield ProgressBar(total=None, show_eta=False, id="oui-progress-bar")
             with Center():
                 # Reverses driver/access changes for the highlighted card.
                 yield Button("Uninstall", id="uninstall-btn", variant="error")
@@ -272,13 +273,16 @@ class SplashView(Screen):
 
     def _sync_adapter_widths(self) -> None:
         """Keep all detected-hardware boxes the same width."""
-        shown = [
-            picker for picker in (
+        try:
+            pickers = (
                 self._picker(), self._os_ble_picker(), self._bt_picker(),
                 self._sdr_picker(), self._gps_picker(),
             )
-            if picker.display
-        ]
+        except NoMatches:
+            # A deferred timer/worker callback can fire mid screen-teardown,
+            # after the pickers have been unmounted; nothing to size then.
+            return
+        shown = [picker for picker in pickers if picker.display]
         if not shown:
             return
         width = max(picker.preferred_width for picker in shown)
@@ -288,26 +292,6 @@ class SplashView(Screen):
     def _optional_action_button(self, button_id: str) -> Button | None:
         matches = list(self.query(f"#{button_id}"))
         return matches[0] if matches else None
-
-    def _ensure_primary_action_button(
-        self,
-        button_id: str,
-        *,
-        visible: bool,
-        factory: Button,
-    ) -> Button | None:
-        """Mount or remove a startup action button before Background / Offline DB."""
-        button = self._optional_action_button(button_id)
-        if not visible:
-            if button is not None:
-                button.remove()
-            return None
-        if button is None:
-            bar = self.query_one("#primary-actions", Horizontal)
-            anchor = self.query_one("#background-btn", Button)
-            bar.mount(factory, before=anchor)
-            button = self._optional_action_button(button_id)
-        return button
 
     def _optional_hardware_signature(self) -> tuple[tuple, tuple, tuple]:
         return (
@@ -326,53 +310,18 @@ class SplashView(Screen):
 
         if layout_changed:
             self._last_optional_hardware_signature = signature
-            self.query_one("#bt-picker-slot", Center).display = bool(controllers)
-            self._ensure_primary_action_button(
-                "bluetooth-usb-btn",
-                visible=bool(controllers),
-                factory=Button(
-                    Text("BT/BLE Scan"),
-                    id="bluetooth-usb-btn",
-                    variant="primary",
-                ),
-            )
-            self.query_one("#sdr-picker-slot", Center).display = bool(hackrf)
-            self._ensure_primary_action_button(
-                "spectrum-btn",
-                visible=bool(hackrf),
-                factory=Button(
-                    Text.from_markup("[bold bright_yellow]R[/]F-SPECTRUM"),
-                    id="spectrum-btn",
-                    variant="primary",
-                ),
-            )
-            self.query_one("#gps-picker-slot", Center).display = gps_status is not None
-            self.refresh_bindings()
+            try:
+                self.query_one("#bt-picker-slot", Center).display = bool(controllers)
+                self.query_one("#sdr-picker-slot", Center).display = bool(hackrf)
+                self.query_one("#gps-picker-slot", Center).display = gps_status is not None
+            except NoMatches:
+                # Deferred callback raced with screen teardown; the slots are gone.
+                return
 
-        usb_button = self._optional_action_button("bluetooth-usb-btn")
-        if usb_button is not None:
-            selected = self._bt_picker().selected_controller()
-            usb_button.disabled = selected is None
-            if selected is not None:
-                usb_button.tooltip = (
-                    f"Use {selected.label} for Bluetooth Classic + BLE"
-                )
-            else:
-                usb_button.tooltip = "Select a Bluetooth adapter"
-
-        spectrum_button = self._optional_action_button("spectrum-btn")
-        if spectrum_button is not None:
-            spectrum_button.disabled = False
-            spectrum_button.tooltip = "Open the receive-only RF spectrum analyzer"
-        os_ble_status = self.app.bluetooth_manager.os_ble_status
-        ble_button = self.query_one("#bluetooth-btn", Button)
-        ble_button.disabled = not (
-            os_ble_status.enabled and os_ble_status.available is True
-        )
-        ble_button.tooltip = (
-            "Start discovery through the operating-system BLE layer"
-            if not ble_button.disabled else os_ble_status.detail
-        )
+        # _sync_primary_actions() is the single place that refreshes both the
+        # buttons and the footer key bindings, so menus never fall out of
+        # sync with the buttons (see its docstring).
+        self._sync_primary_actions()
 
     def _logo(self) -> Text:
         theme = self.app.current_theme
@@ -384,20 +333,172 @@ class SplashView(Screen):
 
     @work(exclusive=True, group="oui-db")
     async def action_update_oui(self) -> None:
-        try:
-            status = await asyncio.to_thread(oui_db.ensure, force=True)
-        except Exception:
-            self.notify(
-                "Could not download oui.txt",
-                title="OUI database",
-                severity="error",
-            )
+        if not self._oui_update_allowed():
             return
+        self._show_oui_progress()
+
+        started = False
+        last_pct = -1
+
+        def _progress(done: int, total: int | None) -> None:
+            # Runs in the download worker thread; marshal to the UI thread and
+            # throttle to whole-percent (or 256 KB) steps to avoid spamming it.
+            nonlocal started, last_pct
+            started = True
+            pct = int(done / total * 100) if total else done // (256 * 1024)
+            if pct == last_pct:
+                return
+            last_pct = pct
+            self.app.call_from_thread(self._update_oui_progress, done, total)
+
+        task = asyncio.create_task(
+            asyncio.to_thread(oui_db.ensure, force=True, progress=_progress)
+        )
+        done, _pending = await asyncio.wait({task}, timeout=OUI_START_TIMEOUT_S)
+
+        # Nothing even began streaming within the start window: a dead/blocked
+        # connection. Abandon this attempt (the worker's own socket timeout reaps
+        # the thread) and surface a clear failure instead of spinning forever.
+        if task not in done and not started:
+            self._fail_oui_progress()
+            return
+
+        try:
+            status = await task
+        except Exception:
+            self._fail_oui_progress()
+            return
+
+        if not status.ok:
+            self._fail_oui_progress()
+            return
+
+        self._finish_oui_progress(status.message)
+        self.set_timer(1.5, self._hide_oui_progress)
         self.notify(
             status.message,
             title="OUI database",
-            severity="information" if status.ok else "warning",
+            severity="information",
         )
+
+    @staticmethod
+    def _kb(n: int) -> str:
+        return f"{n / 1024:.0f} KB"
+
+    def _oui_percentage(self):
+        """The ProgressBar's built-in '--%' readout, hidden until it's meaningful."""
+        try:
+            return self.query_one("#oui-progress-bar", ProgressBar).query_one(
+                "#percentage"
+            )
+        except Exception:
+            return None
+
+    def _show_oui_progress(self) -> None:
+        panel = self.query_one("#oui-progress", Vertical)
+        panel.display = True
+        self.query_one("#oui-progress-status", Label).update("Updating OUI database…")
+        self.query_one("#oui-progress-bar", ProgressBar).update(total=None)
+        # Indeterminate: don't show "--%" until a real percentage exists.
+        percentage = self._oui_percentage()
+        if percentage is not None:
+            percentage.display = False
+
+    def _update_oui_progress(self, done: int, total: int | None) -> None:
+        bar = self.query_one("#oui-progress-bar", ProgressBar)
+        status = self.query_one("#oui-progress-status", Label)
+        percentage = self._oui_percentage()
+        if total:
+            bar.update(total=total, progress=min(done, total))
+            if percentage is not None:
+                percentage.display = True
+            status.update(
+                f"Downloading OUI database… {self._kb(done)} / {self._kb(total)}"
+            )
+        else:
+            bar.update(total=None)
+            if percentage is not None:
+                percentage.display = False
+            status.update(f"Downloading OUI database… {self._kb(done)}")
+
+    def _finish_oui_progress(self, message: str) -> None:
+        bar = self.query_one("#oui-progress-bar", ProgressBar)
+        if bar.total:
+            bar.update(progress=bar.total)
+        self.query_one("#oui-progress-status", Label).update(message)
+
+    def _fail_oui_progress(self) -> None:
+        self._hide_oui_progress()
+        self.notify(
+            "Was not able to download!",
+            title="OUI database",
+            severity="error",
+        )
+
+    def _hide_oui_progress(self) -> None:
+        self.query_one("#oui-progress", Vertical).display = False
+
+    def _oui_update_allowed(self) -> bool:
+        if self._background_active:
+            return False
+        from wifit3.ui.pref import PreferencesModal
+        from wifit3.ui.screens.diagnostics import AdapterDiagnosticsModal
+
+        if isinstance(self.app.screen, (PreferencesModal, AdapterDiagnosticsModal)):
+            return False
+        return True
+
+    def _background_wifi_counts(self) -> tuple[int, int]:
+        array = self.app.array
+        if array is None:
+            return 0, 0
+        return len(array.access_points), len(array.clients)
+
+    def _background_bluetooth_counts(self) -> tuple[int, int]:
+        bt = ble = 0
+        for device in self.app.bluetooth_manager.devices():
+            radios = set(device.radio_types)
+            if CLASSIC_RADIO in radios:
+                bt += 1
+            if BLE_RADIO in radios:
+                ble += 1
+        return bt, ble
+
+    @staticmethod
+    def _format_background_stats(aps: int, stas: int, bt: int, ble: int) -> str:
+        return (
+            f"{'WIFI-APS':>7}  {'WIFI-STA':>8}  {'BT':>4}  {'BLE':>4}\n"
+            f"{aps:>7}  {stas:>8}  {bt:>4}  {ble:>4}"
+        )
+
+    def _update_background_progress_stats(self) -> None:
+        if not self._background_active:
+            return
+        aps, stas = self._background_wifi_counts()
+        bt, ble = self._background_bluetooth_counts()
+        text = self._format_background_stats(aps, stas, bt, ble)
+        modal = self._background_modal
+        if modal is not None:
+            modal.update_stats(text)
+
+    def _show_background_progress(self) -> None:
+        modal = BackgroundMonitorModal(on_stop=self._request_background_stop)
+        self._background_modal = modal
+        self.app.push_screen(modal)
+        self._update_background_progress_stats()
+
+    def _hide_background_progress(self) -> None:
+        modal = self._background_modal
+        self._background_modal = None
+        if modal is None:
+            return
+        try:
+            if self.app.screen is modal:
+                self.app.pop_screen()
+            elif modal.is_attached:
+                modal.dismiss()
+        except Exception:
+            logger.debug("background monitor modal dismiss failed", exc_info=True)
 
     def _enter_scanning_mode(self) -> None:
         """The 'pick a card' resting state."""
@@ -411,9 +512,6 @@ class SplashView(Screen):
         self._bt_picker().disabled = False
         self._os_ble_picker().disabled = False
         self._os_ble_picker().set_status(self.app.bluetooth_manager.os_ble_status)
-        self.query_one("#start-btn", Button).disabled = True
-        self.query_one("#bluetooth-btn", Button).disabled = False
-        self.query_one("#offline-btn", Button).disabled = False
         self._sync_optional_hardware_ui()
         self._sync_adapter_widths()
         self.query_one("#uninstall-btn", Button).disabled = True
@@ -437,6 +535,8 @@ class SplashView(Screen):
         await self.refresh_usb_bluetooth_controllers()
         self.autoreclaim_usb_bluetooth_once()
         self.probe_os_ble()
+        if self.app.background_autostart:
+            self.autostart_background()
 
     @work(exclusive=True, group="os-ble-probe")
     async def probe_os_ble(self) -> None:
@@ -475,15 +575,24 @@ class SplashView(Screen):
         self._hackrf_devices = hackrf_devices
         self._gps_status = gps_status
         self._bt_not_claimed_snapshot = not_claimed
-        if bluetooth_changed or claim_changed:
-            self._bt_picker().set_controllers(controllers, not_claimed=not_claimed)
-        if hackrf_changed:
-            self._sdr_picker().set_devices(hackrf_devices)
-        self._gps_picker().set_status(gps_status, self.app.gps_manager.latest_fix)
-        self._os_ble_picker().set_status(self.app.bluetooth_manager.os_ble_status)
-        self._sync_optional_hardware_ui()
-        if bluetooth_changed or claim_changed or hackrf_changed or gps_changed:
+        try:
+            if bluetooth_changed or claim_changed:
+                self._bt_picker().set_controllers(controllers, not_claimed=not_claimed)
+            if hackrf_changed:
+                self._sdr_picker().set_devices(hackrf_devices)
+            self._gps_picker().set_status(gps_status, self.app.gps_manager.latest_fix)
+            self._os_ble_picker().set_status(self.app.bluetooth_manager.os_ble_status)
+            self._bt_picker().set_os_ble_active(self._use_os_ble_default())
+            self._sync_optional_hardware_ui()
+            # set_status() on each picker resets its own width; re-sync whenever we
+            # touch them, not only when the USB controller list changes (OS BLE state
+            # transitions such as CHECKING→READY change instance_key and shrink the
+            # middle box without this).
             self._sync_adapter_widths()
+        except NoMatches:
+            # The 1 s interval can fire and await thread work while the user leaves
+            # Splash; by the time it resumes the pickers may be unmounted.
+            return
 
     def reset_for_reentry(self) -> None:
         """Returning to splash (adapter lost): the installed screen only resumes (on_mount doesn't
@@ -493,14 +602,7 @@ class SplashView(Screen):
         self.app.device_watch.resume()
         self.render_devices(self.app.device_watch.present())
         array = getattr(self.app, "array", None)
-        if array is not None and array.members:
-            self._picker().refresh_regulatory_from_array(array.members)
 
-    def refresh_regulatory_subtitle(self) -> None:
-        """Re-read ``wifi_regulatory_country`` for the adapter panel (e.g. after Preferences)."""
-        picker = self._picker()
-        if picker._devices:
-            picker._refresh_regulatory_subtitle()
 
     def render_devices(self, devices) -> None:
         """Render the current device list. Called by the app's DeviceWatch on plug/unplug."""
@@ -509,22 +611,17 @@ class SplashView(Screen):
         self._devices = devices
         picker = self._picker()
         picker.set_devices(devices)
-        array = getattr(self.app, "array", None)
-        if array is not None and array.members:
-            picker.refresh_regulatory_from_array(array.members)
         self._sync_adapter_widths()
+        self._sync_primary_actions()
 
         status = self.query_one("#status-label", Label)
-        start_btn = self.query_one("#start-btn", Button)
         uninstall_btn = self.query_one("#uninstall-btn", Button)
         if devices:
             status.update(self._ready_prompt())
-            start_btn.disabled = False
             uninstall_btn.disabled = False
             picker.focus_list()
         else:
             status.update("Scanning for compatible hardware…")
-            start_btn.disabled = True
             uninstall_btn.disabled = True
 
     def _show_error(self, message: str, *, title: str = "Card bring-up failed") -> None:
@@ -552,20 +649,22 @@ class SplashView(Screen):
         return self._picker().highlighted_device()
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        # Textual hides a footer key only when check_action returns False; None keeps
-        # it visible but disabled. So return False to drop optional-hardware keys entirely.
-        if action == "start_usb_bluetooth" and not self._usb_bluetooth_controllers:
-            return False
-        if action == "start_spectrum" and not self._hackrf_devices:
-            return False
+        # Textual hides a footer key only when check_action returns False; None
+        # keeps it visible but disabled. Mirroring the primary-action buttons,
+        # footer keys are never hidden for hardware/busy reasons - only disabled.
+        availability = self._action_availability()
+        if action in availability and not availability[action]:
+            return None
         if self._background_active and action in {
             "start",
             "start_bluetooth",
-            "start_usb_bluetooth",
             "start_spectrum",
             "offline",
+            "update_oui",
         }:
-            return False
+            return None
+        if action == "update_oui" and not self._oui_update_allowed():
+            return None
         return True
 
     def action_start(self) -> None:
@@ -590,7 +689,7 @@ class SplashView(Screen):
             len(self._usb_bluetooth_controllers) == 1
             and self._bt_picker().row_index_at(event.widget) is not None
         ):
-            self.action_start_usb_bluetooth()
+            self.action_start_bluetooth()
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         checkbox = event.checkbox
@@ -600,11 +699,23 @@ class SplashView(Screen):
             self.app.persist_config()
             self._os_ble_picker().set_status(self.app.bluetooth_manager.os_ble_status)
             self._sync_optional_hardware_ui()
+            # set_status() only resizes the OS BLE box to its own preferred width;
+            # it must be re-synced or it snaps back smaller than the other boxes.
+            self._sync_adapter_widths()
             if checkbox.value:
                 self.probe_os_ble()
             return
         if checkbox.id and checkbox.id.startswith("bt-chk-"):
             self._sync_optional_hardware_ui()
+            return
+        if checkbox.id and checkbox.id.startswith("sdr-chk-"):
+            self._sync_primary_actions()
+            return
+        if checkbox.id and checkbox.id.startswith("device-chk-"):
+            self._sync_primary_actions()
+            return
+        if checkbox.id == "gps-chk-0":
+            self._on_gps_checkbox_changed(checkbox.value)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "background-btn":
@@ -616,8 +727,6 @@ class SplashView(Screen):
             self.action_start()
         elif event.button.id == "bluetooth-btn":
             self.action_start_bluetooth()
-        elif event.button.id == "bluetooth-usb-btn":
-            self.action_start_usb_bluetooth()
         elif event.button.id == "spectrum-btn":
             self.action_start_spectrum()
         elif event.button.id == "offline-btn":
@@ -633,13 +742,7 @@ class SplashView(Screen):
         self._picker().disabled = True
         self._bt_picker().disabled = True
         self._os_ble_picker().disabled = True
-        self.query_one("#start-btn", Button).disabled = True
-        self.query_one("#bluetooth-btn", Button).disabled = True
-        for button_id in ("bluetooth-usb-btn", "spectrum-btn", "background-btn"):
-            button = self._optional_action_button(button_id)
-            if button is not None:
-                button.disabled = True
-        self.query_one("#offline-btn", Button).disabled = True
+        self._sync_primary_actions()      # busy=True disables every action button uniformly
         self.query_one("#uninstall-btn", Button).disabled = True
 
     def _exit_busy(self) -> None:
@@ -649,16 +752,21 @@ class SplashView(Screen):
         picker.disabled = False
         self._bt_picker().disabled = False
         self._os_ble_picker().disabled = False
-        self.query_one("#start-btn", Button).disabled = not self._devices
-        self.query_one("#bluetooth-btn", Button).disabled = False
         self._sync_optional_hardware_ui()
-        self.query_one("#offline-btn", Button).disabled = False
         self.query_one("#uninstall-btn", Button).disabled = not self._devices
         self._set_background_button(running=False)
         if self._devices:
             picker.focus_list()
         else:
-            self.query_one("#bluetooth-btn", Button).focus()
+            # Buttons are never hidden now, only disabled - focus the first one
+            # that's actually usable, falling back to Offline DB (always on).
+            for button_id in ("bluetooth-btn", "start-btn", "offline-btn"):
+                button = self.query_one(f"#{button_id}", Button)
+                if not button.disabled:
+                    button.focus()
+                    break
+            else:
+                self.query_one("#offline-btn", Button).focus()
 
     @work(exclusive=True)
     async def perform_start(self, devices) -> None:
@@ -698,13 +806,12 @@ class SplashView(Screen):
             button.tooltip = "Stop background monitor"
             button.disabled = False
             button.variant = "error"
+            self.app.refresh_bindings()
             return
         button.label = Text.from_markup("BACK[bold bright_yellow]G[/]ROUND")
-        button.tooltip = (
-            "Record Wi-Fi, BLE, and Bluetooth on this screen until you stop"
-        )
-        button.disabled = False
         button.variant = "warning"
+        # disabled/tooltip for the idle state are owned by _sync_primary_actions,
+        # which every caller of _set_background_button(running=False) also runs.
 
     def action_start_background(self) -> None:
         """Stay on this screen and record every enabled radio until stop or quit."""
@@ -720,6 +827,9 @@ class SplashView(Screen):
             self._background_stop_event.set()
         button = self.query_one("#background-btn", Button)
         button.disabled = True
+        modal = self._background_modal
+        if modal is not None:
+            modal.set_stopping()
         self.query_one("#status-label", Label).update("Stopping background monitor…")
 
     def _background_selection(self, force_all: bool):
@@ -756,26 +866,8 @@ class SplashView(Screen):
         return wifi or self.app.bluetooth_manager.is_scanning
 
     def _refresh_background_status(self) -> None:
-        parts = ["Background monitor"]
-        array = self.app.array
-        if array is not None and array.members:
-            parts.append(f"Wi-Fi {len(array.access_points)} AP")
-        manager = self.app.bluetooth_manager
-        if manager.is_scanning:
-            radios = []
-            if manager.os_ble_status.state == "OS-ACTIVE":
-                radios.append("BLE")
-            if manager.is_usb_scanning:
-                radios.append("BT")
-            parts.append(f"{'+'.join(radios) or 'Bluetooth'} {len(manager.devices())}")
-        if self.app.gps_manager.latest_fix is not None:
-            parts.append("GPS")
-        elif self._gps_status is not None:
-            parts.append("GPS wait")
-        parts.append("recording")
-        self.query_one("#status-label", Label).update(
-            "[bold]" + " · ".join(parts) + "[/]"
-        )
+        self.query_one("#status-label", Label).update("")
+        self._update_background_progress_stats()
 
     async def _background_wifi(self, devices) -> tuple[int, list[str]]:
         pooled = 0
@@ -885,10 +977,11 @@ class SplashView(Screen):
         self._clear_error()
         self._enter_busy()
         self._set_background_button(running=True)
-        self.query_one("#status-label", Label).update("Starting background monitor…")
         timer = None
         try:
             wifi, use_ble, controller = self._background_selection(force_all)
+            self._show_background_progress()
+            self.query_one("#status-label", Label).update("")
             _wifi_result, radio_failures = await asyncio.gather(
                 self._background_wifi(wifi),
                 self._background_radios(use_ble, controller),
@@ -921,6 +1014,8 @@ class SplashView(Screen):
             except Exception:
                 logger.debug("background monitor stop failed", exc_info=True)
             self._background_active = False
+            self._hide_background_progress()
+            self.app.refresh_bindings()
             try:
                 self._exit_busy()
                 self._restore_idle_status()
@@ -928,14 +1023,27 @@ class SplashView(Screen):
                 logger.debug("background monitor ui restore failed", exc_info=True)
 
     def action_start_bluetooth(self) -> None:
-        status = self.app.bluetooth_manager.os_ble_status
-        if not status.enabled:
-            self.notify("Enable the OS BLE source first.", severity="warning")
+        """Start whatever Bluetooth radios the current configuration offers.
+
+        One adaptive button: OS BLE and/or the selected USB dongles. When there
+        are USB adapters the parallel path runs them (and pairs OS BLE when
+        available); with no USB hardware at all it falls back to OS BLE only.
+        """
+        if self._is_initializing:
             return
-        if status.available is not True:
-            self.notify(status.detail, title="OS BLE unavailable", severity="warning")
+        radios = self._bluetooth_scan_radios()
+        if not radios:
+            if self._usb_bluetooth_controllers:
+                self.notify(
+                    "Select a Bluetooth adapter or enable the OS BLE source.",
+                    severity="warning",
+                )
+            else:
+                self.notify("Enable the OS BLE source first.", severity="warning")
             return
-        if not self._is_initializing:
+        if self._usb_bluetooth_controllers:
+            self.perform_usb_bluetooth_start(self._bt_picker().selected_controllers())
+        else:
             self.perform_bluetooth_start()
 
     def action_offline(self) -> None:
@@ -944,6 +1052,9 @@ class SplashView(Screen):
 
     def action_start_spectrum(self) -> None:
         if self._is_initializing or not self._hackrf_devices:
+            return
+        if not self._sdr_picker().selected_devices():
+            self.notify("Select the SDR device first.", severity="warning")
             return
         self.app.switch_screen("spectrum")
         spectrum = self.app.get_screen("spectrum")
@@ -956,6 +1067,16 @@ class SplashView(Screen):
         if self._is_initializing or self._background_active:
             return
         self.perform_reclaim_bluetooth_usb(event.controller)
+
+    def on_bluetooth_picker_scan_mode_changed(
+        self, event: BluetoothPicker.ScanModeChanged,
+    ) -> None:
+        # Apply the picked mode to the manager so an already-running (e.g.
+        # background) scan on this dongle changes behavior immediately; a later
+        # start_parallel re-applies it too.
+        self.app.bluetooth_manager.set_usb_scan_mode(event.controller, event.mode)
+        # The adaptive start button follows the selected radios.
+        self._sync_primary_actions()
 
     @work(exclusive=True, group="bt-usb-reclaim")
     async def perform_reclaim_bluetooth_usb(self, controller) -> None:
@@ -979,23 +1100,158 @@ class SplashView(Screen):
             return
         self._bt_autoreclaim_done = True
         await asyncio.sleep(0.25)
+        failures: list[str] = []
         for controller in list(self._usb_bluetooth_controllers):
             if controller.instance_key not in self.app.bluetooth_manager.usb_not_claimed_keys():
                 continue
-            await asyncio.to_thread(
+            ok, message = await asyncio.to_thread(
                 self.app.bluetooth_manager.reclaim_usb_controller, controller,
             )
+            if not ok:
+                failures.append(message)
         await self.refresh_usb_bluetooth_controllers()
+        if failures:
+            self.notify(
+                failures[0],
+                title="Bluetooth USB adapter not claimed",
+                severity="warning",
+            )
 
-    def action_start_usb_bluetooth(self) -> None:
-        if self._is_initializing:
-            return
-        controller = self._bt_picker().selected_controller()
-        if controller is None:
-            if self._usb_bluetooth_controllers:
-                self.notify("Select a Bluetooth adapter.", severity="warning")
-            return
-        self.perform_usb_bluetooth_start(controller)
+    def _use_os_ble_default(self) -> bool:
+        manager = self.app.bluetooth_manager
+        return bool(
+            Config.os_ble_enabled
+            and manager.os_ble_enabled
+            and manager.os_ble_status.available is not False
+        )
+
+    def _bluetooth_scan_radios(self) -> set[str]:
+        """Radios the current configuration would actually scan.
+
+        Union of OS BLE (when enabled/available) and each *selected* USB dongle's
+        effective scan mode. Drives the single adaptive start button.
+        """
+        radios: set[str] = set()
+        os_active = self._use_os_ble_default()
+        if os_active:
+            radios.add("BLE")
+        try:
+            picker = self._bt_picker()
+        except Exception:
+            return radios
+        for controller in picker.selected_controllers():
+            mode = picker.scan_mode_for(controller)
+            le, classic = scan_modes.effective_scan_radios(
+                controller, mode, os_ble_active=os_active
+            )
+            if le:
+                radios.add("BLE")
+            if classic:
+                radios.add("BT")
+        return radios
+
+    @staticmethod
+    def _bluetooth_button_label(radios: set[str]) -> Text:
+        """BT / BLE / BT+BLE, with B as the hotkey."""
+        if radios == {"BT"}:
+            rest = "T"
+        elif radios == {"BLE"}:
+            rest = "LE"
+        else:
+            rest = "T+BLE"
+        return Text.from_markup(f"[bold bright_yellow]B[/]{rest}")
+
+    def _on_gps_checkbox_changed(self, enabled: bool) -> None:
+        """Gate wifit3's use of the GPS fix without touching the receiver itself."""
+        Config.gps_enabled = enabled
+        self.app.gps_manager.set_enabled(enabled)
+        self.app.persist_config()
+
+    def _action_availability(self) -> dict[str, bool]:
+        """Single source of truth: can this primary action run right now?
+
+        Hardware/selection state only - busy state (initializing, or the
+        background monitor running) is layered on top by ``_sync_primary_actions``.
+        """
+        try:
+            wifi_ok = bool(self._picker().selected_devices())
+        except Exception:
+            wifi_ok = False
+        try:
+            bt_ok = bool(self._bluetooth_scan_radios())
+        except Exception:
+            bt_ok = False
+        try:
+            sdr_ok = bool(self._hackrf_devices) and bool(self._sdr_picker().selected_devices())
+        except Exception:
+            sdr_ok = False
+        return {
+            "start": wifi_ok,
+            "start_bluetooth": bt_ok,
+            "start_spectrum": sdr_ok,
+            "start_background": wifi_ok or bt_ok,
+            "offline": True,
+        }
+
+    def _sync_primary_actions(self) -> None:
+        """Every hardware-gated primary action button lives in one place.
+
+        Rule, applied uniformly: buttons are never mounted/removed based on
+        hardware - they're always visible and just get disabled; labels stay
+        fixed (e.g. **WI-FI**, **BT+BLE**).
+
+        The footer key bindings (Wi-Fi, Bluetooth, RF Spectrum, RF Lab TX,
+        Offline DB) are gated by the exact same availability dict via
+        ``check_action()`` - but Textual's Footer only re-queries
+        ``check_action()`` when told to, so every call here also calls
+        ``refresh_bindings()``. This is the one function that keeps buttons
+        and menu/footer bindings in sync; don't update either independently.
+        """
+        availability = self._action_availability()
+        busy = self._is_initializing or self._background_active
+
+        start_btn = self.query_one("#start-btn", Button)
+        start_btn.disabled = busy or not availability["start"]
+        start_btn.label = Text.from_markup("[bold bright_yellow]W[/]I-FI")
+
+        bt_btn = self.query_one("#bluetooth-btn", Button)
+        bt_btn.disabled = busy or not availability["start_bluetooth"]
+        if availability["start_bluetooth"]:
+            radios = self._bluetooth_scan_radios()
+            bt_btn.label = self._bluetooth_button_label(radios)
+            bt_btn.tooltip = "Start Bluetooth discovery (" + "+".join(
+                r for r in ("BT", "BLE") if r in radios
+            ) + ")"
+        else:
+            bt_btn.label = Text.from_markup("[bold bright_yellow]B[/]LUETOOTH")
+            bt_btn.tooltip = "Select a Bluetooth adapter or enable the OS BLE source."
+
+        sdr_ok = availability["start_spectrum"]
+        for button_id, enabled_tooltip in (
+            ("spectrum-btn", "Open the receive-only RF spectrum analyzer"),
+        ):
+            button = self._optional_action_button(button_id)
+            if button is None:
+                continue
+            button.disabled = busy or not sdr_ok
+            button.tooltip = (
+                enabled_tooltip if sdr_ok
+                else "Plug in and select a HackRF device to enable this."
+            )
+
+        self.query_one("#offline-btn", Button).disabled = busy
+
+        if not self._background_active:
+            # While it's running, _set_background_button(running=True) owns this.
+            bg_btn = self.query_one("#background-btn", Button)
+            bg_btn.disabled = self._is_initializing or not availability["start_background"]
+            bg_btn.tooltip = (
+                "Record Wi-Fi, BLE, and Bluetooth on this screen until you stop"
+                if availability["start_background"]
+                else "Enable a Wi-Fi card, BLE, or a Bluetooth adapter first."
+            )
+
+        self.refresh_bindings()
 
     @work(exclusive=True)
     async def perform_bluetooth_start(self) -> None:
@@ -1013,28 +1269,38 @@ class SplashView(Screen):
         self.app.switch_screen("bluetooth")
 
     @work(exclusive=True)
-    async def perform_usb_bluetooth_start(self, controller) -> None:
+    async def perform_usb_bluetooth_start(self, controllers) -> None:
         self._clear_error()
         self._enter_busy()
-        if controller.instance_key in self.app.bluetooth_manager.usb_not_claimed_keys():
-            await asyncio.to_thread(
-                self.app.bluetooth_manager.reclaim_usb_controller, controller,
-            )
-            await self.refresh_usb_bluetooth_controllers()
         manager = self.app.bluetooth_manager
-        use_os_ble = (
-            Config.os_ble_enabled
-            and manager.os_ble_enabled
-            and manager.os_ble_status.available is not False
-        )
+        if isinstance(controllers, UsbBluetoothController):
+            controllers = [controllers]
+        controllers = list(controllers)
+        not_claimed = manager.usb_not_claimed_keys()
+        to_reclaim = [c for c in controllers if c.instance_key in not_claimed]
+        for controller in to_reclaim:
+            await asyncio.to_thread(manager.reclaim_usb_controller, controller)
+        if to_reclaim:
+            await self.refresh_usb_bluetooth_controllers()
+        use_os_ble = self._use_os_ble_default()
+        picker = self._bt_picker()
+        for controller in controllers:
+            manager.set_usb_scan_mode(controller, picker.scan_mode_for(controller))
         try:
             failures = await manager.start_parallel(
                 os_ble=use_os_ble,
-                controller=controller,
+                controllers=controllers,
             )
         except BluetoothScanError as exc:
             self._exit_busy()
-            claim_alert = _bluetooth_usb_claim_alert(controller, exc)
+            claim_alert = next(
+                (
+                    alert
+                    for controller in controllers
+                    if (alert := _bluetooth_usb_claim_alert(controller, exc)) is not None
+                ),
+                None,
+            )
             if claim_alert is not None:
                 self._show_error(claim_alert, title="Bluetooth USB device busy")
             else:
@@ -1051,13 +1317,20 @@ class SplashView(Screen):
                 title="Bluetooth unavailable",
             )
             return
+        # Per-controller claim alerts based on post-start claim state.
+        still_unclaimed = manager.usb_not_claimed_keys()
+        for controller in controllers:
+            if controller.instance_key in still_unclaimed:
+                alert = _bluetooth_usb_claim_alert(
+                    controller, RuntimeError("USB Bluetooth adapter busy"),
+                )
+                self.notify(
+                    alert or f"{controller.label} could not be claimed",
+                    title="Bluetooth scan",
+                    severity="warning",
+                )
         for message in failures:
-            claim_alert = _bluetooth_usb_claim_alert(controller, RuntimeError(message))
-            self.notify(
-                claim_alert or message,
-                title="Bluetooth scan",
-                severity="warning",
-            )
+            self.notify(message, title="Bluetooth scan", severity="warning")
         self._exit_busy()
         self.app.locked_target_id = None
         self.app.auto_lock_armed = True

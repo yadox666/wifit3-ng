@@ -95,11 +95,25 @@ async def test_scanner_view_ssid_width_decloaks_and_caps():
         ap_hidden.ssid = "Super Long Test Access Point 30"
         scanner.refresh_table()
         await pilot.pause(0)
-        assert col.content_width == len(ap_hidden.ssid)
+        assert col.content_width == len(ap_hidden.ssid) + 2  # plain target-marker slot
 
         ap_huge = AccessPoint(bssid="00:11:22:33:44:02", ssid="A" * 50)
         ap_huge.signal_by_card = {"card0": -40}
         fake_mgr.access_points[ap_huge.bssid] = ap_huge
         scanner.refresh_table()
         await pilot.pause(0)
-        assert col.content_width == ScannerView._SSID_CELL_MAX
+        assert col.content_width == ScannerView._SSID_CELL_MAX + 2
+
+
+@pytest.mark.asyncio
+async def test_ap_scan_table_bssid_column_clamps_after_wide_cell():
+    app = _SsidTableApp()
+    async with app.run_test() as pilot:
+        table = app.query_one("#ssid_table", _APScanTable)
+        table.add_column("BSSID  ", key="bssid", width=_APScanTable.BSSID_COL_WIDTH)
+        col = table.columns[ColumnKey("bssid")]
+        long_key = "infrastructure:movistar-wifi6-a250-extra-padding"
+        table.add_row("SSID", long_key, key="group")
+        table.update_cell("group", "bssid", long_key, update_width=True)
+        await pilot.pause(0)
+        assert col.content_width <= _APScanTable.BSSID_COL_WIDTH

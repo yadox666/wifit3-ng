@@ -12,15 +12,16 @@ from typing import Any
 
 from platformdirs import user_data_dir
 
-from wifit3.models import AccessPoint, AdvertisedCapabilities, IdKey, IdSource
+from wifit3.models import AccessPoint, AdvertisedCapabilities, Client, IdKey, IdSource
 from wifit3.persist.private_files import ensure_private_directory
 from wifit3.persist.scan_sessions import ScanSession, merge_session_metadata
 
 
 AP_HISTORY_PATH = Path(user_data_dir("wifit3", appauthor=False)) / "ap_history.sqlite3"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 10
 _WRITE_INTERVAL_SECONDS = 5.0
 _MAX_APS = 20_000
+_MAX_CLIENTS = 50_000
 
 
 class ApHistoryStoreError(RuntimeError):
@@ -274,6 +275,15 @@ class ApHistoryStore:
                 """
             )
             connection.commit()
+            version = 5
+        if version == 5:
+            # Schema 6-10 added the passive Wi-Fi fingerprint overlay, which is
+            # not shipped on public. Client identity persistence lives in the
+            # client_associations table, so the version is advanced with no
+            # fingerprint tables/columns created.
+            with connection:
+                connection.execute("PRAGMA user_version = 10")
+            version = 10
 
     @_locked
     def start_scan_session(self, session: ScanSession) -> None:
@@ -347,6 +357,44 @@ class ApHistoryStore:
             self._active_session_id = None
 
     @_locked
+    def patch_scan_session(
+        self,
+        session_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        metadata_patch: dict[str, Any] | None = None,
+    ) -> None:
+        connection = self._connection
+        if connection is None:
+            return
+        sets: list[str] = []
+        params: list[Any] = []
+        if name is not None:
+            sets.append("name = ?")
+            params.append(name)
+        if description is not None:
+            sets.append("description = ?")
+            params.append(description)
+        if metadata_patch:
+            row = connection.execute(
+                "SELECT metadata_json FROM scan_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            prior = row[0] if row is not None else "{}"
+            merged = merge_session_metadata(prior, metadata_patch)
+            sets.append("metadata_json = ?")
+            params.append(merged)
+        if not sets:
+            return
+        params.append(session_id)
+        with connection:
+            connection.execute(
+                f"UPDATE scan_sessions SET {', '.join(sets)} WHERE session_id = ?",
+                params,
+            )
+
+    @_locked
     def scan_sessions(self) -> list[dict[str, Any]]:
         connection = self._connection
         if connection is None:
@@ -391,6 +439,7 @@ class ApHistoryStore:
             ap.capabilities,
             _json_object(row["capabilities_json"]),
         )
+        changed |= _merge_wps(ap, _json_object(row["wps_json"]))
         for evidence in connection.execute(
             """
             SELECT field, source, value
@@ -657,6 +706,56 @@ class ApHistoryStore:
             return False
         self._last_client_write[key] = observed_at
         return True
+
+    @_locked
+    def remember_client_fingerprint(
+        self,
+        client: Client,
+        *,
+        dhcp: dict[str, Any] | None = None,
+        force: bool = False,
+    ) -> None:
+        """Persist passive client session sightings, including unassociated STAs."""
+        connection = self._connection
+        if connection is None or client.is_fake:
+            return None
+        if self._active_session_id is None:
+            return None
+        client_mac = client.mac.casefold()
+        now = float(client.last_seen or time.time())
+        try:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO client_session_sightings (
+                        session_id, bssid, client_mac,
+                        first_seen, last_seen, sighting_count
+                    ) VALUES (?, ?, ?, ?, ?, 1)
+                    ON CONFLICT(session_id, bssid, client_mac) DO UPDATE SET
+                        first_seen = MIN(
+                            client_session_sightings.first_seen,
+                            excluded.first_seen
+                        ),
+                        last_seen = MAX(
+                            client_session_sightings.last_seen,
+                            excluded.last_seen
+                        ),
+                        sighting_count =
+                            client_session_sightings.sighting_count + 1
+                    """,
+                    (
+                        self._active_session_id,
+                        client.bssid.casefold() if client.bssid else "",
+                        client_mac,
+                        float(client.first_seen),
+                        now,
+                    ),
+                )
+        except sqlite3.Error as exc:
+            self.errors.append(
+                f"Could not save client sighting {client_mac}: {exc}",
+            )
+        return None
 
     @_locked
     def clients_for_ap(self, bssid: str) -> list[ClientAssociationRecord]:
@@ -953,6 +1052,120 @@ class ApHistoryStore:
             )
 
     @_locked
+    def assign_catalog_family(
+        self,
+        bssid: str,
+        family_id: str | None,
+    ) -> tuple[bool, str]:
+        """Pin or clear a manual catalog family on stored AP(s) with the same SSID."""
+        from wifit3.observe.product_catalog import (
+            catalog_hit_for_family_id,
+            match_wifi,
+            patch_wifi_capabilities_catalog,
+        )
+
+        connection = self._require_connection()
+        anchor = connection.execute(
+            "SELECT bssid, ssid, capabilities_json FROM access_points WHERE bssid = ?",
+            (bssid.casefold(),),
+        ).fetchone()
+        if anchor is None:
+            return False, "Access point is not in the offline database."
+        ssid = str(anchor["ssid"] or "").strip()
+        if ssid:
+            rows = connection.execute(
+                """
+                SELECT bssid, ssid, capabilities_json FROM access_points
+                WHERE ssid = ? COLLATE NOCASE
+                """,
+                (ssid,),
+            ).fetchall()
+        else:
+            rows = [anchor]
+        pinned = (family_id or "").strip()
+        if pinned:
+            hit = catalog_hit_for_family_id(pinned)
+            if not hit.present:
+                return False, f"Unknown catalog family “{pinned}”."
+        updated = 0
+        with connection:
+            for row in rows:
+                raw = _json_object(row["capabilities_json"])
+                target_bssid = str(row["bssid"] or "")
+                if pinned:
+                    patched = patch_wifi_capabilities_catalog(
+                        raw, hit, family_id=pinned,
+                    )
+                else:
+                    vendor_ouis = {
+                        str(item) for item in (raw.get("vendor_ouis") or []) if item
+                    }
+                    auto = match_wifi(
+                        str(row["ssid"] or ""),
+                        target_bssid,
+                        vendor_ouis,
+                    )
+                    patched = patch_wifi_capabilities_catalog(raw, auto, family_id="")
+                connection.execute(
+                    "UPDATE access_points SET capabilities_json = ? WHERE bssid = ?",
+                    (_dump(patched), target_bssid.casefold()),
+                )
+                updated += 1
+        if pinned:
+            label = hit.labels[0]
+            klass = hit.catalog_class
+            if updated > 1:
+                message = (
+                    f"Assigned {label} ({klass}) to {updated:,} access points "
+                    f"with SSID {ssid}."
+                )
+            else:
+                message = f"Assigned {label} ({klass})."
+        elif updated > 1:
+            message = (
+                f"Cleared manual family on {updated:,} access points "
+                f"with SSID {ssid}; automatic rules re-applied."
+            )
+        else:
+            message = "Cleared manual family; automatic rules re-applied."
+        return True, message
+
+    @_locked
+    def reapply_product_catalog(self) -> int:
+        """Re-run the current product catalog against every stored access point."""
+        from wifit3.observe.product_catalog import (
+            patch_wifi_capabilities_catalog,
+            wifi_catalog_hit,
+        )
+
+        connection = self._require_connection()
+        updated = 0
+        rows = connection.execute(
+            "SELECT bssid, ssid, capabilities_json FROM access_points",
+        ).fetchall()
+        with connection:
+            for row in rows:
+                raw = _json_object(row["capabilities_json"])
+                vendor_ouis = {
+                    str(item) for item in (raw.get("vendor_ouis") or []) if item
+                }
+                hit = wifi_catalog_hit(
+                    str(row["ssid"] or ""),
+                    str(row["bssid"] or ""),
+                    vendor_ouis,
+                    raw,
+                )
+                patched = patch_wifi_capabilities_catalog(raw, hit)
+                if patched == raw:
+                    continue
+                connection.execute(
+                    "UPDATE access_points SET capabilities_json = ? WHERE bssid = ?",
+                    (_dump(patched), str(row["bssid"] or "")),
+                )
+                updated += 1
+        return updated
+
+    @_locked
     def clear(self) -> None:
         connection = self._require_connection()
         with connection:
@@ -1059,11 +1272,21 @@ class ApHistoryStore:
         records: list[dict[str, Any]] = []
         clients = connection.execute(
             """
-            SELECT client_mac, MIN(first_seen) AS first_seen,
-                   MAX(last_seen) AS last_seen, COUNT(*) AS access_point_count
-            FROM client_associations
-            GROUP BY client_mac
-            ORDER BY last_seen DESC, client_mac
+            WITH client_ids AS (
+                SELECT DISTINCT client_mac FROM client_associations
+            )
+            SELECT ids.client_mac,
+                   (SELECT MIN(first_seen) FROM client_associations
+                    WHERE client_mac = ids.client_mac) AS first_seen,
+                   COALESCE(
+                       (SELECT MAX(last_seen) FROM client_associations
+                        WHERE client_mac = ids.client_mac),
+                       0
+                   ) AS last_seen,
+                   (SELECT COUNT(*) FROM client_associations
+                    WHERE client_mac = ids.client_mac) AS access_point_count
+            FROM client_ids AS ids
+            ORDER BY last_seen DESC, ids.client_mac
             """
         )
         for client in clients:
@@ -1135,6 +1358,91 @@ class ApHistoryStore:
         return self._connection
 
 
+def client_from_offline_record(record: dict[str, Any]) -> Client:
+    """Rebuild a ``Client`` from one ``offline_clients()`` row."""
+    mac = str(record.get("client_mac") or "")
+    client = Client(mac=mac)
+    for name in ("first_seen", "last_seen"):
+        value = record.get(name)
+        if value is not None:
+            try:
+                setattr(client, name, float(value))
+            except (TypeError, ValueError):
+                pass
+    access_points = record.get("access_points") or []
+    if access_points:
+        latest = max(
+            access_points,
+            key=lambda item: float(item.get("last_seen") or 0)
+            if isinstance(item, dict)
+            else 0.0,
+        )
+        if isinstance(latest, dict):
+            bssid = str(latest.get("bssid") or "").strip()
+            if bssid:
+                client.bssid = bssid
+    return client
+
+
+def access_point_from_offline_record(record: dict[str, Any]) -> AccessPoint:
+    """Rebuild an ``AccessPoint`` from one ``offline_access_points()`` row."""
+    bssid = str(record.get("bssid") or "")
+    ap = AccessPoint(
+        bssid=bssid,
+        ssid=record.get("ssid") if record.get("ssid") else None,
+        channel=int(record.get("channel") or 0),
+        encryption=str(record.get("encryption") or "Unknown"),
+    )
+    if record.get("country_code"):
+        ap.country_code = str(record["country_code"])
+    for name in ("first_seen", "last_seen"):
+        value = record.get(name)
+        if value is not None:
+            try:
+                setattr(ap, name, float(value))
+            except (TypeError, ValueError):
+                pass
+    security = record.get("security")
+    if isinstance(security, dict):
+        _merge_security(ap, security)
+    capabilities = record.get("capabilities")
+    if isinstance(capabilities, dict):
+        _merge_capabilities(ap.capabilities, capabilities)
+    wps = record.get("wps")
+    if isinstance(wps, dict):
+        _merge_wps(ap, wps)
+    enterprise = record.get("enterprise")
+    if isinstance(enterprise, dict):
+        try:
+            from wifit3.persist.enterprise_sessions import enterprise_profile_from_payload
+
+            profile = enterprise_profile_from_payload(enterprise)
+        except (ImportError, TypeError, ValueError):
+            profile = None
+        if profile is not None:
+            ap.enterprise = profile
+    for item in record.get("identity_evidence") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            key = IdKey[str(item["field"])]
+            source = IdSource[str(item["source"])]
+        except KeyError:
+            continue
+        ap.identity.set(source, key, str(item["value"]))
+    siblings: set[str] = set(ap.siblings)
+    for item in record.get("relationships") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("kind") or "") == "sibling":
+            related = str(item.get("related_bssid") or "").strip()
+            if related:
+                siblings.add(related)
+    if siblings:
+        ap.siblings = sorted(siblings)
+    return ap
+
+
 def _snapshot(ap: AccessPoint) -> dict[str, Any]:
     enterprise: dict[str, Any] | None = None
     if _enterprise_has_data(ap.enterprise):
@@ -1167,6 +1475,11 @@ def _snapshot(ap: AccessPoint) -> dict[str, Any]:
             "version": ap.wps_version,
             "config_methods": ap.wps_config_methods,
             "device_password_id": ap.wps_device_password_id,
+            "state": ap.wps_state,
+            "uuid_e": ap.wps_uuid_e,
+            "rf_bands": ap.wps_rf_bands,
+            "os_version": ap.wps_os_version,
+            "response_type": ap.wps_response_type,
         },
         "enterprise": enterprise,
         "siblings": sorted(item.casefold() for item in ap.siblings),
@@ -1187,6 +1500,9 @@ def _enterprise_has_data(profile: Any) -> bool:
 
 def _capabilities_payload(caps: AdvertisedCapabilities) -> dict[str, Any]:
     raw = asdict(caps)
+    raw.pop("client_ie_hashes", None)
+    raw.pop("client_ie_order_hashes", None)
+    raw.pop("client_vendor_tokens", None)
     for name in (
         "phy_modes", "channel_widths_mhz", "supported_rates_mbps",
         "capability_flags", "vendor_ouis",
@@ -1260,6 +1576,29 @@ def _merge_capabilities(caps: AdvertisedCapabilities, raw: dict[str, Any]) -> bo
         caps.country_channels = list(historical.country_channels)
     if not caps.supported_channel_ranges:
         caps.supported_channel_ranges = list(historical.supported_channel_ranges)
+    pinned = str(raw.get("catalog_family_id") or "").strip()
+    if pinned:
+        from wifit3.observe.product_catalog import (
+            apply_catalog_hit,
+            catalog_hit_for_family_id,
+        )
+
+        caps.catalog_family_id = pinned
+        apply_catalog_hit(caps, catalog_hit_for_family_id(pinned))
+    elif not caps.catalog_labels and not caps.catalog_live and not caps.catalog_attention:
+        labels = raw.get("catalog_labels")
+        if isinstance(labels, list):
+            caps.catalog_labels = tuple(
+                str(item) for item in labels if isinstance(item, str)
+            )
+        for name in (
+            "catalog_class", "catalog_notes", "catalog_attention",
+            "catalog_live", "catalog_sentence",
+        ):
+            value = raw.get(name)
+            if isinstance(value, str):
+                setattr(caps, name, value)
+        caps.catalog_live_strong = bool(raw.get("catalog_live_strong", False))
     return before != _capabilities_payload(caps)
 
 
@@ -1289,6 +1628,44 @@ def _merge_security(ap: AccessPoint, raw: dict[str, Any]) -> bool:
         except ValueError:
             pass
     return changed
+
+
+def _merge_wps(ap: AccessPoint, raw: dict[str, Any]) -> bool:
+    """Restore fixed WPS evidence without reviving historical live state."""
+    if not raw:
+        return False
+    before = (
+        ap.wps,
+        ap.wps_version,
+        ap.wps_config_methods,
+        ap.wps_uuid_e,
+        ap.wps_rf_bands,
+        ap.wps_os_version,
+        ap.wps_response_type,
+    )
+    ap.wps = ap.wps or bool(raw.get("enabled"))
+    if ap.wps_version is None and raw.get("version") is not None:
+        ap.wps_version = str(raw["version"])
+    ap.wps_config_methods |= _integer(raw.get("config_methods")) or 0
+    if ap.wps_uuid_e is None and raw.get("uuid_e") is not None:
+        ap.wps_uuid_e = str(raw["uuid_e"])
+    historical_rf_bands = _integer(raw.get("rf_bands"))
+    if historical_rf_bands is not None:
+        ap.wps_rf_bands = (ap.wps_rf_bands or 0) | historical_rf_bands
+    if ap.wps_os_version is None:
+        ap.wps_os_version = _integer(raw.get("os_version"))
+    if ap.wps_response_type is None:
+        ap.wps_response_type = _integer(raw.get("response_type"))
+    after = (
+        ap.wps,
+        ap.wps_version,
+        ap.wps_config_methods,
+        ap.wps_uuid_e,
+        ap.wps_rf_bands,
+        ap.wps_os_version,
+        ap.wps_response_type,
+    )
+    return before != after
 
 
 def _read_json(path: Path) -> dict[str, Any]:

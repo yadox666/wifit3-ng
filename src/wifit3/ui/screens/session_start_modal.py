@@ -79,7 +79,7 @@ class SessionStartModal(ModalScreen[SessionStartInput]):
         if self._gps_status is not None:
             label = self._gps_status.label
             return (
-                f"[dim]GPS connected ({label}) — waiting for satellite fix…[/dim]"
+                f"[dim]GPS connected ({label}) - waiting for satellite fix…[/dim]"
             )
         if self._gps_configured_port:
             return (
@@ -126,6 +126,13 @@ class SessionStartModal(ModalScreen[SessionStartInput]):
 
     @on(Button.Pressed, "#session-start")
     def start_pressed(self) -> None:
+        self._confirm()
+
+    @on(Input.Submitted)
+    def _input_submitted(self) -> None:
+        # Pressing Enter in either field accepts the dialog. A focused Input
+        # consumes the key as a submit event, so it never reaches the screen's
+        # "enter" binding - handle it here so Enter always starts the session.
         self._confirm()
 
     def action_confirm(self) -> None:

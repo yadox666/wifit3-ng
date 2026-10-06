@@ -374,6 +374,55 @@ def test_observe_arp_neighbors_records_ip_on_each_client():
     assert metadata.clients[neighbor].facts["ipv4_addresses"][0].source == "arp_sweep_active"
 
 
+def test_observe_bonjour_services_keeps_only_sanitized_service_types():
+    metadata = NetworkMetadata(BSSID, "Cafe")
+    neighbor = "6a:a9:f9:87:7e:d1"
+
+    assert metadata.observe_bonjour_services(
+        [
+            ("192.168.0.84", neighbor, "_airplay._tcp.local"),
+            ("192.168.0.84", neighbor, "Alice's iPhone._airplay._tcp.local"),
+        ],
+        now=100,
+    )
+
+    assert [
+        fact.value for fact in metadata.facts["bonjour_services"]
+    ] == ["_airplay._tcp.local"]
+    assert metadata.clients[neighbor].facts["bonjour_services"][0].value == (
+        "_airplay._tcp.local"
+    )
+
+
+def test_local_discovery_records_services_and_roles_without_names():
+    metadata = NetworkMetadata(BSSID, "Cafe")
+    neighbor = "6a:a9:f9:87:7e:d1"
+
+    assert metadata.observe_local_discovery(
+        [
+            ("192.168.0.84", neighbor, "_airplay._tcp.local", "mdns"),
+            (
+                "192.168.0.84",
+                neighbor,
+                "ssdp:urn:schemas-upnp-org:device:mediarenderer:1",
+                "ssdp",
+            ),
+            ("192.168.0.84", neighbor, "PRIVATE-NAME", "nbns"),
+        ],
+        [("192.168.0.84", neighbor, "apple_media")],
+        now=100,
+    )
+
+    assert {
+        fact.value for fact in metadata.facts["announced_services"]
+    } == {
+        "_airplay._tcp.local",
+        "ssdp:urn:schemas-upnp-org:device:mediarenderer:1",
+    }
+    assert metadata.clients[neighbor].facts["device_roles"][0].value == "apple_media"
+    assert "PRIVATE-NAME" not in str(metadata.to_dict())
+
+
 def test_quic_initial_sni_recorded_as_website():
     metadata = NetworkMetadata(BSSID, "Cafe")
     touched = PassiveNetworkAnalyzer(metadata).observe(

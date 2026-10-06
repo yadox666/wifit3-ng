@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import secrets
 import struct
 from dataclasses import dataclass
@@ -37,6 +38,25 @@ class TcpSegment:
 class HttpProbeResponse:
     status: int
     location_origin: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MdnsServices:
+    source_ip: str
+    service_types: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LocalServices:
+    source_ip: str
+    service_types: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NbnsRoles:
+    source_ip: str
+    transaction_id: int
+    roles: tuple[str, ...]
 
 
 def build_arp_request(
@@ -119,6 +139,319 @@ def build_dns_query(
         client_ip, dns_ip, source_port, 53, dns,
         ident=transaction_id,
     )
+
+
+def build_mdns_service_query(
+    bssid: bytes,
+    client_mac: bytes,
+    client_ip: str,
+) -> bytes:
+    """Build a bounded DNS-SD service-enumeration query for the local link."""
+    hostname = "_services._dns-sd._udp.local"
+    question = b"".join(
+        bytes((len(label),)) + label
+        for label in hostname.encode("ascii").split(b".")
+    )
+    # Set the mDNS QU bit so WPA APs return pairwise-encrypted unicast replies;
+    # Fake-Connect has the PTK but does not retain the AP's multicast GTK.
+    question += b"\x00" + struct.pack("!HH", 12, 0x8001)  # PTR, class IN + QU
+    dns = struct.pack("!HHHHHH", 0, 0, 1, 0, 0, 0) + question
+    return build_udp_frame(
+        bssid,
+        client_mac,
+        bytes.fromhex("01005e0000fb"),
+        client_ip,
+        "224.0.0.251",
+        5353,
+        5353,
+        dns,
+        ident=0,
+    )
+
+
+def parse_mdns_services(frame: bytes) -> MdnsServices | None:
+    """Extract sanitized DNS-SD service types from one IPv4 mDNS response.
+
+    Instance names, hostnames, addresses and TXT values are deliberately not
+    returned, so callers cannot accidentally retain personal device names.
+    """
+    packet = _ipv4_packet(frame)
+    if packet is None or packet[9] != 17:
+        return None
+    header_len = (packet[0] & 0x0F) * 4
+    if len(packet) < header_len + 20:
+        return None
+    udp = packet[header_len:]
+    src_port, dst_port, length = struct.unpack("!HHH", udp[:6])
+    if src_port != 5353 or dst_port != 5353 or length < 20:
+        return None
+    dns = udp[8:min(len(udp), length)]
+    if len(dns) < 12:
+        return None
+    _ident, flags, questions, answers, authorities, additionals = struct.unpack(
+        "!HHHHHH", dns[:12],
+    )
+    if not flags & 0x8000:
+        return None
+    offset = 12
+    services: set[str] = set()
+    try:
+        for _ in range(min(questions, 32)):
+            _name, offset = _read_dns_name(dns, offset)
+            offset += 4
+            if offset > len(dns):
+                return None
+        record_count = min(answers + authorities + additionals, 128)
+        for _ in range(record_count):
+            owner, offset = _read_dns_name(dns, offset)
+            if offset + 10 > len(dns):
+                return None
+            kind, dns_class, _ttl, size = struct.unpack(
+                "!HHIH", dns[offset:offset + 10],
+            )
+            offset += 10
+            end = offset + size
+            if end > len(dns):
+                return None
+            if dns_class & 0x7FFF == 1:
+                owner_service = _dns_sd_service_type(owner)
+                if owner_service:
+                    services.add(owner_service)
+                if kind == 12:  # PTR
+                    target, _ = _read_dns_name(dns, offset)
+                    target_service = _dns_sd_service_type(target)
+                    if target_service:
+                        services.add(target_service)
+            offset = end
+    except (UnicodeDecodeError, ValueError, struct.error):
+        return None
+    if not services:
+        return None
+    source_ip = str(ipaddress.IPv4Address(packet[12:16]))
+    return MdnsServices(source_ip, tuple(sorted(services)))
+
+
+def build_ssdp_discovery_query(
+    bssid: bytes,
+    client_mac: bytes,
+    client_ip: str,
+    *,
+    source_port: int,
+) -> bytes:
+    body = (
+        b"M-SEARCH * HTTP/1.1\r\n"
+        b"HOST: 239.255.255.250:1900\r\n"
+        b'MAN: "ssdp:discover"\r\n'
+        b"MX: 1\r\n"
+        b"ST: ssdp:all\r\n\r\n"
+    )
+    return build_udp_frame(
+        bssid,
+        client_mac,
+        bytes.fromhex("01005e7ffffa"),
+        client_ip,
+        "239.255.255.250",
+        source_port,
+        1900,
+        body,
+        ident=source_port,
+    )
+
+
+def parse_ssdp_services(frame: bytes, client_port: int) -> LocalServices | None:
+    parsed = _udp_datagram(frame)
+    if parsed is None:
+        return None
+    source_ip, _dest_ip, source_port, dest_port, body = parsed
+    if source_port != 1900 or dest_port != client_port or len(body) > 8192:
+        return None
+    lines = body.split(b"\r\n")
+    if not lines or not lines[0].upper().startswith(b"HTTP/1.1 200"):
+        return None
+    services: set[str] = set()
+    for line in lines[1:65]:
+        name, separator, value = line.partition(b":")
+        if not separator or name.strip().lower() not in (b"st", b"nt"):
+            continue
+        service = _sanitized_discovery_value("ssdp", value)
+        if service:
+            services.add(service)
+    return (
+        LocalServices(source_ip, tuple(sorted(services)))
+        if services else None
+    )
+
+
+def build_wsd_probe(
+    bssid: bytes,
+    client_mac: bytes,
+    client_ip: str,
+    *,
+    source_port: int,
+) -> bytes:
+    message_id = secrets.token_hex(16)
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+        'xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" '
+        'xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery">'
+        "<s:Header>"
+        '<a:Action s:mustUnderstand="1">'
+        "http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe"
+        "</a:Action>"
+        f"<a:MessageID>urn:uuid:{message_id}</a:MessageID>"
+        '<a:To s:mustUnderstand="1">urn:schemas-xmlsoap-org:ws:2005:04:discovery'
+        "</a:To>"
+        "</s:Header><s:Body><d:Probe/></s:Body></s:Envelope>"
+    ).encode("utf-8")
+    return build_udp_frame(
+        bssid,
+        client_mac,
+        bytes.fromhex("01005e7ffffa"),
+        client_ip,
+        "239.255.255.250",
+        source_port,
+        3702,
+        body,
+        ident=source_port,
+    )
+
+
+def parse_wsd_services(frame: bytes, client_port: int) -> LocalServices | None:
+    parsed = _udp_datagram(frame)
+    if parsed is None:
+        return None
+    source_ip, _dest_ip, source_port, dest_port, body = parsed
+    if source_port != 3702 or dest_port != client_port or len(body) > 65536:
+        return None
+    services: set[str] = set()
+    for match in re.finditer(
+        rb"<(?:[A-Za-z_][\w.-]*:)?Types(?:\s[^>]*)?>([^<]{1,2048})</",
+        body,
+        re.IGNORECASE,
+    ):
+        for value in match.group(1).split():
+            local_name = value.rsplit(b":", 1)[-1]
+            service = _sanitized_discovery_value("wsd", local_name)
+            if service:
+                services.add(service)
+    return (
+        LocalServices(source_ip, tuple(sorted(services)))
+        if services else None
+    )
+
+
+def build_nbns_node_status_query(
+    bssid: bytes,
+    client_mac: bytes,
+    target_mac: bytes,
+    client_ip: str,
+    target_ip: str,
+    *,
+    source_port: int,
+    transaction_id: int,
+) -> bytes:
+    raw_name = b"*" + b"\x00" * 15
+    encoded_name = bytes(
+        value
+        for byte in raw_name
+        for value in (0x41 + (byte >> 4), 0x41 + (byte & 0x0F))
+    )
+    question = b"\x20" + encoded_name + b"\x00" + struct.pack("!HH", 0x21, 1)
+    nbns = (
+        struct.pack("!HHHHHH", transaction_id, 0, 1, 0, 0, 0)
+        + question
+    )
+    return build_udp_frame(
+        bssid,
+        client_mac,
+        target_mac,
+        client_ip,
+        target_ip,
+        source_port,
+        137,
+        nbns,
+        ident=transaction_id,
+    )
+
+
+def parse_nbns_node_status(frame: bytes, client_port: int) -> NbnsRoles | None:
+    parsed = _udp_datagram(frame)
+    if parsed is None:
+        return None
+    source_ip, _dest_ip, source_port, dest_port, body = parsed
+    if source_port != 137 or dest_port != client_port or len(body) < 12:
+        return None
+    transaction_id, flags, questions, answers, _authority, _additional = struct.unpack(
+        "!HHHHHH", body[:12],
+    )
+    if not flags & 0x8000:
+        return None
+    offset = 12
+    roles: set[str] = set()
+    try:
+        for _ in range(min(questions, 8)):
+            _name, offset = _read_dns_name(body, offset)
+            offset += 4
+            if offset > len(body):
+                return None
+        for _ in range(min(answers, 8)):
+            _name, offset = _read_dns_name(body, offset)
+            if offset + 10 > len(body):
+                return None
+            kind, _dns_class, _ttl, size = struct.unpack(
+                "!HHIH", body[offset:offset + 10],
+            )
+            offset += 10
+            end = offset + size
+            if end > len(body):
+                return None
+            if kind == 0x21 and size >= 1:
+                count = min(body[offset], 64)
+                entries_start = offset + 1
+                if entries_start + count * 18 > end:
+                    return None
+                for index in range(count):
+                    entry = entries_start + index * 18
+                    suffix = body[entry + 15]
+                    role = _NBNS_SUFFIX_ROLES.get(suffix)
+                    if role:
+                        roles.add(role)
+            offset = end
+    except (UnicodeDecodeError, ValueError, struct.error):
+        return None
+    return (
+        NbnsRoles(source_ip, transaction_id, tuple(sorted(roles)))
+        if roles else None
+    )
+
+
+def classify_announced_services(service_types: tuple[str, ...]) -> tuple[str, ...]:
+    roles: set[str] = set()
+    for service_type in service_types:
+        value = service_type.casefold()
+        if "_airplay." in value or "_raop." in value:
+            roles.add("apple_media")
+        if "_googlecast." in value or "dial-multiscreen" in value:
+            roles.add("media_cast")
+        if any(token in value for token in ("_hap.", "_matter", "_meshcop.")):
+            roles.add("smart_home")
+        if any(token in value for token in (
+            "_ipp.", "_ipps.", "_printer.", "_pdl-datastream.",
+            "printdevice", "printerdevice",
+        )):
+            roles.add("printer")
+        if "_smb." in value or "_adisk." in value:
+            roles.add("file_sharing")
+        if "mediarenderer" in value:
+            roles.add("media_renderer")
+        if "mediaserver" in value:
+            roles.add("media_server")
+        if "internetgatewaydevice" in value:
+            roles.add("router")
+        if "networkvideotransmitter" in value:
+            roles.add("camera")
+    return tuple(sorted(roles))
 
 
 def parse_dns_response(
@@ -318,6 +651,28 @@ def _ipv4_packet(frame: bytes) -> bytes | None:
     return payload[:min(total, len(payload))]
 
 
+def _udp_datagram(
+    frame: bytes,
+) -> tuple[str, str, int, int, bytes] | None:
+    packet = _ipv4_packet(frame)
+    if packet is None or packet[9] != 17:
+        return None
+    header_len = (packet[0] & 0x0F) * 4
+    if header_len < 20 or len(packet) < header_len + 8:
+        return None
+    udp = packet[header_len:]
+    source_port, dest_port, length = struct.unpack("!HHH", udp[:6])
+    if length < 8 or length > len(udp):
+        return None
+    return (
+        str(ipaddress.IPv4Address(packet[12:16])),
+        str(ipaddress.IPv4Address(packet[16:20])),
+        source_port,
+        dest_port,
+        udp[8:length],
+    )
+
+
 def _llc_payload(frame: bytes, marker: bytes) -> bytes | None:
     if len(frame) < 32 or ((frame[0] & 0x0C) >> 2) != 2 or frame[1] & 0x40:
         return None
@@ -346,6 +701,86 @@ def _skip_dns_name(data: bytes, offset: int) -> int:
         offset += size
         labels += 1
     raise ValueError("unterminated DNS name")
+
+
+def _read_dns_name(
+    data: bytes,
+    offset: int,
+    *,
+    _visited: frozenset[int] = frozenset(),
+) -> tuple[str, int]:
+    if offset < 0 or offset >= len(data) or offset in _visited:
+        raise ValueError("invalid DNS name pointer")
+    labels: list[str] = []
+    cursor = offset
+    end_offset: int | None = None
+    for _ in range(128):
+        if cursor >= len(data):
+            raise ValueError("truncated DNS name")
+        size = data[cursor]
+        if size & 0xC0 == 0xC0:
+            if cursor + 2 > len(data):
+                raise ValueError("truncated DNS pointer")
+            pointer = ((size & 0x3F) << 8) | data[cursor + 1]
+            suffix, _ = _read_dns_name(
+                data,
+                pointer,
+                _visited=_visited | {offset},
+            )
+            if suffix:
+                labels.extend(suffix.split("."))
+            end_offset = cursor + 2
+            break
+        cursor += 1
+        if size == 0:
+            end_offset = cursor
+            break
+        if size > 63 or cursor + size > len(data):
+            raise ValueError("invalid DNS label")
+        labels.append(data[cursor:cursor + size].decode("utf-8", "strict"))
+        cursor += size
+    if end_offset is None:
+        raise ValueError("unterminated DNS name")
+    return ".".join(labels), end_offset
+
+
+def _dns_sd_service_type(name: str) -> str | None:
+    labels = [label.casefold() for label in name.rstrip(".").split(".") if label]
+    if labels == ["_services", "_dns-sd", "_udp", "local"]:
+        return None
+    for index, label in enumerate(labels):
+        if (
+            label in ("_tcp", "_udp")
+            and index > 0
+            and index + 1 < len(labels)
+            and labels[index - 1].startswith("_")
+            and labels[index + 1] == "local"
+        ):
+            return ".".join(labels[index - 1:index + 2])
+    return None
+
+
+def _sanitized_discovery_value(prefix: str, raw: bytes) -> str | None:
+    try:
+        value = raw.strip().decode("ascii", "strict").casefold()
+    except UnicodeDecodeError:
+        return None
+    if not value or len(value) > 256:
+        return None
+    if not all(character.isalnum() or character in "._:-" for character in value):
+        return None
+    return f"{prefix}:{value}"
+
+
+_NBNS_SUFFIX_ROLES = {
+    0x00: "workstation",
+    0x03: "messaging",
+    0x1B: "domain_master_browser",
+    0x1C: "domain_controller",
+    0x1D: "master_browser",
+    0x1E: "browser_service",
+    0x20: "file_sharing",
+}
 
 
 def _origin(raw: bytes) -> str | None:

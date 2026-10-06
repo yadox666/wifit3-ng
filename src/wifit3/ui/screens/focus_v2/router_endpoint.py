@@ -20,6 +20,8 @@ from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Button, Label
 
+from wifit3.ui.mac_format import mac_address_text
+
 from ...signal_bar import dbm_style, render_signal_bar
 from .art import BreathingArt, art_size
 
@@ -37,6 +39,8 @@ class RouterEndpoint(Vertical):
                  uptime_us: int | None = None,
                  country_code: str | None = None,
                  ssid_note: str = "",
+                 catalog: str = "",
+                 fingerprint: str = "",
                  identity: str = "", identity_details: str | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._essid = essid
@@ -48,6 +52,8 @@ class RouterEndpoint(Vertical):
         self._uptime_us = uptime_us
         self._country_code = country_code
         self._ssid_note = ssid_note
+        self._catalog = catalog
+        self._fingerprint = fingerprint
         self._identity = identity
         self._identity_details = identity_details
         self._width = art_size("focus-ap.ans")[0]      # endpoint column width
@@ -62,7 +68,15 @@ class RouterEndpoint(Vertical):
             self._essid_markup(self._essid, self._ssid_note),
             classes="ap-essid", id="ap-essid",
         )
-        yield Label(self._bssid, classes="ap-static", id="ap-bssid")
+        catalog = Label(self._catalog, classes="ap-static", id="ap-catalog")
+        catalog.display = bool(self._catalog)
+        yield catalog
+        yield Label(mac_address_text(self._bssid), classes="ap-static", id="ap-bssid")
+        yield Label(
+            self._fingerprint,
+            classes="ap-static",
+            id="ap-fingerprint",
+        )
         yield Label(self._uptime_label(), classes="ap-static", id="ap-uptime")
         with Horizontal(classes="ap-static", id="ap-identity-row"):
             identity = Button(self._identity_label(), id="ap-identity")
@@ -77,6 +91,8 @@ class RouterEndpoint(Vertical):
                uptime_us: int | None = None,
                country_code: str | None = None,
                ssid_note: str = "",
+               catalog: str = "",
+               fingerprint: str = "",
                identity: str = "", identity_details: str | None = None) -> None:
         """Update live power meter and target endpoint identity state."""
         self._essid, self._bssid, self._channel = essid, bssid, channel
@@ -85,11 +101,18 @@ class RouterEndpoint(Vertical):
         self._uptime_us = uptime_us
         self._country_code = country_code
         self._ssid_note = ssid_note
+        self._catalog = catalog
+        self._fingerprint = fingerprint
         self._identity, self._identity_details = identity, identity_details
         self.query_one("#ap-power", Label).update(self._power_line())
         self.query_one("#router-art", BreathingArt).tooltip = identity_details
         self._push("#ap-essid", self._essid_markup(essid, ssid_note))
-        self._push("#ap-bssid", bssid)
+        catalog_label = self.query_one("#ap-catalog", Label)
+        catalog_label.display = bool(catalog)
+        if catalog:
+            self._push("#ap-catalog", catalog)
+        self._push_mac("#ap-bssid", bssid)
+        self._push("#ap-fingerprint", fingerprint)
         self._push("#ap-uptime", self._uptime_label())
 
         self._push("#ap-identity", self._identity_label())
@@ -108,6 +131,12 @@ class RouterEndpoint(Vertical):
             widget.label = value
         else:
             widget.update(value)
+
+    def _push_mac(self, sel: str, mac: str) -> None:
+        if self._last.get(sel) == mac:
+            return
+        self._last[sel] = mac
+        self.query_one(sel, Label).update(mac_address_text(mac))
 
     def flicker(self) -> None:
         """Pulse the router LED. The screen calls this on RX from the target."""

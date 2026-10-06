@@ -34,7 +34,7 @@ class BluetoothClassicFocusView(Screen):
     BINDINGS = [
         Binding("escape", "go_back", "Back"),
         Binding("r", "browse_services", "Browse SDP"),
-        Binding("shift+t", "targets_editor", "Targets"),
+        Binding("n", "targets_editor", "Targets"),
     ]
 
     CSS = """

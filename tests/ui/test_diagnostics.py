@@ -6,6 +6,7 @@ from textual.widgets import DataTable, Link
 
 from wifit3.gps import GpsStatus
 from wifit3.models import LocationFix
+from wifit3.sdr import HackRfDevice, HackRfUsbHealth
 from wifit3.ui.app import WifiteApp
 from wifit3.ui.screens.diagnostics import AdapterDiagnosticsModal
 
@@ -89,6 +90,34 @@ async def test_diagnostics_separates_ble_and_classic_stats():
         assert classic[2] == "BT"
         assert classic[3].plain == "2"
         assert classic[4].plain == "5"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_diagnostics_verifies_hackrf_firmware_control_channel(monkeypatch):
+    device = HackRfDevice(0x1D50, 0x6089, 2, 7)
+    monkeypatch.setattr(
+        "wifit3.ui.screens.diagnostics.find_hackrf_devices",
+        lambda: [device],
+    )
+    monkeypatch.setattr(
+        "wifit3.ui.screens.diagnostics.probe_hackrf_usb",
+        lambda _device: HackRfUsbHealth("USB READY", "Firmware 2024.02.1", True),
+    )
+
+    app = WifiteApp()
+    async with app.run_test() as pilot:
+        app.action_diagnostics()
+        await pilot.pause(0)
+        row = app.screen.query_one("#diagnostics-table", DataTable).get_row("hackrf-0")
+
+        assert row[0] == "USB SDR"
+        assert row[1] == "HackRF One"
+        assert row[6] == "Firmware 2024.02.1"
+        assert row[8].plain == "USB READY"
+        assert "1 active adapter" in app.screen.query_one(
+            "#diagnostics-summary",
+        ).render().plain
 
 
 @pytest.mark.asyncio

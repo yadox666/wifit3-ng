@@ -12,6 +12,7 @@ from textual.widgets import Button, DataTable, Label, Link, Static
 
 from wifit3.models.bluetooth_device import BLE_RADIO
 from wifit3.persist.config import Config
+from wifit3.sdr import find_hackrf_devices, probe_hackrf_usb
 
 
 def _age(timestamp: float | None) -> str:
@@ -176,13 +177,32 @@ class AdapterDiagnosticsModal(ModalScreen[None]):
                     Text(status, style=style),
                     key=f"bluetooth-{radio_type.casefold()}",
                 )
-        active_count = len(members) + int(bluetooth_active)
+        hackrf_devices = find_hackrf_devices()
+        for index, device in enumerate(hackrf_devices):
+            health = probe_hackrf_usb(device)
+            style = "bold green" if health.ready else (
+                "yellow" if health.status == "DISCONNECTED" else "bold red"
+            )
+            table.add_row(
+                "USB SDR",
+                device.product_name,
+                "IQ",
+                "-",
+                "-",
+                "disabled",
+                health.detail,
+                "-",
+                Text(health.status, style=style),
+                key=f"hackrf-{index}",
+            )
+        active_count = len(members) + int(bluetooth_active) + len(hackrf_devices)
         self._refresh_gps()
         summary = (
             f"[bold]{active_count} active adapter{'s' if active_count != 1 else ''}[/bold]\n"
             "SILENT means no parsed frame for 15 seconds. It can also indicate an empty channel "
             "or weak reception. Bluetooth uses discovery observations as RX activity; hardware "
-            "is never reset automatically."
+            "is never reset automatically. HackRF USB READY verifies its firmware control channel, "
+            "not RF reception."
         )
         self.query_one("#diagnostics-summary", Static).update(summary)
 

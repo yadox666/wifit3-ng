@@ -11,13 +11,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from collections import deque
 from dataclasses import dataclass, replace
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 
 from bleak import BleakClient, BleakScanner
 
 from wifit3.bluetooth.analytics import (
     bluez_platform_metadata,
+    normalize_ble_mac,
     payload_fingerprint,
     is_bluetooth_bd_addr,
     platform_address_type,
@@ -28,10 +29,29 @@ from wifit3.bluetooth.analytics import (
 from wifit3.bluetooth.connection import BluetoothConnection, BluetoothConnectionError
 from wifit3.bluetooth.gatt_metadata import (
     ENRICHMENT_IDENTITY_BY_SERVICE,
+    GATT_IDENTITY_STORAGE_FIELDS,
     compact_uuid,
     device_information_fields,
+    merge_gatt_identity_fields,
 )
 from wifit3.bluetooth.hci_protocol import DiscoveryObservation
+from wifit3.observe.product_catalog import (
+    CatalogHit,
+    choose_catalog,
+    device_fields,
+    match_bluetooth,
+    supplement_catalog_hit,
+    with_protocol_live,
+)
+from wifit3.bluetooth import routing
+from wifit3.bluetooth.routing import Route, UsbRadio, route_classic, route_le
+from wifit3.bluetooth import scan_modes
+from wifit3.bluetooth.sources import (
+    OS_SOURCE_ID,
+    merge_sources,
+    source_chip_label,
+    usb_source_id,
+)
 from wifit3.bluetooth.usb_hci import (
     UsbBluetoothController,
     UsbBluetoothError,
@@ -39,10 +59,11 @@ from wifit3.bluetooth.usb_hci import (
     find_usb_bluetooth_controllers,
 )
 from wifit3.models import BluetoothDevice, BluetoothInspection, LocationFix
+from wifit3.models.location import positions_digest
 from wifit3.models.bluetooth_device import (
     BLE_RADIO,
     CLASSIC_RADIO,
-    has_coherent_persistent_identity,
+    should_persist_bluetooth_observation,
     has_stable_persistent_identifier,
 )
 from wifit3.persist.bluetooth_history import BluetoothHistoryStore
@@ -92,6 +113,23 @@ def _os_ble_backend_info(scanner) -> tuple[str, str, str]:
     return backend_type.__name__, "", "System adapter"
 
 
+def _guess_os_ble_backend() -> tuple[str, str]:
+    """Best-known (backend, manufacturer) for this OS without a scanner instance.
+
+    Bleak's backend is 1:1 with the platform, so this matches what
+    ``_os_ble_backend_info`` will report once actually probed. Used for the
+    startup placeholder so its name text is already correct and the adapter
+    boxes never have to resize once the real probe completes.
+    """
+    if sys.platform == "darwin":
+        return "CoreBluetooth", "Apple"
+    if sys.platform.startswith("win"):
+        return "WinRT", "Microsoft"
+    if sys.platform.startswith("linux"):
+        return "BlueZ", ""
+    return "Bleak", ""
+
+
 def _advertised_connectable(platform_data: tuple) -> bool | None:
     """Return CoreBluetooth's connectable flag when the advertisement includes it."""
     if len(platform_data) != 3 or not isinstance(platform_data[1], Mapping):
@@ -114,16 +152,42 @@ def _ble_mac_privacy_pattern(mac: str) -> str:
 
 
 def _platform_ble_identity(platform_device: Any) -> tuple[str, str | None]:
-    """Describe the OS BLE endpoint and return a BD_ADDR if the OS exposes one.
+    """Describe the system BLE endpoint and return a BD_ADDR when one is exposed.
 
-    CoreBluetooth's public identifier is normally a per-host UUID. Bleak also
-    knows an optional, undocumented macOS selector that can return a BD_ADDR on
-    some systems/controllers; probe it defensively without making it required.
+    Address availability is platform-dependent, so the portable path is tried
+    first and the OS-specific fallback runs only where it is actually needed:
+
+    * **Linux (BlueZ) / Windows (WinRT):** Bleak's public, cross-platform
+      ``BLEDevice.address`` already *is* the device BD_ADDR (MAC). It is used
+      directly - no backend-specific code runs on these platforms.
+    * **macOS (CoreBluetooth):** the public identifier is a per-host UUID, not a
+      MAC; macOS hides the hardware address on purpose. Only on macOS do we fall
+      back to :func:`_corebluetooth_bd_addr`, which recovers the BD_ADDR through
+      Bleak's raw backend handle when the OS still exposes it.
     """
     address = str(getattr(platform_device, "address", "") or "")
     if is_bluetooth_bd_addr(address):
+        # Linux/Windows: the portable Bleak address is already the MAC.
         return f"system address={address}", address
+    # Any non-MAC public address means the OS masks the hardware address.
     uuid_label = address or "unavailable"
+    if sys.platform != "darwin":
+        # No portable way to recover a MAC here; report the masked identifier.
+        return f"system identifier={uuid_label}; MAC unavailable", None
+    return _corebluetooth_bd_addr(platform_device, uuid_label)
+
+
+def _corebluetooth_bd_addr(
+    platform_device: Any, uuid_label: str,
+) -> tuple[str, str | None]:
+    """macOS-only: resolve a BD_ADDR hidden behind CoreBluetooth's per-host UUID.
+
+    Uses the undocumented ``retrieveAddressForPeripheral_`` selector reachable on
+    Bleak's raw backend handle (``platform_device.details``). This is **not** part
+    of Bleak's public API and may stop working in a future macOS release, so every
+    step is probed defensively and any failure degrades to ``MAC unavailable``
+    rather than raising.
+    """
     details = getattr(platform_device, "details", None)
     if not isinstance(details, tuple) or len(details) < 2:
         return f"CoreBluetooth UUID={uuid_label}; MAC unavailable", None
@@ -176,27 +240,44 @@ class BluetoothManager:
         self.movement_provider = movement_provider
         self.accuracy_provider = accuracy_provider
         self.os_ble_enabled = os_ble_enabled
-        self.os_ble_status = self._disabled_os_ble_status() if not os_ble_enabled else (
-            OsBleSourceStatus(
+        if not os_ble_enabled:
+            self.os_ble_status = self._disabled_os_ble_status()
+        else:
+            # Guess the backend/manufacturer from the OS so the placeholder's name
+            # text already matches what the real probe will report - otherwise the
+            # adapter boxes resize once CHECKING resolves to the real backend.
+            guess_backend, guess_manufacturer = _guess_os_ble_backend()
+            self.os_ble_status = OsBleSourceStatus(
                 True,
                 None,
                 "CHECKING",
-                "Bleak",
+                guess_backend,
                 platform.system(),
-                "",
+                guess_manufacturer,
                 "System adapter",
                 "Checking operating-system BLE availability",
             )
-        )
         self._scanner = None
+        # ``_usb_scanner`` is the *operational* scanner (labs/connect/SDP use it,
+        # chosen per-operation by the router). ``_usb_scanners`` is the registry
+        # of every concurrently-active discovery scanner, keyed by instance_key.
         self._usb_scanner = None
+        self._usb_scanners: dict[tuple, Any] = {}
         self._usb_reservations: dict[tuple, Any] = {}
+        self._known_controllers: list[UsbBluetoothController] = []
+        self._usb_source_ids: dict[tuple, str] = {}
+        # Per-controller scan mode (keyed by instance_key); default AUTO.
+        self._usb_scan_mode: dict[tuple, str] = {}
         self._usb_not_claimed: set[tuple] = set()
         self._usb_claim_verified: set[tuple] = set()
         self._usb_reservation_lock = threading.Lock()
         self._resume_usb_controller: UsbBluetoothController | None = None
+        self._resume_usb_controllers: list[UsbBluetoothController] = []
         self._devices: dict[str, BluetoothDevice] = {}
         self._device_information: dict[str, dict[str, str]] = {}
+        self._gatt_services_enriched: set[str] = set()
+        self._last_manufacturer_data: dict[str, dict[int, bytes]] = {}
+        self._last_service_data: dict[str, dict[str, bytes]] = {}
         self._enrichment_enabled = True
         self._enrichment_screen_active = False
         self._enrichment_task: asyncio.Task | None = None
@@ -222,6 +303,8 @@ class BluetoothManager:
         self._classic_focus_identifier: str | None = None
         self._focus_identifier: str | None = None
         self.focus_connection_error: str = ""
+        self.focus_connection_source: str = ""
+        self.focus_connection_route: Route | None = None
         self._classic_sdp_trace: tuple[str, ...] = ()
         self.connection: BluetoothConnection | None = None
         self._advertisement_callbacks: list[Callable[[BluetoothDevice], None]] = []
@@ -235,10 +318,7 @@ class BluetoothManager:
 
     @property
     def is_scanning(self) -> bool:
-        return self._scanner is not None or (
-            self._usb_scanner is not None
-            and getattr(self._usb_scanner, "is_scanning", True)
-        )
+        return self._scanner is not None or self.is_usb_scanning
 
     @property
     def hci_capture_records(self) -> tuple:
@@ -344,8 +424,15 @@ class BluetoothManager:
         await scanner.start()
 
     async def browse_classic_sdp(self, identifier: str):
-        await self._ensure_usb_scanner_ready()
         device = self._resolve_bluetooth_device(identifier)
+        if device is not None:
+            # Prefer the Classic-capable controller that observed this row.
+            classic_route = self._route_classic(device)
+            if classic_route.transport == routing.USB:
+                routed = self._scanner_for_source(classic_route.source_id)
+                if routed is not None:
+                    self._usb_scanner = routed
+        await self._ensure_usb_scanner_ready()
         if device is not None:
             identifier = device.identifier
         try:
@@ -363,8 +450,7 @@ class BluetoothManager:
             }))
             device.profile_fingerprint = _profile_fingerprint(device)
             self._correlate_radios(device)
-            if self.history is not None:
-                self.history.remember(device)
+            self._persist_device(device)
             for callback in list(self._advertisement_callbacks):
                 try:
                     callback(device)
@@ -374,18 +460,14 @@ class BluetoothManager:
 
     @property
     def is_usb_scanning(self) -> bool:
-        return (
-            self._usb_scanner is not None
-            and getattr(self._usb_scanner, "is_scanning", True)
+        return any(
+            getattr(scanner, "is_scanning", True)
+            for scanner in self._all_usb_scanners()
         )
 
     @property
     def is_os_ble_scanning(self) -> bool:
         return self._scanner is not None
-
-    @property
-    def usb_lab_available(self) -> bool:
-        return False
 
     @property
     def usb_scanner(self):
@@ -400,12 +482,16 @@ class BluetoothManager:
 
     @property
     def backend_name(self) -> str:
-        if self._usb_scanner is not None:
-            chipset = self._usb_scanner.controller.chipset
-            return (
-                f"{chipset} + OS BLE"
-                if self._scanner is not None else chipset
-            )
+        chipsets: list[str] = []
+        for scanner in self._all_usb_scanners():
+            chipset = getattr(getattr(scanner, "controller", None), "chipset", None)
+            if chipset and chipset not in chipsets:
+                chipsets.append(chipset)
+        if chipsets:
+            parts = list(chipsets)
+            if self._scanner is not None:
+                parts.append("OS BLE")
+            return " + ".join(parts)
         scanner = self._scanner
         return scanner.__class__.__name__ if scanner is not None else "Bleak"
 
@@ -416,35 +502,64 @@ class BluetoothManager:
         radios = set()
         if self._scanner is not None or self.connection is not None:
             radios.add(BLE_RADIO)
-        if self._usb_scanner is not None:
-            controller = self._usb_scanner.controller
-            if controller.supports_le:
+        for scanner in self._all_usb_scanners():
+            controller = getattr(scanner, "controller", None)
+            if controller is None:
+                continue
+            # Reflect the *effective* scan toggle when the scanner exposes it, so
+            # a dongle restricted to Classic-only stops advertising BLE here.
+            le_on = getattr(
+                scanner, "_usb_le_scan_enabled", getattr(controller, "supports_le", False)
+            )
+            classic_on = getattr(
+                scanner,
+                "_usb_classic_scan_enabled",
+                getattr(controller, "supports_classic", False),
+            )
+            if getattr(controller, "supports_le", False) and le_on:
                 radios.add(BLE_RADIO)
-            if controller.supports_classic:
+            if getattr(controller, "supports_classic", False) and classic_on:
                 radios.add(CLASSIC_RADIO)
         return tuple(radio for radio in (BLE_RADIO, CLASSIC_RADIO) if radio in radios)
 
     def backend_name_for_radio(self, radio_type: str) -> str:
-        usb_scanner = self._usb_scanner
-        if usb_scanner is not None:
-            controller = usb_scanner.controller
+        for scanner in self._all_usb_scanners():
+            controller = getattr(scanner, "controller", None)
+            if controller is None:
+                continue
             if (
-                radio_type == CLASSIC_RADIO and controller.supports_classic
-                or radio_type == BLE_RADIO and controller.supports_le
+                radio_type == CLASSIC_RADIO and getattr(controller, "supports_classic", False)
+                or radio_type == BLE_RADIO and getattr(controller, "supports_le", False)
             ):
                 return controller.chipset
         scanner = self._scanner
         return scanner.__class__.__name__ if scanner is not None else "Bleak"
 
-    def is_usb_radio(self, radio_type: str) -> bool:
-        usb_scanner = self._usb_scanner
-        if usb_scanner is None:
-            return False
-        controller = usb_scanner.controller
-        return (
-            radio_type == CLASSIC_RADIO and controller.supports_classic
-            or radio_type == BLE_RADIO and controller.supports_le
+    def connection_transport_label(self) -> str:
+        """Human label for the radio that performed the active Focus connection."""
+        route = self.focus_connection_route
+        if route is None or not route.source_id:
+            return ""
+        if route.source_id == OS_SOURCE_ID:
+            return self.os_ble_status.backend or "OS BLE"
+        scanner = self._usb_scanner
+        chipset = (
+            getattr(scanner.controller, "chipset", "USB")
+            if scanner is not None else "USB"
         )
+        return f"{chipset} USB"
+
+    def is_usb_radio(self, radio_type: str) -> bool:
+        for scanner in self._all_usb_scanners():
+            controller = getattr(scanner, "controller", None)
+            if controller is None:
+                continue
+            if (
+                radio_type == CLASSIC_RADIO and getattr(controller, "supports_classic", False)
+                or radio_type == BLE_RADIO and getattr(controller, "supports_le", False)
+            ):
+                return True
+        return False
 
     def forget_devices(self) -> None:
         """Drop the in-memory discovery picture after confirmed history deletion."""
@@ -469,7 +584,112 @@ class BluetoothManager:
             self._reserve_macos_controllers(controllers)
         else:
             self._probe_usb_claim_status(controllers)
+        self._remember_known_controllers(controllers)
         return controllers
+
+    def _remember_known_controllers(
+        self, controllers: list[UsbBluetoothController],
+    ) -> None:
+        """Track the detected controller set so source ids get stable ordinals."""
+        keys = [c.instance_key for c in controllers]
+        if keys != [c.instance_key for c in self._known_controllers]:
+            self._known_controllers = list(controllers)
+            # Recompute lazily; a newly-arrived sibling can change ordinals.
+            self._usb_source_ids.clear()
+
+    def _source_id_for_controller(
+        self, controller: UsbBluetoothController,
+    ) -> str:
+        """Stable ``usb:<slug>`` id for a controller (cached, non-blocking)."""
+        key = controller.instance_key
+        cached = self._usb_source_ids.get(key)
+        if cached is not None:
+            return cached
+        pool = self._known_controllers or [controller]
+        source_id = usb_source_id(controller, pool)
+        self._usb_source_ids[key] = source_id
+        return source_id
+
+    def _all_usb_scanners(self) -> list[Any]:
+        """Every active USB scanner: the registry plus the operational primary.
+
+        Tests (and some legacy paths) set ``_usb_scanner`` directly without the
+        registry, so it is always included.
+        """
+        scanners = list(self._usb_scanners.values())
+        if self._usb_scanner is not None and self._usb_scanner not in scanners:
+            scanners.append(self._usb_scanner)
+        return scanners
+
+    def _register_usb_scanner(self, scanner: Any) -> None:
+        controller = getattr(scanner, "controller", None)
+        key = getattr(controller, "instance_key", None)
+        if key is not None:
+            self._usb_scanners[key] = scanner
+        self._select_primary_usb_scanner(prefer=scanner)
+
+    def _select_primary_usb_scanner(self, *, prefer: Any = None) -> None:
+        """Pick the operational scanner: LE-capable preferred for GATT work."""
+        candidates = self._all_usb_scanners()
+        if not candidates:
+            self._usb_scanner = None
+            return
+        if prefer is not None and getattr(
+            getattr(prefer, "controller", None), "supports_le", False,
+        ):
+            self._usb_scanner = prefer
+            return
+        for scanner in candidates:
+            if getattr(getattr(scanner, "controller", None), "supports_le", False):
+                self._usb_scanner = scanner
+                return
+        self._usb_scanner = prefer if prefer is not None else candidates[0]
+
+    def _scanner_for_source(self, source_id: str) -> Any:
+        for scanner in self._all_usb_scanners():
+            controller = getattr(scanner, "controller", None)
+            if controller is None or not hasattr(controller, "instance_key"):
+                continue
+            if self._source_id_for_controller(controller) == source_id:
+                return scanner
+        return None
+
+    def _usb_observation_callback(
+        self, controller: UsbBluetoothController,
+    ) -> Callable[[DiscoveryObservation], None]:
+        return lambda observation: self._on_usb_observation(observation, controller)
+
+    def _active_usb_radios(self) -> list[UsbRadio]:
+        """USB radios the router can choose from (all active controllers)."""
+        radios: list[UsbRadio] = []
+        seen: set[str] = set()
+        for scanner in self._all_usb_scanners():
+            controller = getattr(scanner, "controller", None)
+            if controller is None:
+                continue
+            source_id = (
+                self._source_id_for_controller(controller)
+                if hasattr(controller, "instance_key") else "usb"
+            )
+            if source_id in seen:
+                continue
+            seen.add(source_id)
+            radios.append(UsbRadio(
+                source_id=source_id,
+                supports_classic=bool(getattr(controller, "supports_classic", True)),
+                supports_le=bool(getattr(controller, "supports_le", True)),
+            ))
+        return radios
+
+    def _route_le(self, device: BluetoothDevice) -> Route:
+        return route_le(
+            device,
+            os_active=self._scanner is not None,
+            usb_radios=self._active_usb_radios(),
+        )
+
+    def _route_classic(self, device: BluetoothDevice) -> Route:
+        return route_classic(device, usb_radios=self._active_usb_radios())
 
     def usb_not_claimed_keys(self) -> frozenset[tuple]:
         return frozenset(self._usb_not_claimed)
@@ -485,12 +705,13 @@ class BluetoothManager:
     ) -> tuple[bool, str]:
         """Try to take the dongle from the OS without a physical replug."""
         key = controller.instance_key
-        active = (
-            self._usb_scanner.controller.instance_key
-            if self._usb_scanner is not None else None
-        )
+        active = {
+            getattr(scanner.controller, "instance_key", None)
+            for scanner in self._all_usb_scanners()
+            if getattr(scanner, "controller", None) is not None
+        }
         with self._usb_reservation_lock:
-            if key in self._usb_reservations or key == active:
+            if key in self._usb_reservations or key in active:
                 self._usb_not_claimed.discard(key)
                 return True, "USB Bluetooth adapter is already held by wifit3"
         scanner = self._usb_scanner_factory(controller, self._on_usb_observation)
@@ -505,7 +726,14 @@ class BluetoothManager:
             logger.debug("USB Bluetooth reclaim failed", exc_info=True)
             self._usb_not_claimed.add(key)
             self._usb_claim_verified.discard(key)
-            return False, str(exc) or type(exc).__name__
+            message = str(exc) or type(exc).__name__
+            if sys.platform == "darwin":
+                message = (
+                    f"{message}. macOS still owns this adapter. Turn Bluetooth "
+                    "off in System Settings, then click ↻ again (or unplug and "
+                    "replug the dedicated adapter while Bluetooth is off)."
+                )
+            return False, message
         with self._usb_reservation_lock:
             self._usb_not_claimed.discard(key)
             self._usb_claim_verified.add(key)
@@ -513,14 +741,27 @@ class BluetoothManager:
         return True, "USB Bluetooth adapter claimed for wifit3"
 
     def _disabled_os_ble_status(self) -> OsBleSourceStatus:
+        """Keep the detected backend/manufacturer/adapter when disabling.
+
+        Otherwise the picker flips from e.g. "Apple CoreBluetooth" to a generic
+        "Bleak" every time the OS BLE checkbox is unchecked.
+        """
+        previous = getattr(self, "os_ble_status", None)
+        if previous is not None:
+            backend, manufacturer, adapter = (
+                previous.backend, previous.manufacturer, previous.adapter,
+            )
+        else:
+            backend, manufacturer = _guess_os_ble_backend()
+            adapter = "System adapter"
         return OsBleSourceStatus(
             False,
             None,
             "APP-DISABLED",
-            "Bleak",
+            backend,
             platform.system(),
-            "",
-            "System adapter",
+            manufacturer,
+            adapter,
             "Disabled for wifit3 on the startup screen",
         )
 
@@ -648,7 +889,7 @@ class BluetoothManager:
             adapter,
             "Operating-system BLE discovery is active",
         )
-        if self._usb_scanner is None:
+        if not self._usb_scanners:
             self._resume_usb_controller = None
         self.scan_started_at = time.time()
         self._start_device_information_sweep()
@@ -658,17 +899,63 @@ class BluetoothManager:
             return
         await self._activate_usb(controller, pair_os_ble=True)
 
+    def _usb_controller_active(self, controller: UsbBluetoothController) -> bool:
+        key = getattr(controller, "instance_key", None)
+        return key is not None and key in self._usb_scanners
+
+    def set_usb_scan_mode(
+        self, controller: UsbBluetoothController, mode: str
+    ) -> None:
+        """Record the user's scan-mode choice for a controller.
+
+        Applied when the controller is (re)activated, and immediately to a live
+        scanner so cycling the picker chip changes real discovery behavior.
+        """
+        self._usb_scan_mode[controller.instance_key] = mode
+        for scanner in self._all_usb_scanners():
+            scanner_controller = getattr(scanner, "controller", None)
+            if scanner_controller is None:
+                continue
+            if scanner_controller.instance_key != controller.instance_key:
+                continue
+            if hasattr(scanner, "set_scan_radios"):
+                le_on, classic_on = scan_modes.effective_scan_radios(
+                    controller, mode, os_ble_active=self._os_ble_active_now()
+                )
+                scanner.set_scan_radios(le=le_on, classic=classic_on)
+
+    def usb_scan_mode(self, controller: UsbBluetoothController) -> str:
+        return self._usb_scan_mode.get(controller.instance_key, scan_modes.AUTO)
+
+    def _os_ble_active_now(self) -> bool:
+        return self._scanner is not None
+
     async def start_parallel(
         self,
         *,
         os_ble: bool,
-        controller: UsbBluetoothController | None,
+        controller: UsbBluetoothController | None = None,
+        controllers: Sequence[UsbBluetoothController] | None = None,
     ) -> list[str]:
-        """Start OS BLE and a USB controller together. One radio failing leaves the other running."""
+        """Start OS BLE and one or more USB controllers together.
+
+        One radio failing leaves the others running. ``controllers`` activates
+        several dedicated dongles concurrently; ``controller`` is the legacy
+        single-dongle form.
+        """
         failures: list[str] = []
-        if controller is not None and not self.is_usb_scanning:
+        targets: list[UsbBluetoothController] = []
+        if controllers is not None:
+            targets.extend(controllers)
+        elif controller is not None:
+            targets.append(controller)
+        for target in targets:
+            if self._usb_controller_active(target):
+                continue
             try:
-                await self._activate_usb(controller, pair_os_ble=False)
+                await self._activate_usb(
+                    target, pair_os_ble=False, os_ble_active_hint=os_ble
+                )
             except BluetoothScanError as exc:
                 failures.append(str(exc))
         if os_ble and self._scanner is None:
@@ -683,6 +970,7 @@ class BluetoothManager:
         controller: UsbBluetoothController,
         *,
         pair_os_ble: bool,
+        os_ble_active_hint: bool = False,
     ) -> None:
         system_scanner = None
         if pair_os_ble and self.os_ble_enabled and self._scanner is None:
@@ -692,8 +980,23 @@ class BluetoothManager:
         with self._usb_reservation_lock:
             usb_scanner = self._usb_reservations.pop(controller.instance_key, None)
         if usb_scanner is None:
-            usb_scanner = self._usb_scanner_factory(controller, self._on_usb_observation)
-        if system_scanner is not None and controller.supports_le:
+            usb_scanner = self._usb_scanner_factory(
+                controller, self._usb_observation_callback(controller),
+            )
+        os_ble_active = (
+            system_scanner is not None
+            or self._scanner is not None
+            or os_ble_active_hint
+        )
+        mode = self._usb_scan_mode.get(controller.instance_key, scan_modes.AUTO)
+        if hasattr(usb_scanner, "set_scan_radios"):
+            le_on, classic_on = scan_modes.effective_scan_radios(
+                controller, mode, os_ble_active=os_ble_active
+            )
+            usb_scanner.set_scan_radios(le=le_on, classic=classic_on)
+        elif system_scanner is not None and controller.supports_le:
+            # Legacy/fake scanner without the richer radio toggle: keep the
+            # original "OS runs BLE" behavior.
             usb_scanner.use_os_ble_for_le_discovery()
         try:
             await usb_scanner.start()
@@ -716,7 +1019,7 @@ class BluetoothManager:
             raise BluetoothScanError(str(exc) or type(exc).__name__) from exc
         if system_scanner is not None:
             self._scanner = system_scanner
-        self._usb_scanner = usb_scanner
+        self._register_usb_scanner(usb_scanner)
         if system_scanner is not None:
             backend, manufacturer, adapter = _os_ble_backend_info(system_scanner)
             self.os_ble_status = OsBleSourceStatus(
@@ -730,20 +1033,29 @@ class BluetoothManager:
                 "Operating-system BLE discovery is active",
             )
         self._resume_usb_controller = controller
+        if controller not in self._resume_usb_controllers:
+            self._resume_usb_controllers.append(controller)
         self.mark_usb_claimed(controller)
         self.scan_started_at = time.time()
         self._start_device_information_sweep()
 
     async def resume_scan(self) -> None:
-        if self._resume_usb_controller is not None:
-            await self.start_usb(self._resume_usb_controller)
+        resume = list(self._resume_usb_controllers) or (
+            [self._resume_usb_controller]
+            if self._resume_usb_controller is not None else []
+        )
+        if resume:
+            # Mirror the legacy single-dongle resume: re-pair OS BLE too.
+            await self.start_parallel(os_ble=self.os_ble_enabled, controllers=resume)
         else:
             await self.start()
 
     async def stop(self) -> None:
         await self._stop_device_information_sweep()
         scanner, self._scanner = self._scanner, None
-        usb_scanner, self._usb_scanner = self._usb_scanner, None
+        usb_scanners = self._all_usb_scanners()
+        self._usb_scanners = {}
+        self._usb_scanner = None
         if scanner is not None:
             try:
                 await scanner.stop()
@@ -756,21 +1068,22 @@ class BluetoothManager:
                     state="OS-READY",
                     detail="Operating-system BLE scanning is available",
                 )
-        if usb_scanner is None:
-            return
-        keep_reserved = (
-            sys.platform == "darwin"
-            and hasattr(usb_scanner, "pause")
-        )
-        try:
-            if keep_reserved:
-                await usb_scanner.pause()
-                with self._usb_reservation_lock:
-                    self._usb_reservations[usb_scanner.controller.instance_key] = usb_scanner
-            else:
-                await usb_scanner.stop()
-        except Exception:
-            logger.debug("Bluetooth USB scanner stop failed", exc_info=True)
+        for usb_scanner in usb_scanners:
+            keep_reserved = (
+                sys.platform == "darwin"
+                and hasattr(usb_scanner, "pause")
+            )
+            try:
+                if keep_reserved:
+                    await usb_scanner.pause()
+                    key = getattr(usb_scanner.controller, "instance_key", None)
+                    if key is not None:
+                        with self._usb_reservation_lock:
+                            self._usb_reservations[key] = usb_scanner
+                else:
+                    await usb_scanner.stop()
+            except Exception:
+                logger.debug("Bluetooth USB scanner stop failed", exc_info=True)
 
     async def connect(self, device: BluetoothDevice, update_callback=None):
         if not getattr(device, "is_connectable_with_bleak", True):
@@ -778,8 +1091,15 @@ class BluetoothManager:
                 "This Classic-only observation has no BLE GATT endpoint; open Classic Focus "
                 "or use USB lab Classic checks",
             )
-        if self._usb_scanner is not None and self._usb_scanner.controller.supports_le:
-            return await self._connect_usb(device, update_callback)
+        route = self._route_le(device)
+        self.focus_connection_source = route.source_id
+        self.focus_connection_route = route
+        if route.transport == routing.USB:
+            routed = self._scanner_for_source(route.source_id)
+            if routed is not None:
+                self._usb_scanner = routed
+            if self._usb_scanner is not None:
+                return await self._connect_usb(device, update_callback)
         await self._abort_enrichment()
         await self.disconnect()
         platform_device = self._platform_devices.get(device.identifier, device.identifier)
@@ -844,41 +1164,155 @@ class BluetoothManager:
             except Exception:
                 logger.debug("Bluetooth inspection callback failed", exc_info=True)
 
+    def _persist_device(
+        self,
+        device: BluetoothDevice,
+        *,
+        force: bool = False,
+        manufacturer_data: dict[int, bytes] | None = None,
+        service_data: dict[str, bytes] | None = None,
+    ) -> None:
+        if self.history is None:
+            return
+        identifier = device.identifier
+        mfg = manufacturer_data
+        if mfg is None:
+            mfg = self._last_manufacturer_data.get(identifier)
+        svc = service_data
+        if svc is None:
+            svc = self._last_service_data.get(identifier)
+        try:
+            self.history.remember(
+                device,
+                force=force,
+                manufacturer_data=mfg,
+                service_data=svc,
+            )
+        except Exception:
+            logger.debug("Bluetooth history persist failed", exc_info=True)
+
     def _cache_device_information(self, inspection) -> None:
-        """Cache Device Information strings from a live inspection for the scanner.
+        """Cache GATT identity and discovered services from a live inspection.
 
         The exact model string is only available from the Device Information
         Service (0x180A) after a GATT connection, so it is stored per identifier
-        and surfaced on the scanner row the next time the table repaints.
+        and surfaced on the scanner row the next time the table repaints. Service
+        discovery also reveals UUIDs omitted from the advertising packet.
         """
         identifier = getattr(getattr(inspection, "device", None), "identifier", None)
         if not identifier:
             return
         info = device_information_fields(inspection)
-        if not info:
+        discovered_services = tuple(sorted({
+            str(service.uuid).casefold()
+            for service in getattr(inspection, "services", ())
+            if str(getattr(service, "uuid", "") or "").strip()
+        }))
+        if discovered_services:
+            self._gatt_services_enriched.add(identifier)
+        if not info and not discovered_services:
             return
         previous_info = self._device_information.get(identifier, {})
         merged = {**previous_info, **info}
-        learned_new = merged != previous_info
+        learned_identity = merged != previous_info
         self._device_information[identifier] = merged
         existing = self._devices.get(identifier)
         if existing is not None:
-            updated = replace(existing, **info)
+            updated = merge_gatt_identity_fields(existing, merged)
+            merged_services = tuple(sorted({
+                *updated.service_uuids,
+                *discovered_services,
+            }))
+            learned_services = merged_services != updated.service_uuids
+            if learned_services:
+                updated = replace(updated, service_uuids=merged_services)
+            updated = self._refresh_catalog_from_gatt(updated)
             self._devices[identifier] = updated
-            if learned_new and self.history is not None:
-                try:
-                    self.history.remember(updated, force=True)
-                except Exception:
-                    logger.debug(
-                        "Persisting Device Information failed", exc_info=True,
-                    )
+            if learned_identity or learned_services:
+                self._persist_device(updated, force=True)
 
     def _apply_cached_device_information(self, device):
         """Overlay cached Device Information onto a freshly observed device."""
         cached = self._device_information.get(device.identifier)
         if not cached:
             return device
-        return replace(device, **cached)
+        return merge_gatt_identity_fields(device, cached)
+
+    def _observation_with_gatt_identity(
+        self,
+        device: BluetoothDevice,
+        previous: BluetoothDevice | None,
+    ) -> BluetoothDevice:
+        """Carry GATT reads from memory, cache, and SQLite before persistence."""
+        merged = merge_gatt_identity_fields(device, previous)
+        return self._apply_cached_device_information(merged)
+
+    def _seed_gatt_cache_from_device(self, device: BluetoothDevice) -> None:
+        payload = {
+            field: str(getattr(device, field, "") or "").strip()
+            for field in GATT_IDENTITY_STORAGE_FIELDS
+            if str(getattr(device, field, "") or "").strip()
+        }
+        if not payload:
+            return
+        identifier = device.identifier
+        self._device_information[identifier] = {
+            **self._device_information.get(identifier, {}),
+            **payload,
+        }
+
+    def _resolve_ble_mac(
+        self,
+        identifier: str,
+        platform_device: Any | None,
+        *,
+        previous: BluetoothDevice | None = None,
+    ) -> str:
+        mac = ""
+        if platform_device is not None:
+            _identity, mac = _platform_ble_identity(platform_device)
+            if mac:
+                self._platform_observed_macs[identifier] = mac
+        if not mac:
+            mac = normalize_ble_mac(identifier)
+        if not mac and previous is not None:
+            mac = normalize_ble_mac(previous.ble_mac)
+        if not mac:
+            mac = normalize_ble_mac(self._platform_observed_macs.get(identifier, ""))
+        return mac
+
+    @staticmethod
+    def _apply_supplemental_catalog(device: BluetoothDevice) -> BluetoothDevice:
+        if device.catalog_family_id or device.catalog_labels or device.catalog_class:
+            return device
+        extra = supplement_catalog_hit(CatalogHit(), device)
+        if not extra.present:
+            return device
+        return replace(device, **device_fields(extra))
+
+    def _refresh_catalog_from_gatt(self, device: BluetoothDevice) -> BluetoothDevice:
+        if device.catalog_family_id:
+            return device
+        manufacturer_data = self._last_manufacturer_data.get(device.identifier, {})
+        service_data = self._last_service_data.get(device.identifier, {})
+        fresh_catalog = with_protocol_live(
+            match_bluetooth(
+                manufacturer_data,
+                service_data,
+                device.service_uuids,
+                name=device.name,
+                mac=device.identifier,
+                gatt_source=device,
+            ),
+            device.protocol_type,
+            device.decode_state or "",
+        )
+        catalog = choose_catalog(fresh_catalog, device, name=device.name)
+        if not catalog.present:
+            catalog = supplement_catalog_hit(catalog, device)
+        if not catalog.present:
+            return device
+        return replace(device, **device_fields(catalog))
 
     def resume_device_information_sweep(self) -> None:
         """Enable passive enrichment; only the scanner screen should call this."""
@@ -949,18 +1383,18 @@ class BluetoothManager:
             return f"cached {device.model_number}"
         reason = self._enrichment_unavailable_reason()
         if reason:
-            return f"sweep off — {reason}"
+            return f"sweep off - {reason}"
         if getattr(device, "approximate_group", False):
-            return "unavailable — privacy group of rotating identifiers"
+            return "unavailable - privacy group of rotating identifiers"
         if BLE_RADIO not in getattr(device, "radio_types", ()):
-            return "unavailable — Classic only, no BLE GATT endpoint"
+            return "unavailable - Classic only, no BLE GATT endpoint"
         if not self._enrichment_usb_le_active() and not getattr(
             device, "is_connectable_with_bleak", True,
         ):
-            return "unavailable — not a system BLE endpoint"
+            return "unavailable - not a system BLE endpoint"
         if self._enrichment_transport_for(device) == "none":
             return (
-                "unavailable — OS UUID only; dongle needs a MAC or enable OS BLE "
+                "unavailable - OS UUID only; dongle needs a MAC or enable OS BLE "
                 "on splash"
             )
         non_connectable = self._platform_connectable.get(device.identifier) is False
@@ -971,10 +1405,10 @@ class BluetoothManager:
         )
         if device.identifier in self._enrichment_attempts:
             return (
-                "attempted — no Device Information service or connection failed"
+                "attempted - no Device Information service or connection failed"
                 + suffix
             )
-        return "pending — queued for background read" + suffix
+        return "pending - queued for background read" + suffix
 
     def device_information_status(self) -> str:
         """One-line, user-facing status of the passive model sweep for debugging."""
@@ -1033,20 +1467,14 @@ class BluetoothManager:
                 self.enrichment_last_error = f"{self.enrichment_last_target}: {error}"
             await asyncio.sleep(self._enrichment_gap_s)
 
-    def _device_has_gatt_identity(self, device: BluetoothDevice) -> bool:
-        return bool(
-            getattr(device, "model_number", "")
-            or getattr(device, "gatt_device_name", "")
-            or getattr(device, "pnp_id", ""),
-        )
-
     def _device_information_candidates(self) -> list[BluetoothDevice]:
         now = time.time()
         candidates: list[BluetoothDevice] = []
         for device in list(self._devices.values()):
-            if device.identifier in self._device_information:
-                continue
-            if self._device_has_gatt_identity(device):
+            if (
+                device.identifier in self._device_information
+                and device.identifier in self._gatt_services_enriched
+            ):
                 continue
             if not self._is_enrichable(device):
                 continue
@@ -1068,21 +1496,7 @@ class BluetoothManager:
 
     def _enrichment_transport_for(self, device: BluetoothDevice) -> str:
         """Return ``usb``, ``bleak``, or ``none`` for passive DIS reads."""
-        from wifit3.bluetooth.analytics import device_lacks_usb_hci_bd_addr
-
-        bleak_ok = bool(getattr(device, "is_connectable_with_bleak", True))
-        os_ble = self._scanner is not None
-        if self._enrichment_usb_le_active():
-            if not device_lacks_usb_hci_bd_addr(
-                device.identifier, device.related_identifiers,
-            ):
-                return "usb"
-            if os_ble and bleak_ok:
-                return "bleak"
-            return "none"
-        if os_ble and bleak_ok:
-            return "bleak"
-        return "none"
+        return self._route_le(device).transport
 
     def _is_enrichable(self, device: BluetoothDevice) -> bool:
         if getattr(device, "approximate_group", False):
@@ -1204,6 +1618,12 @@ class BluetoothManager:
 
     def _on_advertisement(self, device, advertisement_data) -> None:
         identifier = str(device.address)
+        manufacturer_data = dict(advertisement_data.manufacturer_data or {})
+        service_data = dict(advertisement_data.service_data or {})
+        if manufacturer_data:
+            self._last_manufacturer_data[identifier] = manufacturer_data
+        if service_data:
+            self._last_service_data[identifier] = service_data
         self._platform_devices[identifier] = device
         connectable = _advertised_connectable(
             tuple(getattr(advertisement_data, "platform_data", ())),
@@ -1216,6 +1636,7 @@ class BluetoothManager:
         self.observations_by_radio[BLE_RADIO] += 1
         self.last_observation_by_radio[BLE_RADIO] = now
         previous = self._devices.get(identifier)
+        ble_mac = self._resolve_ble_mac(identifier, device, previous=previous)
         name = advertisement_data.local_name or (
             previous.name if previous is not None else device.name or "<Unknown>"
         )
@@ -1261,8 +1682,27 @@ class BluetoothManager:
             advertisement_data.service_uuids or (),
             name=name,
         )
+        gatt_source = (
+            self._apply_cached_device_information(previous)
+            if previous is not None
+            else None
+        )
+        fresh_catalog = with_protocol_live(
+            match_bluetooth(
+                advertisement_data.manufacturer_data,
+                advertisement_data.service_data,
+                advertisement_data.service_uuids or (),
+                name=name,
+                mac=ble_mac or identifier,
+                gatt_source=gatt_source,
+            ),
+            protocol_hint.get("protocol_type", ""),
+            protocol_hint.get("decode_state", ""),
+        )
+        catalog = choose_catalog(fresh_catalog, previous, name=name)
         observed = BluetoothDevice(
             identifier=identifier,
+            ble_mac=ble_mac,
             name=name,
             rssi=advertisement_data.rssi,
             service_uuids=tuple(sorted(uuid.lower() for uuid in service_uuids)),
@@ -1286,6 +1726,10 @@ class BluetoothManager:
             )),
             discovery_source=_merged_discovery_source(
                 previous.discovery_source if previous is not None else "", "system",
+            ),
+            observation_sources=merge_sources(
+                previous.observation_sources if previous is not None else (),
+                OS_SOURCE_ID,
             ),
             class_of_device=(
                 platform_metadata.get("class_of_device")
@@ -1326,9 +1770,12 @@ class BluetoothManager:
                 else previous.decode_state if previous is not None else ""
             ),
             signature_watch=(
-                protocol_hint.get("signature_watch") == "1"
-                if "signature_watch" in protocol_hint
-                else previous.signature_watch if previous is not None else False
+                (
+                    protocol_hint.get("signature_watch") == "1"
+                    if "signature_watch" in protocol_hint
+                    else previous.signature_watch if previous is not None else False
+                )
+                or bool(fresh_catalog.attention)
             ),
             modalias=(
                 platform_metadata.get("modalias")
@@ -1348,35 +1795,86 @@ class BluetoothManager:
             ),
             **signal,
         )
+        observed = replace(observed, **device_fields(catalog))
+        observed = self._apply_supplemental_catalog(observed)
+        if previous is not None and previous.catalog_family_id:
+            observed = replace(observed, catalog_family_id=previous.catalog_family_id)
         observed.profile_fingerprint = _profile_fingerprint(observed)
         self._correlate_radios(observed)
-        if self.history is not None and has_stable_persistent_identifier(observed):
-            self.history.enrich(observed, classify=previous is None)
+        observed = self._observation_with_gatt_identity(observed, previous)
+        if self.history is not None:
+            self.history.enrich(
+                observed,
+                classify=previous is None and has_stable_persistent_identifier(observed),
+            )
             observed.profile_fingerprint = _profile_fingerprint(observed)
-        if has_coherent_persistent_identity(observed):
-            self._observe_position(observed)
-            if self.history is not None:
-                self.history.remember(observed)
-        self._devices[identifier] = self._apply_cached_device_information(observed)
+            observed = self._observation_with_gatt_identity(observed, previous)
+            self._seed_gatt_cache_from_device(observed)
+        observed = self._refresh_catalog_from_gatt(observed)
+        observed = self._apply_supplemental_catalog(observed)
+        if should_persist_bluetooth_observation(observed):
+            prior_gps = positions_digest(
+                previous.positions if previous is not None else [],
+            )
+            if has_stable_persistent_identifier(observed):
+                self._observe_position(observed)
+            force_persist = positions_digest(observed.positions) != prior_gps
+            self._persist_device(
+                observed,
+                force=force_persist,
+                manufacturer_data=manufacturer_data,
+                service_data=service_data,
+            )
+        self._devices[identifier] = observed
         for callback in list(self._advertisement_callbacks):
             try:
                 callback(observed)
             except Exception:
                 logger.debug("Bluetooth advertisement callback failed", exc_info=True)
 
-    def _on_usb_observation(self, observation: DiscoveryObservation) -> None:
+    def _on_usb_observation(
+        self,
+        observation: DiscoveryObservation,
+        controller: UsbBluetoothController | None = None,
+    ) -> None:
         now = time.time()
+        source_controller = controller
+        if source_controller is None and self._usb_scanner is not None:
+            source_controller = self._usb_scanner.controller
+        usb_source = (
+            self._source_id_for_controller(source_controller)
+            if source_controller is not None
+            and hasattr(source_controller, "instance_key")
+            else "usb"
+        )
         self.last_advertisement_at = now
         self.received_advertisements += 1
         self.observations_by_radio[observation.radio_type] += 1
         self.last_observation_by_radio[observation.radio_type] = now
         previous = self._devices.get(observation.identifier)
+        platform_device = self._platform_devices.get(observation.identifier)
+        ble_mac = self._resolve_ble_mac(
+            observation.identifier,
+            platform_device,
+            previous=previous,
+        )
         name = observation.name
         if name == "<Unknown>" and previous is not None:
             name = previous.name
         signal = self._signal_fields(observation.identifier, observation.rssi)
+        fresh_catalog = CatalogHit(
+            labels=tuple(observation.catalog_labels),
+            catalog_class=observation.catalog_class,
+            notes=observation.catalog_notes,
+            attention=observation.catalog_attention,
+            live=observation.catalog_live,
+            live_strong=observation.catalog_live_strong,
+            sentence=observation.catalog_sentence,
+        )
+        catalog = choose_catalog(fresh_catalog, previous, name=name)
         observed = BluetoothDevice(
             identifier=observation.identifier,
+            ble_mac=ble_mac,
             name=name,
             rssi=observation.rssi,
             service_uuids=tuple(sorted(set(observation.service_uuids) | (
@@ -1414,6 +1912,10 @@ class BluetoothManager:
             )),
             discovery_source=_merged_discovery_source(
                 previous.discovery_source if previous is not None else "", "usb-hci",
+            ),
+            observation_sources=merge_sources(
+                previous.observation_sources if previous is not None else (),
+                usb_source,
             ),
             class_of_device=observation.class_of_device or (
                 previous.class_of_device if previous is not None else None
@@ -1464,9 +1966,12 @@ class BluetoothManager:
                 else previous.decode_state if previous is not None else ""
             ),
             signature_watch=(
-                observation.signature_watch == "1"
-                if observation.decode_state or observation.signature_watch
-                else previous.signature_watch if previous is not None else False
+                (
+                    observation.signature_watch == "1"
+                    if observation.decode_state or observation.signature_watch
+                    else previous.signature_watch if previous is not None else False
+                )
+                or bool(fresh_catalog.attention)
             ),
             modalias=previous.modalias if previous is not None else "",
             hardware_vendor=previous.hardware_vendor if previous is not None else "",
@@ -1474,18 +1979,42 @@ class BluetoothManager:
             hardware_source=previous.hardware_source if previous is not None else "",
             **signal,
         )
+        observed = replace(observed, **device_fields(catalog))
+        observed = self._apply_supplemental_catalog(observed)
+        if previous is not None and previous.catalog_family_id:
+            observed = replace(observed, catalog_family_id=previous.catalog_family_id)
         observed.profile_fingerprint = _profile_fingerprint(observed)
         self._correlate_radios(observed)
-        if self.history is not None and has_stable_persistent_identifier(observed):
-            self.history.enrich(observed, classify=previous is None)
+        observed = self._observation_with_gatt_identity(observed, previous)
+        if self.history is not None:
+            self.history.enrich(
+                observed,
+                classify=previous is None and has_stable_persistent_identifier(observed),
+            )
             observed.profile_fingerprint = _profile_fingerprint(observed)
-        if has_coherent_persistent_identity(observed):
-            self._observe_position(observed)
-            if self.history is not None:
-                self.history.remember(observed)
-        self._devices[observation.identifier] = self._apply_cached_device_information(
-            observed,
-        )
+            observed = self._observation_with_gatt_identity(observed, previous)
+            self._seed_gatt_cache_from_device(observed)
+        observed = self._refresh_catalog_from_gatt(observed)
+        observed = self._apply_supplemental_catalog(observed)
+        if should_persist_bluetooth_observation(observed):
+            prior_gps = positions_digest(
+                previous.positions if previous is not None else [],
+            )
+            if has_stable_persistent_identifier(observed):
+                self._observe_position(observed)
+            usb_mfg = dict(observation.manufacturer_data) if observation.manufacturer_data else None
+            usb_svc = dict(observation.service_data) if observation.service_data else None
+            if usb_mfg:
+                self._last_manufacturer_data[observation.identifier] = usb_mfg
+            if usb_svc:
+                self._last_service_data[observation.identifier] = usb_svc
+            self._persist_device(
+                observed,
+                force=positions_digest(observed.positions) != prior_gps,
+                manufacturer_data=usb_mfg,
+                service_data=usb_svc,
+            )
+        self._devices[observation.identifier] = observed
         for callback in list(self._advertisement_callbacks):
             try:
                 callback(observed)
@@ -1541,6 +2070,14 @@ class BluetoothManager:
         observed.correlation_evidence = tuple(sorted({
             item for _, _, evidence in matches for item in evidence
         }))
+        observed.correlation_links = tuple(sorted(
+            (
+                candidate.identifier,
+                confidence,
+                tuple(sorted(evidence)),
+            )
+            for candidate, confidence, evidence in matches
+        ))
         for candidate, confidence, evidence in matches:
             candidate.related_identifiers = tuple(sorted(
                 set(candidate.related_identifiers) | {observed.identifier}
@@ -1549,6 +2086,22 @@ class BluetoothManager:
                 candidate.correlation_confidence = confidence
             candidate.correlation_evidence = tuple(sorted(
                 set(candidate.correlation_evidence) | set(evidence)
+            ))
+            links = {
+                identifier: (level, link_evidence)
+                for identifier, level, link_evidence in candidate.correlation_links
+            }
+            links[observed.identifier] = (
+                confidence,
+                tuple(sorted(evidence)),
+            )
+            candidate.correlation_links = tuple(sorted(
+                (
+                    identifier,
+                    level,
+                    link_evidence,
+                )
+                for identifier, (level, link_evidence) in links.items()
             ))
 
     def _observe_position(self, device: BluetoothDevice) -> None:
@@ -1589,14 +2142,15 @@ class BluetoothManager:
 
         macOS reattaches its Bluetooth driver as soon as the interface is
         released, and a later detach then fails with the replug alert. Holding
-        the interface from first sight — Classic-only and dual-mode — means a
+        the interface from first sight - Classic-only and dual-mode - means a
         replug sticks instead of racing the OS until the scan button.
         """
         present = {controller.instance_key for controller in controllers}
-        active = (
-            self._usb_scanner.controller.instance_key
-            if self._usb_scanner is not None else None
-        )
+        active = {
+            getattr(scanner.controller, "instance_key", None)
+            for scanner in self._all_usb_scanners()
+            if getattr(scanner, "controller", None) is not None
+        }
         with self._usb_reservation_lock:
             stale = [
                 key for key in self._usb_reservations
@@ -1617,7 +2171,7 @@ class BluetoothManager:
                     self._usb_not_claimed.discard(key)
             for controller in controllers:
                 key = controller.instance_key
-                if key in self._usb_reservations or key == active:
+                if key in self._usb_reservations or key in active:
                     self._usb_not_claimed.discard(key)
                     continue
                 scanner = self._usb_scanner_factory(controller, self._on_usb_observation)
@@ -1625,18 +2179,40 @@ class BluetoothManager:
                     continue
                 try:
                     scanner.reserve()
-                except Exception:
+                except Exception as initial_exc:
                     logger.debug(
-                        "Could not reserve macOS Bluetooth USB controller",
+                        "Initial macOS Bluetooth USB reservation failed; trying OS reclaim",
                         exc_info=True,
                     )
-                    self._usb_not_claimed.add(key)
-                    self._usb_claim_verified.discard(key)
                     try:
+                        # Closing the partial claim before recovery matters for
+                        # RTL8761: otherwise its stale libusb handle can keep the
+                        # retry from claiming the interface it just released.
                         scanner.release()
                     except Exception:
                         pass
-                    continue
+                    try:
+                        if hasattr(scanner, "reclaim_from_os"):
+                            scanner.reclaim_from_os()
+                        else:
+                            scanner.reserve(recover=True)
+                    except Exception:
+                        logger.debug(
+                            "Could not reclaim macOS Bluetooth USB controller",
+                            exc_info=True,
+                        )
+                        self._usb_not_claimed.add(key)
+                        self._usb_claim_verified.discard(key)
+                        try:
+                            scanner.release()
+                        except Exception:
+                            pass
+                        continue
+                    logger.info(
+                        "Reclaimed macOS Bluetooth USB controller %s after initial claim failure: %s",
+                        controller.label,
+                        initial_exc,
+                    )
                 self._usb_not_claimed.discard(key)
                 self._usb_claim_verified.add(key)
                 self._usb_reservations[key] = scanner
@@ -1651,8 +2227,12 @@ class BluetoothManager:
                 self._usb_not_claimed.discard(key)
         self._usb_claim_verified.intersection_update(present)
         reserved = set(self._usb_reservations.keys())
-        if self._usb_scanner is not None:
-            reserved.add(self._usb_scanner.controller.instance_key)
+        for scanner in self._all_usb_scanners():
+            controller_key = getattr(
+                getattr(scanner, "controller", None), "instance_key", None,
+            )
+            if controller_key is not None:
+                reserved.add(controller_key)
         for controller in controllers:
             key = controller.instance_key
             if key in reserved:

@@ -58,6 +58,21 @@ def _read_wps_pin(path: Path) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _read_ssid(path: Path) -> str | None:
+    """Read the exact SSID stored inside a credential text artifact."""
+    text = _read_text(path)
+    if text is None:
+        return None
+    for line in text.splitlines():
+        if not line.startswith("SSID:"):
+            continue
+        value = line.removeprefix("SSID:")
+        if value.startswith(" "):
+            value = value[1:]
+        return value or None
+    return None
+
+
 def _count_hashlines(path: Path, prefix: str) -> int:
     """Number of ``WPA*01*`` / ``WPA*02*`` records in a .hc22000 file (0 if unreadable)."""
     text = _read_text(path)
@@ -123,17 +138,20 @@ def _parse_file(path: Path, bssid: str) -> List[PersistedCapture]:
                                  bssid=bssid, value=key, ssid=ssid)]
     if kind == "wps_pin" and ext == "txt":
         return [PersistedCapture(type=CaptureType.WPS_PIN, timestamp=epoch, path=str(path),
-                                 bssid=bssid, value=_read_wps_psk(path), ssid=ssid,
+                                 bssid=bssid, value=_read_wps_psk(path),
+                                 ssid=_read_ssid(path) or ssid,
                                  pin=_read_wps_pin(path))]
     if kind == "wps_pbc" and ext == "txt":
         return [PersistedCapture(type=CaptureType.WPS_PBC, timestamp=epoch, path=str(path),
-                                 bssid=bssid, value=_read_wps_psk(path), ssid=ssid)]
+                                 bssid=bssid, value=_read_wps_psk(path),
+                                 ssid=_read_ssid(path) or ssid)]
     if kind == "wpa_psk" and ext == "txt":
         psk = _read_wps_psk(path)
         if psk is None:
             return []
         return [PersistedCapture(type=CaptureType.WPA_PSK, timestamp=epoch, path=str(path),
-                                 bssid=bssid, value=psk, ssid=ssid)]
+                                 bssid=bssid, value=psk,
+                                 ssid=_read_ssid(path) or ssid)]
     if kind == "handshake" and ext in ("hc22000", "pcap"):
         count = _count_hashlines(path, "WPA*02*") if ext == "hc22000" else 0
         return [PersistedCapture(type=CaptureType.HS, timestamp=epoch, path=str(path),

@@ -37,7 +37,8 @@ def apply_wsc_identity(
     model_name = _text(attrs, M.ATTR_MODEL_NAME)
     model_number = _text(attrs, M.ATTR_MODEL_NUMBER)
     device_name = _text(attrs, M.ATTR_DEV_NAME)
-    if not any((mfr, model_name, model_number, device_name)):
+    serial_number = _text(attrs, M.ATTR_SERIAL_NUMBER)
+    if not any((mfr, model_name, model_number, device_name, serial_number)):
         return False
     device_type = device_type_label(attrs.get(M.ATTR_PRIMARY_DEV_TYPE))
     identity.update(
@@ -47,6 +48,7 @@ def apply_wsc_identity(
         model_number=model_number,
         device_name=device_name,
         device_type=device_type,
+        serial_number=serial_number,
     )
     return True
 

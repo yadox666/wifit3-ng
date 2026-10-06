@@ -8,7 +8,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.events import Click
-from textual.reactive import Reactive, reactive
+from textual.reactive import Reactive
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Header, Label, Static
@@ -140,7 +140,6 @@ class NotificationHistoryModal(ModalScreen[None]):
     BINDINGS = [
         Binding("escape", "close", "Close"),
         Binding("c", "copy_notification", "Copy"),
-        Binding("space", "toggle_detail", "Expand", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -168,17 +167,13 @@ class NotificationHistoryModal(ModalScreen[None]):
         margin-bottom: 1;
     }
     NotificationHistoryModal #notify-detail {
-        display: none;
-        height: 10;
-        min-height: 7;
+        height: 9;
+        min-height: 6;
         margin-bottom: 1;
         border: round $primary-darken-1;
         border-title-color: $accent;
         border-title-style: bold;
         padding: 0 1;
-    }
-    NotificationHistoryModal #notify-detail.expanded {
-        display: block;
     }
     NotificationHistoryModal #notify-detail-title {
         height: 1;
@@ -203,17 +198,21 @@ class NotificationHistoryModal(ModalScreen[None]):
         min-width: 10;
         margin-left: 1;
     }
+    NotificationHistoryModal #notify-mark-read {
+        width: 30;
+        min-width: 30;
+    }
     """
 
     def __init__(self) -> None:
         super().__init__()
         self._items: dict[str, StoredNotification] = {}
-        self._expanded_id: str | None = None
+        self._preview_id: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="notify-dialog"):
             yield Static(
-                "Notifications  [dim]Enter/click to expand · C to copy[/dim]",
+                "Notifications  [dim]Select a row to preview · C to copy[/dim]",
                 id="notify-title",
             )
             yield DataTable(id="notify-table", cursor_type="row", zebra_stripes=True)
@@ -222,6 +221,10 @@ class NotificationHistoryModal(ModalScreen[None]):
                 yield Label("", id="notify-detail-meta")
                 yield Static("", id="notify-detail-message")
             with Horizontal(id="notify-actions"):
+                yield Button(
+                    "MARK ALL AS READ",
+                    id="notify-mark-read",
+                )
                 yield Button(
                     "Copy",
                     id="notify-copy",
@@ -233,26 +236,22 @@ class NotificationHistoryModal(ModalScreen[None]):
     def on_mount(self) -> None:
         app: WifiteApp = self.app  # type: ignore[assignment]
         store = app.notification_store
-        store.mark_all_read()
-        app.unread_notifications = 0
         table = self.query_one("#notify-table", DataTable)
-        table.add_column("", key="marker", width=1)
         table.add_column("WHEN", key="when")
         table.add_column("TITLE", key="title")
-        table.add_column("MESSAGE", key="message")
+        table.add_column("LEVEL", key="level")
         items = store.recent()
         if not items:
             table.add_row(
-                " ",
-                "—",
+                "-",
                 "No notifications yet",
-                "Important warnings, errors, and flagged events appear here.",
+                "-",
                 key="__empty__",
             )
         for item in items:
             self._items[item.id] = item
             when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(item.created_at))
-            title = item.title or "—"
+            title = item.title or "-"
             severity = (item.severity or "information").casefold()
             severity_style = {
                 "error": "bold red",
@@ -261,14 +260,31 @@ class NotificationHistoryModal(ModalScreen[None]):
                 "info": "cyan",
             }.get(severity, "")
             table.add_row(
-                Text("▸", style="bold cyan"),
                 when,
                 Text(title, style=severity_style) if severity_style else title,
-                item.message,
+                Text(
+                    "information" if severity == "info" else severity,
+                    style=severity_style,
+                ),
                 key=item.id,
             )
+        self.query_one("#notify-mark-read", Button).disabled = not any(
+            not item.read for item in items
+        )
         if table.row_count:
             table.move_cursor(row=0)
+        if items:
+            self._show_preview(items[0].id)
+        else:
+            detail = self.query_one("#notify-detail", VerticalScroll)
+            detail.border_title = "PREVIEW"
+            self.query_one("#notify-detail-title", Label).update(
+                "No notifications yet",
+            )
+            self.query_one("#notify-detail-meta", Label).update("")
+            self.query_one("#notify-detail-message", Static).update(
+                "Important warnings, errors, and flagged events appear here.",
+            )
 
     def _selected_id(self) -> str | None:
         table = self.query_one("#notify-table", DataTable)
@@ -283,7 +299,7 @@ class NotificationHistoryModal(ModalScreen[None]):
         except Exception:
             return None
 
-    def _show_detail(self, notification_id: str) -> None:
+    def _show_preview(self, notification_id: str) -> None:
         item = self._items.get(notification_id)
         if item is None:
             return
@@ -309,43 +325,13 @@ class NotificationHistoryModal(ModalScreen[None]):
             Text(item.message),
         )
         detail = self.query_one("#notify-detail", VerticalScroll)
-        detail.set_class(True, "expanded")
-        detail.border_title = "FULL NOTIFICATION"
+        detail.border_title = "PREVIEW"
         detail.scroll_home(animate=False)
         self.query_one("#notify-copy", Button).disabled = False
-        self._expanded_id = notification_id
-        self._refresh_markers()
-
-    def _hide_detail(self) -> None:
-        self.query_one("#notify-detail", VerticalScroll).set_class(
-            False,
-            "expanded",
-        )
-        self.query_one("#notify-copy", Button).disabled = True
-        self._expanded_id = None
-        self._refresh_markers()
-
-    def _refresh_markers(self) -> None:
-        table = self.query_one("#notify-table", DataTable)
-        for notification_id in self._items:
-            marker = "▾" if notification_id == self._expanded_id else "▸"
-            table.update_cell(
-                notification_id,
-                "marker",
-                Text(marker, style="bold cyan"),
-            )
-
-    def action_toggle_detail(self) -> None:
-        notification_id = self._selected_id()
-        if notification_id is None or notification_id not in self._items:
-            return
-        if self._expanded_id == notification_id:
-            self._hide_detail()
-        else:
-            self._show_detail(notification_id)
+        self._preview_id = notification_id
 
     def action_copy_notification(self) -> None:
-        item = self._items.get(self._expanded_id or "")
+        item = self._items.get(self._preview_id or "")
         if item is None:
             notification_id = self._selected_id()
             item = self._items.get(notification_id or "")
@@ -369,20 +355,25 @@ class NotificationHistoryModal(ModalScreen[None]):
 
     @on(DataTable.RowSelected, "#notify-table")
     def notification_selected(self, event: DataTable.RowSelected) -> None:
-        notification_id = str(event.row_key.value)
-        if self._expanded_id == notification_id:
-            self._hide_detail()
-        else:
-            self._show_detail(notification_id)
+        self._show_preview(str(event.row_key.value))
 
     @on(DataTable.RowHighlighted, "#notify-table")
     def notification_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        if self._expanded_id is not None:
-            self._show_detail(str(event.row_key.value))
+        self._show_preview(str(event.row_key.value))
 
     @on(Button.Pressed, "#notify-copy")
     def copy_pressed(self) -> None:
         self.action_copy_notification()
+
+    @on(Button.Pressed, "#notify-mark-read")
+    def mark_all_read_pressed(self) -> None:
+        app: WifiteApp = self.app  # type: ignore[assignment]
+        app.notification_store.mark_all_read()
+        app.unread_notifications = 0
+        for item in self._items.values():
+            item.read = True
+        self.query_one("#notify-mark-read", Button).disabled = True
+        self.notify("All notifications marked as read")
 
     @on(Button.Pressed, "#notify-close")
     def close_pressed(self) -> None:

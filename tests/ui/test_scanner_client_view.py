@@ -1,14 +1,17 @@
+from types import SimpleNamespace
+
 import pytest
 from textual.app import App
-from textual.widgets import Button, DataTable, Select
+from textual.widgets import Button, DataTable, Input, Select
 
 from wifit3.dot11.ie import GENERIC_RSN_IE
 from wifit3.dot11.probe import wpa2_beacon
 from wifit3.models import AccessPoint, Client, ProbeObservation, SignalPosition
 from wifit3.persist.targets import TargetStore
 from wifit3.persist.vault import Vault
+from wifit3.targeting import client_candidate
 from wifit3.ui.screens.filter import ScanFilter
-from wifit3.ui.screens.scanner import ScannerView
+from wifit3.ui.screens.scanner import CLIENT_STALE_DURATION_S, ScannerView
 from wifit3.ui.screens.open_probe_modal import OpenProbeSsidModal
 
 
@@ -36,12 +39,17 @@ class _Host(App):
         self.array = array
         self.pbc_enabled = True
         self.vault = Vault()
+        self.target_sightings = []
+        self._target_sighting_ids = set()
 
     def persist_config(self):
         pass
 
-    def record_target_sighting(self, target, where: str) -> None:
-        pass
+    def record_target_sighting(self, target, where):
+        if target.id in self._target_sighting_ids:
+            return
+        self._target_sighting_ids.add(target.id)
+        self.target_sightings.append((target, where))
 
     def on_mount(self):
         self.push_screen(ScannerView())
@@ -73,6 +81,23 @@ def _footer_descriptions(scanner):
 
 
 @pytest.mark.asyncio
+async def test_filter_text_focus_keeps_footer_shortcuts():
+    ap = AccessPoint(bssid="00:03:93:11:22:33", ssid="Office", channel=6)
+    app = _Host(_Array(ap, []))
+    async with app.run_test() as pilot:
+        await pilot.pause(0)
+        scanner = app.screen
+        baseline = _footer_descriptions(scanner)
+        assert "Channel Lock" in baseline
+        assert "Pause" in baseline
+        filter_input = scanner.query_one("#filter-text", Input)
+        filter_input.focus()
+        filter_input.value = "office"
+        await pilot.pause(0)
+        assert _footer_descriptions(scanner) == baseline
+
+
+@pytest.mark.asyncio
 async def test_scanner_switches_between_ap_and_client_tables():
     ap = AccessPoint(bssid="00:03:93:11:22:33", ssid="Office", channel=6)
     ap.signal_by_card = {"card0": -40}
@@ -93,6 +118,18 @@ async def test_scanner_switches_between_ap_and_client_tables():
     roaming.signal_by_card = {"card0": -70}
 
     app = _Host(_Array(ap, [connected, roaming]))
+    app.ap_history_store = SimpleNamespace(
+        aps_for_client=lambda mac: (
+            [
+                SimpleNamespace(
+                    bssid="00:03:93:11:22:44",
+                    ssid="Old Office",
+                ),
+            ]
+            if mac == connected.mac
+            else []
+        ),
+    )
     async with app.run_test() as pilot:
         await pilot.pause(0)
         scanner = app.screen
@@ -101,7 +138,7 @@ async def test_scanner_switches_between_ap_and_client_tables():
         assert scanner.check_action("open_probe_ap", ()) is False
         assert "Probe Honeypot" not in _footer_descriptions(scanner)
         assert table.row_count == 1
-        assert _plain(table.get_cell(ap.bssid, "last_seen")) == "now / 30s"
+        assert _plain(table.get_cell(ap.bssid, "last_seen")) == "now"
         assert _plain(table.get_cell(ap.bssid, "location")) == "🌐"
         assert scanner._table_map_urls[ap.bssid].startswith(
             "https://www.google.com/maps/place/"
@@ -124,13 +161,16 @@ async def test_scanner_switches_between_ap_and_client_tables():
         assert "Vault" in _footer_descriptions(scanner)
         assert "Infrastructure" not in _footer_descriptions(scanner)
         assert [key.value for key in table.columns] == [
-            "ssid", "client", "signal", "packets", "last_seen", "manufacturer",
-            "probes", "location",
+            "client", "manufacturer", "signal", "packets", "last_seen",
+            "location",
+            "ssid", "probes",
         ]
         assert table.row_count == 2
         assert _plain(table.get_cell(connected.mac, "manufacturer")) == "Ring"
         assert _plain(table.get_cell(connected.mac, "ssid")) == f"Office  ·  {ap.bssid}"
-        assert _plain(table.get_cell(connected.mac, "probes")) == "CoffeeShop  ·  Home"
+        assert _plain(table.get_cell(connected.mac, "probes")) == (
+            "CoffeeShop  ·  Home  ·  Old Office [connect_hist]"
+        )
         assert _plain(table.get_cell(connected.mac, "last_seen")) == "now"
         assert _plain(table.get_cell(connected.mac, "location")) == "🌐"
         assert scanner._table_map_urls[connected.mac].startswith(
@@ -142,7 +182,8 @@ async def test_scanner_switches_between_ap_and_client_tables():
             in scanner._table_map_urls[connected.mac]
         )
         assert _plain(table.get_cell(roaming.mac, "ssid")) == "‹unassociated›"
-        assert _plain(table.get_cell(roaming.mac, "client")).startswith("~ ")
+        assert _plain(table.get_cell(roaming.mac, "client")) == roaming.mac
+        assert _plain(table.get_cell(roaming.mac, "manufacturer")) == "~"
 
         scanner._scan_filter = ScanFilter(association="unassociated")
         scanner.refresh_table()
@@ -157,12 +198,82 @@ async def test_scanner_switches_between_ap_and_client_tables():
         scanner._scan_filter = ScanFilter()
         scanner.action_toggle_view()
         await pilot.pause(0)
+        assert scanner._view_mode == "split"
+        split_clients = scanner.query_one("#client-table", DataTable)
+        assert split_clients.display
+        assert split_clients.row_count == 1
+        assert connected.mac in split_clients.rows
+        assert roaming.mac not in split_clients.rows
+
+        scanner.action_toggle_view()
+        await pilot.pause(0)
         assert scanner._view_mode == "aps"
+        assert not split_clients.display
         assert scanner.check_action("open_probe_ap", ()) is False
         assert scanner.check_action("open_vault", ()) is True
         assert scanner.check_action("toggle_infrastructure", ()) is True
         assert table.row_count == 1
         assert ap.bssid in scanner.ap_cache
+
+
+@pytest.mark.asyncio
+async def test_client_refresh_rebuilds_row_missing_from_table():
+    ap = AccessPoint(bssid="00:03:93:11:22:33", ssid="Office", channel=6)
+    client = Client(mac="18:7f:88:aa:bb:cc", bssid=ap.bssid, packets=1)
+    app = _Host(_Array(ap, [client]))
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner.action_toggle_view()
+        await pilot.pause(0)
+        table = scanner.query_one("#ap-table", DataTable)
+        assert table.row_count == 1
+        assert client.mac in scanner._client_row_states
+
+        table.remove_row(client.mac)
+        client.packets = 2
+        scanner.refresh_table()
+
+        assert table.row_count == 1
+        assert _plain(table.get_cell(client.mac, "packets")) == "2"
+
+
+@pytest.mark.asyncio
+async def test_split_view_tracks_clients_of_highlighted_ap():
+    first_ap = AccessPoint(
+        bssid="00:03:93:11:22:33",
+        ssid="First",
+        channel=1,
+    )
+    second_ap = AccessPoint(
+        bssid="00:03:93:11:22:44",
+        ssid="Second",
+        channel=6,
+    )
+    first_client = Client(mac="18:7f:88:aa:bb:01", bssid=first_ap.bssid)
+    second_client = Client(mac="18:7f:88:aa:bb:02", bssid=second_ap.bssid)
+    array = _Array(first_ap, [first_client, second_client])
+    array.access_points[second_ap.bssid] = second_ap
+    app = _Host(array)
+
+    async with app.run_test() as pilot:
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner.action_toggle_view()
+        scanner.action_toggle_view()
+        await pilot.pause(0)
+
+        ap_table = scanner.query_one("#ap-table", DataTable)
+        client_table = scanner.query_one("#client-table", DataTable)
+        ap_table.move_cursor(
+            row=ap_table.get_row_index(second_ap.bssid),
+            animate=False,
+        )
+        await pilot.pause(0)
+
+        assert second_client.mac in client_table.rows
+        assert first_client.mac not in client_table.rows
 
 
 @pytest.mark.asyncio
@@ -277,7 +388,7 @@ async def test_own_open_fake_ap_is_a_separate_marked_row():
 
 
 @pytest.mark.asyncio
-async def test_saved_targets_mark_only_ap_ssid_and_full_client_row_red(tmp_path):
+async def test_saved_targets_mark_ap_ssid_and_client_identity_with_icon(tmp_path):
     ap = AccessPoint(
         bssid="00:03:93:11:22:33", ssid="Office", channel=6, wps=True,
         encryption="WPA2", akms=["PSK"],
@@ -304,28 +415,24 @@ async def test_saved_targets_mark_only_ap_ssid_and_full_client_row_red(tmp_path)
         scanner._forget_row(ap.bssid, drop_from_array=False)
         scanner.refresh_table()
         ap_cell = table.get_cell(ap.bssid, "ssid")
+        cap_cell = table.get_cell(ap.bssid, "captures")
         assert ap_cell.plain.startswith("⌖ ")
-        red_spans = [
-            span for span in ap_cell.spans if "red" in str(span.style)
-        ]
+        assert "Office" in ap_cell.plain
+        assert "✓HS" in cap_cell.plain
+        assert "✓WPS" in cap_cell.plain
         for badge in ("✓HS", "✓WPS"):
-            start = ap_cell.plain.index(badge)
-            end = start + len(badge)
-            assert not any(span.start < end and span.end > start for span in red_spans)
-        ssid_start = ap_cell.plain.index(ap.ssid)
-        assert any(
-            span.start <= ssid_start and span.end >= ssid_start + len(ap.ssid)
-            for span in red_spans
-        )
-        for column in ("channel", "wps", "encryption"):
+            assert badge not in ap_cell.plain
+        assert any("red" in str(span.style) for span in ap_cell.spans)
+        for column in ("channel", "wps", "encryption", "captures"):
             cell = table.get_cell(ap.bssid, column)
-            assert not any("red" in str(span.style) for span in cell.spans)
+            assert not any("cyan" in str(span.style) for span in cell.spans)
 
         scanner.action_toggle_view()
         await pilot.pause(0)
-        client_cell = table.get_cell(client.mac, "ssid")
+        assert not table.get_cell(client.mac, "ssid").plain.startswith("⌖ ")
+        client_cell = table.get_cell(client.mac, "client")
         assert client_cell.plain.startswith("⌖ ")
-        assert any("red" in str(span.style) for span in client_cell.spans)
+        assert "red" in str(client_cell.style)
 
 
 @pytest.mark.asyncio
@@ -349,16 +456,16 @@ async def test_same_ssid_aps_collapse_into_expandable_infrastructure():
         scanner.refresh_table()
 
         assert table.row_count == 1
-        grouped = table.get_row_at(0)
-        assert grouped[0].plain == "▸ Hotel WiFi · 2 APs"
-        assert grouped[1].plain == "1,6"
-        assert grouped[2].plain == "-40 dBm"
+        group_key = "infrastructure:hotel wifi"
+        assert table.get_cell(group_key, "ssid").plain == "  ▸ Hotel WiFi · 2 APs"
+        assert table.get_cell(group_key, "channel").plain == "1,6"
+        assert table.get_cell(group_key, "signal").plain == "-40 dBm"
 
         await pilot.press("enter")
         await pilot.pause(0)
         assert table.row_count == 2
-        assert table.get_row_at(0)[0].plain == "Hotel WiFi"
-        assert table.get_row_at(1)[0].plain == "└ Hotel WiFi"
+        assert table.get_row_at(0)[0].plain == "  Hotel WiFi"
+        assert table.get_row_at(1)[0].plain == "  └ Hotel WiFi"
 
         scanner.action_toggle_infrastructure()
         await pilot.pause(0)
@@ -386,4 +493,77 @@ async def test_observed_weak_enterprise_method_is_visible_in_ap_table():
         encryption = scanner.query_one("#ap-table", DataTable).get_cell(
             ap.bssid, "encryption",
         )
-        assert "!WEAK" in encryption.plain
+        assert encryption.plain.startswith("WPA2")
+        assert "!WEAK" not in encryption.plain
+        assert any(getattr(span, "style", None) == "bright_red" for span in encryption._spans)
+
+
+@pytest.mark.asyncio
+async def test_client_text_filter_tolerates_missing_ap_vendor(monkeypatch):
+    ap = AccessPoint(bssid="86:aa:9c:2c:0c:ef", ssid="MOVISTAR_0CE6", channel=112)
+    client = Client(mac="d8:74:ef:fa:c6:78", bssid=ap.bssid, packets=1)
+    app = _Host(_Array(ap, [client]))
+    monkeypatch.setattr(
+        "wifit3.ui.screens.scanner.vendor_for_mac",
+        lambda _mac: None,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner.action_toggle_view()
+        await pilot.pause(0)
+        scanner._scan_filter = ScanFilter(text="movistar")
+        scanner.refresh_table()
+        table = scanner.query_one("#ap-table", DataTable)
+        assert table.row_count == 1
+
+
+def test_client_display_age_grace_after_ap_focus():
+    scanner = ScannerView()
+    now = 1_000.0
+    client = Client(
+        mac="18:7f:88:aa:bb:cc",
+        bssid="00:03:93:11:22:33",
+        last_seen=now - 120.0,
+    )
+    scanner._client_stale_grace_from[client.mac] = now
+    assert scanner._client_display_age(client, now) == 0.0
+    assert (
+        scanner._client_display_age(client, now + CLIENT_STALE_DURATION_S + 0.5)
+        > CLIENT_STALE_DURATION_S
+    )
+
+
+def test_client_display_age_stays_dim_until_resighted():
+    scanner = ScannerView()
+    now = 2_000.0
+    client = Client(mac="18:7f:88:aa:bb:cc", last_seen=now - 500.0)
+    scanner._client_dim_until_resight[client.mac] = client.last_seen
+    assert scanner._client_display_age(client, now) > CLIENT_STALE_DURATION_S
+    client.last_seen = now
+    assert scanner._client_display_age(client, now) == 0.0
+    assert client.mac not in scanner._client_dim_until_resight
+
+
+@pytest.mark.asyncio
+async def test_ap_focus_resume_applies_client_stale_policy():
+    import time
+
+    ap = AccessPoint(bssid="00:03:93:11:22:33", ssid="Office", channel=6)
+    active = Client(mac="18:7f:88:aa:bb:cc", bssid=ap.bssid, last_seen=time.time() - 5.0)
+    stale = Client(
+        mac="02:00:00:00:00:01",
+        bssid=ap.bssid,
+        last_seen=time.time() - (CLIENT_STALE_DURATION_S + 10.0),
+    )
+    app = _Host(_Array(ap, [active, stale]))
+    async with app.run_test() as pilot:
+        await pilot.pause(0)
+        scanner = app.screen
+        scanner._client_dim_before_ap_focus = {stale.mac}
+        scanner._apply_client_stale_policy_after_ap_focus()
+        assert active.mac in scanner._client_stale_grace_from
+        assert stale.mac in scanner._client_dim_until_resight
+        now = time.time()
+        assert scanner._client_display_age(active, now) < 1.0
+        assert scanner._client_display_age(stale, now) > CLIENT_STALE_DURATION_S

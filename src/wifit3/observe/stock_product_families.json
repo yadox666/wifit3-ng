@@ -1,0 +1,3014 @@
+{
+  "schema": 1,
+  "families": [
+    {
+      "id": "flock-cameras",
+      "label": "Flock Safety Cameras",
+      "class": "Surveillance",
+      "attention": "Roadside camera match. IEEE B4:1E:52 or a Flock, FLCK, Condor, Falcon, or Sparrow name. A module vendor OUI is not this row.",
+      "notes": "Name and the Flock OUI only. Company 0x09C8 is the Penguin battery row.",
+      "rules": [
+        {
+          "kind": "oui",
+          "text": "B4:1E:52"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bFlock\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bFLCK\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Flock\\-.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Flock\\-......$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bCONDOR\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bFALCON\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSPARROW\\b.*$"
+        }
+      ]
+    },
+    {
+      "id": "penguin",
+      "label": "Penguin",
+      "class": "Surveillance",
+      "attention": "Flock-family external battery (XUNTONG 0x09C8), not the acoustic sensor.",
+      "notes": "Company ID 0x09C8 or a Penguin name. Raven keeps its own names, UUIDs, and OUI.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bPenguin\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Penguin.*$"
+        },
+        {
+          "kind": "manufacturer_id",
+          "company_id": 2504
+        }
+      ]
+    },
+    {
+      "id": "raven",
+      "label": "Raven / ShotSpotter",
+      "class": "Surveillance",
+      "notes": "Names, service UUIDs 3100-3500, or OUI D4:11:D6. Not company 0x09C8.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bRAVEN\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bShotSpotter\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSoundThinking\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Shot\\s+Spotter.*$"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "3100"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "3200"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "3300"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "3400"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "3500"
+        },
+        {
+          "kind": "oui",
+          "text": "D4:11:D6"
+        }
+      ]
+    },
+    {
+      "id": "securitas-direct-alarm",
+      "label": "Securitas Direct / Verisure",
+      "class": "Alarm",
+      "attention": "Verisure / Securitas Direct central unit Wi-Fi (Spain 58:B5:68, Nordic 24:C3:F9, 00:23:C1). Often a single 32-character random SSID, not a brand name.",
+      "notes": "Match on panel BSSID OUI. WPA2-PSK; WPS usually off. SSID alone is not unique enough without the OUI.",
+      "rules": [
+        {
+          "kind": "oui",
+          "text": "58:B5:68",
+          "radio": "wifi"
+        },
+        {
+          "kind": "oui",
+          "text": "24:C3:F9",
+          "radio": "wifi"
+        },
+        {
+          "kind": "oui",
+          "text": "00:23:C1",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bVerisure\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSecuritas\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^lev\\-.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "apple-airtag",
+      "label": "Apple AirTags",
+      "class": "Finder",
+      "notes": "Find My protocol, an AirTag name, or service FD44. Dropped when an Apple phone or audio row also matches, unless the name says AirTag or FD44 is present.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bAirTag\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Find\\s+My.*$"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "12"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD44"
+        }
+      ]
+    },
+    {
+      "id": "apple-iphone",
+      "label": "iPhone",
+      "class": "Phone",
+      "notes": "The name says iPhone. A continuity frame on the protocol line is the advertisement, not a second device.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\biPhone\\b.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "oppo-phone",
+      "label": "OPPO smartphone",
+      "class": "Phone",
+      "notes": "OPPO handset name. Accessory families such as Enco, Watch, and Pad are intentionally excluded.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^OPPO(?:\\s+(?:Find|Reno|A[0-9]|F[0-9]|K[0-9]|R[0-9]|CPH[0-9]).*)?$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "caterpillar-phone",
+      "label": "Caterpillar smartphone",
+      "class": "Phone",
+      "notes": "Caterpillar rugged smartphone identified by the CATBINT Bluetooth or GATT model name.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bCATBINT\\b.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "apple-ipad",
+      "label": "iPad",
+      "class": "Tablet",
+      "notes": "The name says iPad.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\biPad\\b.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "apple-mac",
+      "label": "Mac",
+      "class": "Computer",
+      "notes": "The name says MacBook, iMac, or Mac mini.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMacBook\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\biMac\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Mac\\s+mini.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "apple-tv",
+      "label": "Apple TV",
+      "class": "Display",
+      "notes": "The name says Apple TV. Nearby Action on the protocol line is the continuity frame.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Apple\\s+TV.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bAppleTV\\b.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "apple-watch",
+      "label": "Apple Watch",
+      "class": "Wearable",
+      "notes": "The name says Apple Watch.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Apple\\s+Watch.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "apple-homepod",
+      "label": "HomePod",
+      "class": "Audio",
+      "notes": "The name says HomePod.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bHomePod\\b.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "apple-device",
+      "label": "Apple Device",
+      "class": "Ambiguous",
+      "notes": "Continuity frame only. The protocol line names it. Class is Ambiguous until the name says phone, TV, watch, or Mac.",
+      "rules": [
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "10"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "0F"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "0B"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "05"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "0C"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "0D"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "0E"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "08"
+        }
+      ]
+    },
+    {
+      "id": "apple-audio",
+      "label": "Apple audio",
+      "class": "Audio",
+      "notes": "Proximity pairing, AirPlay target, or an AirPods or Beats name.",
+      "rules": [
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "07"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "09"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "0A"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bAirPods\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bBeats\\b.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "dult",
+      "label": "DULT tracker",
+      "class": "Finder",
+      "decode": "dult",
+      "notes": "Service data FCB2 only. A bare UUID in the list does not match. Chipolo and Pebblebee can dual-label.",
+      "rules": [
+        {
+          "kind": "service_data",
+          "text": "FCB2",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "find-hub",
+      "label": "Google Find Hub",
+      "class": "Finder",
+      "decode": "find_hub",
+      "notes": "FEAA frames 0x40 and 0x41 only. Eddystone UID, URL, and TLM stay off this row.",
+      "rules": [
+        {
+          "kind": "service_data",
+          "text": "FEAA",
+          "prefix": "40",
+          "radio": "ble"
+        },
+        {
+          "kind": "service_data",
+          "text": "FEAA",
+          "prefix": "41",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "chipolo",
+      "label": "Chipolo",
+      "class": "Finder",
+      "notes": "Name match. A DULT frame on the same radio stays labeled too.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bChipolo\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Chipolo.*$"
+        }
+      ]
+    },
+    {
+      "id": "pebblebee",
+      "label": "Pebblebee / moto tag",
+      "class": "Finder",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bPebblebee\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Pebblebee.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*moto\\s+tag.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Moto\\s+Tag.*$"
+        }
+      ]
+    },
+    {
+      "id": "tile",
+      "label": "Tile Trackers",
+      "class": "Finder",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bTile\\b.*$"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEED"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEDD"
+        },
+        {
+          "kind": "manufacturer_id",
+          "company_id": 199
+        }
+      ]
+    },
+    {
+      "id": "projector-wifi",
+      "label": "Projector",
+      "class": "Display",
+      "attention": "Classroom / conference projector Wi‑Fi (PROJ… SSIDs, Epson-style ST-####XXX model names).",
+      "notes": "Regex for fixed-width model tokens and PROJ… prefixes.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^PROJ[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "^ST-[0-9]{4}[A-Z]{3}$",
+          "radio": "wifi",
+          "flags": "s"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^EPSON_[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bEPSON\\b.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "ble-tv-bracket",
+      "label": "Television",
+      "class": "Display",
+      "notes": "Many smart TVs advertise BLE as [TV] …, embed OLED in the model name, or use IPTV/set-top names (descodificador, …).",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^\\[TV\\]\\s+.+$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bOLED\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bdescodificador\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bdecodificador\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bset[- ]?top\\b.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "windows-desktop-ble",
+      "label": "Windows PC",
+      "class": "Computer",
+      "notes": "Windows default Bluetooth discovery name DESKTOP-… (PC, laptop, or tablet).",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DESKTOP-.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "samsung-tv",
+      "label": "Samsung TV",
+      "class": "Display",
+      "notes": "Samsung-specific BLE names; generic [TV] … rows are also Television.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\[TV\\]\\s+Samsung.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Samsung\\s+TV.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Samsung\\ .*\\ TV$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\[TV\\]\\s+Samsung\\s+\\d+\\s+Series.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "huawei-wearable",
+      "label": "Huawei wearable",
+      "class": "Wearable",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*HUAWEI\\s+WATCH.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Huawei\\s+Watch.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*HUAWEI\\s+WATCH\\s+FIT.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Huawei\\s+Watch\\s+Fit.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bHUAWEI\\s+Band\\b.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "redmi-wearable",
+      "label": "Redmi / Xiaomi wearable",
+      "class": "Wearable",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Redmi\\s+Watch.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Mi\\s+Watch.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Xiaomi\\s+Mi\\s+Color.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMi\\s+Color\\s+S\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMi\\s+Smart\\s+Band\\b.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "service-audio-output",
+      "label": "Bluetooth audio output",
+      "class": "Audio",
+      "notes": "Strong endpoint services only: headset, A2DP sink, hands-free headset, or hearing access. Source/gateway and generic media-control services are intentionally excluded.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "1108"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "110B"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "111E"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1131"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1854"
+        }
+      ]
+    },
+    {
+      "id": "service-video-device",
+      "label": "Bluetooth video device",
+      "class": "Display",
+      "notes": "Bluetooth Video Source, Video Sink, or Video Distribution service. Generic media control alone is not treated as a television.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "1303"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1304"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1305"
+        }
+      ]
+    },
+    {
+      "id": "service-media-remote-target",
+      "label": "TV / media device",
+      "class": "Ambiguous",
+      "notes": "AVRCP target or A/V Remote Control profile. A television is possible, but speakers, headphones, phones, and computers can expose the same service.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "110C"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "110E"
+        }
+      ]
+    },
+    {
+      "id": "service-health-monitor",
+      "label": "Health monitor",
+      "class": "Health",
+      "notes": "Bluetooth SIG physiological measurement or treatment service.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "1808"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1809"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "180D"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1810"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "181B"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "181D"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "181F"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1822"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "183A"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "183E"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1840"
+        }
+      ]
+    },
+    {
+      "id": "service-fitness-device",
+      "label": "Fitness device",
+      "class": "Fitness",
+      "notes": "Running, cycling, power, or fitness-machine service.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "1814"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1816"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1818"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1826"
+        }
+      ]
+    },
+    {
+      "id": "service-human-interface",
+      "label": "Human interface device",
+      "class": "Peripherals",
+      "notes": "Bluetooth HID or HID ISO service; may be a keyboard, mouse, controller, or remote.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "1812"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1124"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "185C"
+        }
+      ]
+    },
+    {
+      "id": "service-environment-sensor",
+      "label": "Environmental sensor",
+      "class": "Sensor",
+      "notes": "Environmental Sensing or Binary Sensor service.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "181A"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "183B"
+        }
+      ]
+    },
+    {
+      "id": "service-network-access",
+      "label": "Bluetooth network device",
+      "class": "Network",
+      "notes": "PAN, network-access-point, IP support, or mesh-proxy service.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "1115"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1116"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1117"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1820"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1828"
+        }
+      ]
+    },
+    {
+      "id": "service-printer",
+      "label": "Bluetooth printer",
+      "class": "Printer",
+      "notes": "Bluetooth printing or hardcopy-cable-replacement service.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "1118"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1120"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1122"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1123"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1125"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1126"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "1127"
+        }
+      ]
+    },
+    {
+      "id": "generic-speaker",
+      "label": "Speaker",
+      "class": "Audio",
+      "notes": "Bluetooth names containing Audio or Speaker.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*audio.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*speaker.*$"
+        }
+      ]
+    },
+    {
+      "id": "generic-headphones",
+      "label": "Headphones",
+      "class": "Audio",
+      "notes": "Bluetooth names containing Buds, including Earbuds.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*buds.*$"
+        }
+      ]
+    },
+    {
+      "id": "sony-audio",
+      "label": "Sony headphones",
+      "class": "Audio",
+      "notes": "Sony LE_* local names and WH-/WF-C wireless audio. Company 0x012D is Sony Corporation.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bWH\\-1000\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^LE_WH\\-.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^WH-CH\\d+.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^WH-CH\\d+.*$",
+          "radio": "bt"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^LE_WF\\-.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^WF-C\\d+.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^WF-C\\d+.*$",
+          "radio": "bt"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^WH-1000XM\\d+.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^WH-1000XM\\d+.*$",
+          "radio": "bt"
+        }
+      ]
+    },
+    {
+      "id": "epson-printer-ble",
+      "label": "Epson printer",
+      "class": "Printer",
+      "notes": "Epson WF-* printers only — not Sony LE_WF-* earbuds (WF-C510).",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bEpson\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Epson\\s+WF-.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^WF-\\d+.*Series$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Epson\\s+WF-.*$",
+          "radio": "bt"
+        }
+      ]
+    },
+    {
+      "id": "ble-mesh-provisioning",
+      "label": "Bluetooth Mesh provisioner",
+      "class": "Network",
+      "notes": "Mesh Provisioning Service 0x1827; often unnamed while a light/switch is being added to a mesh.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "1827",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "smarttag",
+      "label": "Samsung SmartTags",
+      "class": "Finder",
+      "notes": "SmartTag name or service FD5A. Company 0x0075 is Samsung Electronics, so a TV, phone, or watch with that ID is not this row.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSmartTag\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Smart\\s+Tag.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Galaxy\\s+SmartTag.*$"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD5A"
+        }
+      ]
+    },
+    {
+      "id": "fast-pair",
+      "label": "Fast Pair",
+      "class": "Ambiguous",
+      "decode": "fast_pair",
+      "notes": "UUID FE2C. A 3-byte model id is pairing mode. A longer account-key frame is crowd noise.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "FE2C"
+        }
+      ]
+    },
+    {
+      "id": "tesla",
+      "label": "Tesla",
+      "class": "Vehicle",
+      "notes": "Phone-as-key uses an Apple iBeacon layout with Tesla's UUID. That row wins over generic iBeacon.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 555
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE96"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE97"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "021574278BDAB64445208F0C720EAF059935"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bTesla\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bCybertruck\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "^S.{16}[CDPR]$",
+          "radio": "ble",
+          "flags": "s"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^TeslaGW[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^tesla-vehicle$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^TeslaWallConnector[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Cybertruck[\\w-]*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "home-router-isp",
+      "label": "Home router",
+      "class": "Home router",
+      "attention": "ISP CPE Wi-Fi (DIGI, Movistar, Orange Livebox, Vodafone Smartbox, Jazztel, O2, MásMóvil, Yoigo, Pepephone, MiFibra, REDWIFI, WLAN_/MIWIFI_ prefixes, Sagemcom, …).",
+      "notes": "Brand-specific SSID regex on Wi-Fi only. Not My * or a bare WiFi token.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DIGIFIBRA[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DIGI-[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bDigi WiFi\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DIGIFIBRA-PLUS[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^MOVISTAR[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Livebox[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bLivebox\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Orange-[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^ORANGE-[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^WIFI6-ORANGE[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Vodafone[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Smartbox[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^VF-[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bVodafone Station\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Jazztel[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^O2[-_]Wi[Ff]i[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bO2 Wireless\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Masmovil[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMásMóvil\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Yoigo[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Pepephone[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^WLAN_[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^MiFibra[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Sagemcom[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSagemcom\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^MIWIFI_[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^MiWiFi_[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^REDWIFI[\\w_]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Lowi[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Sercomm[\\w_]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSercomm\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^TP[-_]Link_[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^TP[-_]Link-[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^TP[-_]Link[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^TP[-_]Link.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Tenda_[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Iberdrola[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Calima[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Ohana_[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^ZTEG[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^ZTE_[\\w-]+$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "hospitality-venue-wifi",
+      "label": "Hospitality venue",
+      "class": "Hospitality",
+      "attention": "Guest or venue Wi-Fi for hotels, apartments, restaurants, cafés (English and Spanish SSID naming). Clue only — many personal SSIDs reuse these words.",
+      "notes": "Wi-Fi SSID substring rules. Not ISP CPE rows (Movistar, Livebox, …).",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*HOTEL.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*APARTMENT.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*APARTAMENTO.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*APARTAMENTOS.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*APARTAHOTEL.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*APARTHOTEL.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*RESTAURANTE.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*RESTAURANT.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*CAFETERIA.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*CHILLOUT.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*CHILL-OUT.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*CHILL_OUT.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*CHILL OUT.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*HOSTAL.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*HOSTEL.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*MOTEL.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*HOSPEDAJE.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*ALOJAMIENTO.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*PENSION.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*PENSIÓN.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*HOSTERIA.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*HOSTERÍA.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*RESORT.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*GUESTHOUSE.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*GUEST-HOUSE.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*GUEST HOUSE.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*BISTRO.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*BURGER.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*ROOMS.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*HABITACIONES.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*HABITACION.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*COMEDOR.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*TERRAZA.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*GLAMPING.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*LODGE.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^(?!My\\s)(?!^Cafe$).*\\b(CAFE|CAFÉ)\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bGuest WiFi\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bGuest WLAN\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bWiFi Guest\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*_INN$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*INN_.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "printer-wifi-direct",
+      "label": "Wi-Fi Direct printer",
+      "class": "Printer",
+      "attention": "Wi-Fi Direct / setup SSID (HP DIRECT-xx-HP, Epson DIRECT-xxxxxxxx, EC520_*, pm_wireless_*, GPLUSPR_*, HS-######, …).",
+      "notes": "Wi-Fi only. HP Wireless Direct uses HP-Print-xx-.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DIRECT-.+-HP.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DIRECT-HP.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^HP-Print-.+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DIRECT-.*EPSON.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DIRECT-[0-9A-Fa-f]{8}$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DIRECT-.+-BRN.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DIRECT-.+-Canon.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DIRECT-.+-Brother.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bOfficeJet\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bLaserJet\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DIRECT-.{2,3}$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^GPLUSPR_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^HS-[0-9]{6}$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^EC520_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^pm_wireless_.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "engenius-cloud-ap-setup",
+      "label": "EnGenius cloud AP (setup)",
+      "class": "Computer",
+      "attention": "EnGenius ECW/EWS access point local management SSID before cloud onboarding (EnMGMT + last 4 of LAN MAC, often with -Initializing / -Cloud_ERR suffixes).",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^EnMGMT.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^ENMGMT.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "cleaning-robot-wifi",
+      "label": "Robot vacuum / mop",
+      "class": "Cleaning device",
+      "attention": "Floor-care and connected laundry setup Wi-Fi (Roomba, iRobot, Braava, Samsung Washer_*, [washer]_*).",
+      "notes": "Wi-Fi SSID clues only. Robot APs are often short-lived during provisioning.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Roomba.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^ROOMBA.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^iRobot.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^IROBOT.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^iRobot\\-.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\biRobot\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Braava.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^BRAAVA.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*[[]washer[]\\]_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bWasher\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bWasher_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Samsung\\s+Washer_.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "dashcam-wifi",
+      "label": "Dashcam Wi-Fi",
+      "class": "Camera",
+      "attention": "Action cam / dashcam AP (70mai, KAWA, CVR-*, E-ACE B46P, YantopCam-*, Meitrack MTDVR / MT-* fleet DVR).",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^70mai_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^KAWA_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^CVR\\-.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^MTDVR.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^MT\\-.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Dash-[0-9A-Za-z]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^B46P[-_].*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^YantopCam-.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "iot-ai-thinker-esp",
+      "label": "Ai-Thinker ESP soft AP",
+      "class": "Computer",
+      "attention": "Factory ESP8266/ESP32 soft-AP SSID from Ai-Thinker modules (AI-THINKER_…).",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^AI\\-THINKER_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^AI\\-THINKER.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^AI\\-Thinker.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "lorawan-lpwan-iot",
+      "label": "LoRaWAN / LPWAN",
+      "class": "IoT",
+      "attention": "LoRaWAN gateways, sensors, and UART bridges seen on Wi‑Fi or BLE — not the LoRa radio itself.",
+      "notes": "Wi‑Fi: gateway setup APs (RAK, Dragino, Kerlink, …). BLE/BT: node names and HC‑05/HC‑06 modules.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^RAK72[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^RAKwireless[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^RAK_[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^dragino-[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^klk-wifc-[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^LGW-[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^LoRa[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^SenseCAP[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Milesight[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^MTCDT[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^TEKTELIC[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Bobcat[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Nebra[\\w-]*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Helium-[\\w-]+$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bHelium Hotspot\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bLoRaWAN\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bLoRaWAN\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bLoRa\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bDragino\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^RAK[\\w-]*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSenseCAP\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMilesight\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMultitech\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bKerlink\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bWisGate\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bHC-0[56]\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bHC_0[56]\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^HC-0.$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bLinvor\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bBT04-A\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMLT-BT05\\b.*$"
+        }
+      ]
+    },
+    {
+      "id": "trimble-snm941-gateway",
+      "label": "Trimble SNM941 gateway",
+      "class": "Vehicle",
+      "notes": "Trimble Connected Site gateway on construction / agriculture machines.",
+      "attention": "Machine telematics and GNSS corrections — not a passenger-car infotainment hotspot.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^SNM941\\-.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSNM941\\b.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "phone-wifi-tether",
+      "label": "Phone / tablet hotspot",
+      "class": "Phone",
+      "attention": "Phone or tablet cellular tethering. AOSP default SSIDs AndroidAP and AndroidShare (often AndroidAP_####) are Android phones/tablets, not routers. User names starting with Hotspot are common too.",
+      "notes": "Wi-Fi only. Not Android Auto (AndroidAuto*). Car SSIDs such as Hotspot de … stay on the vehicle rows.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^AndroidAP.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bAndroidAP\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^AndroidShare.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bAndroidShare\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Instant\\ Hotspot.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Hotspot.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Redmi\\ Note\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Redmi\\ Note.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^REDMI\\ NOTE\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Redmi\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Redmi.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Xiaomi\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^XIAOMI\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Xiaomi.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Galaxy\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Galaxy\\ S.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Galaxy\\ A.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Infinix\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Xperia\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Android123_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^A17\\ de.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bS23\\+\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*S23\\+.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bS23\\s+Ultra\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*S23\\s+Ultra.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-vag-hotspot",
+      "label": "VAG infotainment hotspot",
+      "class": "Vehicle",
+      "attention": "VW Group in-car Wi-Fi (VW, Audi, Škoda, SEAT). MIB-style SSIDs; not a home ISP router.",
+      "notes": "Prefer brand-specific regex. My * alone is too broad for catalog clues.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^VW\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^VW_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^VW\\ Hotspot.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^VW\\-Hotspot.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Internet\\ da\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Hotspot\\ de\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^AUDI_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Audi\\ MMI.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Skoda_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^SKODA_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^SEAT_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^MIB\\-.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^MIB_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMIB2\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMIB3\\b.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-android-auto",
+      "label": "Android Auto Wi-Fi",
+      "class": "Vehicle",
+      "attention": "Head-unit or phone projection Wi-Fi for Android Auto.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^AndroidAuto.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Android_Auto.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Android\\s+Auto.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-carplay",
+      "label": "Apple CarPlay Wi-Fi",
+      "class": "Vehicle",
+      "attention": "In-car Wi-Fi tied to CarPlay projection.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^CarPlay.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^CARPLAY.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Car\\s+Play.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-bmw",
+      "label": "BMW WLAN",
+      "class": "Vehicle",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^BMW\\ WLAN.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^BMW\\-WLAN.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^BMW\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*BMW\\s+Hotspot.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DIRECT\\-BMW\\ .*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-mercedes",
+      "label": "Mercedes MBUX",
+      "class": "Vehicle",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Mercedes\\-Benz.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^MBUX.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Mercedes_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*MBUX\\s+Hotspot.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-stellantis",
+      "label": "Stellantis Uconnect",
+      "class": "Vehicle",
+      "notes": "FCA/Stellantis Uconnect Wi-Fi (Jeep, Peugeot, Citroën, Opel, etc.).",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Uconnect.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^UConnect.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^UC_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bWiFi\\-CAR\\b.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-ford",
+      "label": "Ford SYNC",
+      "class": "Vehicle",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^SYNC\\-.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^FordPass.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^FORD\\-.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Ford\\s+Hotspot.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-hyundai",
+      "label": "Hyundai / Kia in-car Wi-Fi",
+      "class": "Vehicle",
+      "attention": "Hyundai / Kia style infotainment hotspot SSIDs (common typo Hyunday in the field).",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Hyunday_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Hyundai_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^HYUNDAI_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Hyundai\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Kia_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^KIA.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Kia\\ .*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-toyota",
+      "label": "Toyota in-car Wi-Fi",
+      "class": "Vehicle",
+      "attention": "Toyota / Lexus style infotainment hotspot SSIDs.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Toyota\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^TOYOTA\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Toyota_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Lexus_.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-renault",
+      "label": "Renault in-car Wi-Fi",
+      "class": "Vehicle",
+      "attention": "Renault R-Link / Share hotspot SSIDs.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Share_RENAULT_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bRENAULT_HotSpot\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^R\\-LINK.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Renault\\ .*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-mazda",
+      "label": "Mazda in-car Wi-Fi",
+      "class": "Vehicle",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^MAZDA.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Mazda\\ .*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-porsche",
+      "label": "Porsche in-car Wi-Fi",
+      "class": "Vehicle",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Porsche_WLAN_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Porsche\\ .*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-byd",
+      "label": "BYD vehicle",
+      "class": "Vehicle",
+      "attention": "BYD passenger EV Bluetooth name or hotspot / Wi-Fi Direct style SSID.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^BYD(?:[ _-].*)?$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^BYD\\ .*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^BYD.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-car-dongle",
+      "label": "Car Wi-Fi dongle",
+      "class": "Vehicle",
+      "attention": "OBD / head-unit dongles (WirelessDongle, SmartDongle, AutoKit, …).",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^SmartDongle_.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^WirelessDongle\\-.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^AutoKit_.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-pioneer-car-audio",
+      "label": "Pioneer car stereo",
+      "class": "Vehicle",
+      "attention": "Pioneer aftermarket head-unit Wi‑Fi (wireless CarPlay / Android Auto). SSID is often the model name (SPH-DA…).",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^SPH\\-DA.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^SPH\\-.*DAB.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "ibeacon",
+      "label": "iBeacon",
+      "class": "Beacon",
+      "notes": "Apple iBeacon layout. Dropped when a non-beacon product already matched the same radio.",
+      "rules": [
+        {
+          "kind": "manufacturer_data",
+          "company_id": 76,
+          "prefix": "0215"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\biBeacon\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*iBeacon.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "osmo",
+      "label": "Osmo",
+      "class": "Camera",
+      "notes": "DJI company 0x08AA model ids 0x0006-0x0022, or an Osmo name. Aircraft ids stay on the DJI row.",
+      "rules": [
+        {
+          "kind": "manufacturer_data",
+          "company_id": 2218,
+          "prefix": "0600"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 2218,
+          "prefix": "1000"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 2218,
+          "prefix": "1200"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 2218,
+          "prefix": "1400"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 2218,
+          "prefix": "1500"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 2218,
+          "prefix": "1700"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 2218,
+          "prefix": "1800"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 2218,
+          "prefix": "1900"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 2218,
+          "prefix": "2000"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 2218,
+          "prefix": "2100"
+        },
+        {
+          "kind": "manufacturer_data",
+          "company_id": 2218,
+          "prefix": "2200"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^OsmoAction.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Osmo\\ Action.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^OsmoPocket.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Osmo\\ Pocket.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Osmo360.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Osmo\\ 360.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^OsmoNano.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Osmo\\ Nano.*$"
+        }
+      ]
+    },
+    {
+      "id": "dji",
+      "label": "DJI",
+      "class": "Drone",
+      "attention": "DJI radio. Osmo camera model ids are labeled Osmo instead.",
+      "notes": "Company 0x08AA or a DJI name. Osmo prefixes are removed from this row after the match.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 2218
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bDJI\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DJI.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bDJI\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^DJI.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "remote-id",
+      "label": "Remote ID aircraft",
+      "class": "Drone",
+      "decode": "remote_id",
+      "attention": "Remote ID advertisement. Emergency is the stronger live state.",
+      "notes": "BLE service FFFA, or Wi-Fi vendor IE FA:0B:BC or 6A:5C:35. WPA and RSN IEs are not a brand.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "FFFA"
+        },
+        {
+          "kind": "vendor_ie",
+          "text": "FA:0B:BC"
+        },
+        {
+          "kind": "vendor_ie",
+          "text": "6A:5C:35"
+        }
+      ]
+    },
+    {
+      "id": "meta-glasses",
+      "label": "Ray-Ban / Meta glasses",
+      "class": "Glasses",
+      "attention": "Ray-Ban, Meta View, or Oakley Meta name, or glasses service FEB7/FEB8. A Meta company ID alone is not this row.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bRay\\-Ban\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bRayBan\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Ray\\-Ban.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^RayBan.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Meta\\s+View.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Oakley\\s+Meta.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEB7"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEB8"
+        }
+      ]
+    },
+    {
+      "id": "snap-spectacles",
+      "label": "Snap Spectacles",
+      "class": "Glasses",
+      "attention": "Spectacles name or service FE45. A Snap company ID alone is not this row.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Snap\\s+Spectacles.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSpectacles\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Spectacles.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE45"
+        }
+      ]
+    },
+    {
+      "id": "vuzix",
+      "label": "Vuzix",
+      "class": "Glasses",
+      "attention": "Vuzix BLE glasses.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 1548
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bVuzix\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Vuzix.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "axon",
+      "label": "Axon",
+      "class": "Public safety",
+      "attention": "Axon body-worn, in-car, dock, or TASER gear. OUI 00:25:DF is Axon Enterprise.",
+      "notes": "BWCDEVICE is matched in service data, including the byte-reversed form, not only the advertised name.",
+      "rules": [
+        {
+          "kind": "oui",
+          "text": "00:25:DF"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Axon\\s+Fleet.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Axon\\s+Body.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*Axon\\s+Dock.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Axon.*$"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE6B"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE6C"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FC81"
+        },
+        {
+          "kind": "manufacturer_id",
+          "company_id": 845
+        },
+        {
+          "kind": "service_data_contains",
+          "prefix": "425743444556494345",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "flipper",
+      "label": "Flipper Zero",
+      "class": "Pentest",
+      "attention": "Flipper Devices BLE, or IEEE OUI 0C:FA:22.",
+      "rules": [
+        {
+          "kind": "oui",
+          "text": "0C:FA:22"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bFlipper\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Flipper.*$",
+          "radio": "ble"
+        }
+      ]
+    },
+    {
+      "id": "hak5-pineapple",
+      "label": "Hak5 Pineapple",
+      "class": "Pentest",
+      "attention": "Hak5 WiFi Pineapple setup or management AP.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Pineapple_.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bPineapple_\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*WiFi\\s+Pineapple.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bHak5\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Hak5.*$"
+        }
+      ]
+    },
+    {
+      "id": "keyboard-mouse",
+      "label": "Keyboard and mouse",
+      "class": "Peripherals",
+      "notes": "Keyboard and pointing-device family. Initially identifies Logitech MX Vertical by advertised name.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMX\\s+Vertical\\b.*$"
+        }
+      ]
+    },
+    {
+      "id": "gopro",
+      "label": "GoPro",
+      "class": "Cameras",
+      "notes": "GoPro cameras identified by advertised name, standardized GATT manufacturer, or assigned service FEA6.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bGoPro\\b.*$"
+        },
+        {
+          "kind": "gatt_brand_contains",
+          "text": "GoPro, Inc."
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEA6"
+        }
+      ]
+    },
+    {
+      "id": "pwnagotchi",
+      "label": "Pwnagotchi",
+      "class": "Pentest",
+      "attention": "Pwnagotchi-style collector. Classic units use BSSID DE:AD:BE:EF:DE:AD.",
+      "rules": [
+        {
+          "kind": "mac_prefix",
+          "text": "DE:AD:BE:EF:DE:AD"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bpwnagotchi\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^pwnagotchi.*$"
+        }
+      ]
+    }
+  ],
+  "suppress": [
+    {
+      "drop": "apple-airtag",
+      "when_any": [
+        "apple-device",
+        "apple-audio",
+        "apple-iphone",
+        "apple-ipad",
+        "apple-mac",
+        "apple-tv",
+        "apple-watch",
+        "apple-homepod"
+      ],
+      "unless_name_contains": [
+        "AirTag"
+      ],
+      "unless_service": [
+        "fd44"
+      ]
+    },
+    {
+      "drop": "ibeacon",
+      "when_other_class_not": "Beacon"
+    },
+    {
+      "drop": "fast-pair",
+      "when_other_class_not": "Ambiguous"
+    },
+    {
+      "drop": "generic-speaker",
+      "when_any": [
+        "generic-headphones"
+      ]
+    },
+    {
+      "drop": "service-audio-output",
+      "when_any": [
+        "apple-audio",
+        "sony-audio",
+        "generic-speaker",
+        "generic-headphones"
+      ]
+    },
+    {
+      "drop": "service-human-interface",
+      "when_any": [
+        "keyboard-mouse"
+      ]
+    },
+    {
+      "drop": "service-media-remote-target",
+      "when_other_class_not": "Ambiguous"
+    },
+    {
+      "drop": "dji",
+      "when_any": [
+        "osmo"
+      ]
+    },
+    {
+      "drop": "apple-device",
+      "when_any": [
+        "apple-iphone",
+        "apple-ipad",
+        "apple-mac",
+        "apple-tv",
+        "apple-watch",
+        "apple-homepod"
+      ]
+    },
+    {
+      "drop": "phone-wifi-tether",
+      "when_any": [
+        "vehicle-vag-hotspot"
+      ]
+    }
+  ]
+}

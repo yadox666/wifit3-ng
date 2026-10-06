@@ -40,6 +40,109 @@ def _device(
     )
 
 
+def test_remember_writes_catalog_even_within_throttle_window(tmp_path):
+    store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
+    now = time.time()
+    bare = _device()
+    bare.catalog_labels = ()
+    assert store.remember(bare, force=True)
+    labeled = _device()
+    labeled.catalog_labels = ("Apple Device",)
+    labeled.catalog_class = "Phone"
+    labeled.last_seen = now + 1
+    assert store.remember(
+        labeled,
+        manufacturer_data={0x004C: bytes.fromhex("1005")},
+    )
+    record = store.offline_devices()[0]
+    assert record["catalog"]["labels"] == ["Apple Device"]
+
+
+def test_dual_radio_links_keep_per_pair_confidence_and_evidence(tmp_path):
+    store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
+    primary = _device("AA:BB:CC:DD:EE:01")
+    medium = _device("AA:BB:CC:DD:EE:02")
+    high = _device("AA:BB:CC:DD:EE:03")
+    for device in (primary, medium, high):
+        assert store.remember(device, force=True)
+
+    primary.related_identifiers = (medium.identifier, high.identifier)
+    primary.correlation_links = (
+        (medium.identifier, "medium", ("shared service",)),
+        (high.identifier, "high", ("exact normalized name", "RSSI within 10 dB")),
+    )
+    primary.last_seen += 1
+    assert store.remember(primary)
+
+    record = next(
+        item for item in store.offline_devices()
+        if item["identifier"] == primary.identifier.casefold()
+    )
+    links = {item["identifier"]: item for item in record["probable_links"]}
+    assert links[medium.identifier.casefold()]["confidence"] == "medium"
+    assert links[medium.identifier.casefold()]["evidence"] == ["shared service"]
+    assert links[high.identifier.casefold()]["confidence"] == "high"
+
+
+def test_assign_catalog_family_pins_bluetooth_device(tmp_path):
+    store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
+    device = _device(name="Mystery")
+    store.remember(device, force=True)
+    ok, message = store.assign_catalog_family(device.identifier, "cleaning-robot-wifi")
+    assert ok
+    assert "Robot vacuum / mop" in message
+    catalog = store.offline_devices()[0]["catalog"]
+    assert catalog.get("family_id") == "cleaning-robot-wifi"
+    assert catalog.get("class") == "Cleaning device"
+    store.reapply_product_catalog()
+    catalog = store.offline_devices()[0]["catalog"]
+    assert catalog.get("family_id") == "cleaning-robot-wifi"
+
+
+def test_reapply_product_catalog_overwrites_stale_catalog(tmp_path):
+    path = tmp_path / "bluetooth.sqlite3"
+    store = BluetoothHistoryStore(path)
+    device = _device(name="Battery")
+    device.manufacturer_ids = (2504,)
+    store.remember(device, force=True)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE devices SET catalog_json = ?",
+            (json.dumps({"labels": ["Wrong"]}),),
+        )
+    assert store.reapply_product_catalog() == 1
+    assert "Penguin" in store.offline_devices()[0]["catalog"]["labels"]
+
+
+def test_backfill_catalog_when_migrating_to_latest_schema(tmp_path):
+    path = tmp_path / "bluetooth.sqlite3"
+    store = BluetoothHistoryStore(path)
+    device = _device(name="Battery")
+    device.manufacturer_ids = (2504,)  # 0x09C8 -> Penguin family
+    device.catalog_labels = ()
+    store.remember(device, force=True)
+    store.close()
+
+    # Simulate a database written before product-family matching existed:
+    # schema at v12 with an empty catalog for an identifiable device.
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE devices SET catalog_json = '{}'")
+        connection.execute("PRAGMA user_version = 12")
+        connection.commit()
+
+    store = BluetoothHistoryStore(path)
+    try:
+        with sqlite3.connect(path) as connection:
+            assert (
+                connection.execute("PRAGMA user_version").fetchone()[0]
+                == SCHEMA_VERSION
+            )
+        record = store.offline_devices()[0]
+        assert "Penguin" in record["catalog"]["labels"]
+    finally:
+        store.close()
+
+
 def test_creates_private_versioned_database(tmp_path):
     path = tmp_path / "private" / "bluetooth.sqlite3"
     store = BluetoothHistoryStore(path)
@@ -86,6 +189,7 @@ def test_migrates_v4_database_to_structured_analysis_and_protocol(tmp_path):
         assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert "analysis_json" in columns
     assert "protocol_json" in columns
+    assert "catalog_json" in columns
     assert "modalias" in columns
     assert "hardware_vendor" in columns
     assert "hardware_product" in columns
@@ -145,6 +249,33 @@ def test_remember_and_enrich_only_a_live_device(tmp_path):
     assert store.count() == 1
 
 
+def test_remember_persists_ble_mac(tmp_path):
+    store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
+    device = _device()
+    device.address_type = "public"
+    device.ble_mac = "AA:BB:CC:DD:EE:FF"
+    assert store.remember(device, force=True)
+
+    record = store.offline_devices()[0]
+    assert record["ble_mac"] == "AA:BB:CC:DD:EE:FF"
+
+
+def test_remember_writes_when_gatt_identity_arrives(tmp_path):
+    store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
+    device = _device()
+    device.address_type = "public"
+    assert store.remember(device, force=True)
+
+    enriched = _device(name=device.name)
+    enriched.model_number = "WH-1000XM5"
+    enriched.manufacturer_name = "Sony Corporation"
+    assert store.remember(enriched)
+
+    record = store.offline_devices()[0]
+    assert record["model_number"] == "WH-1000XM5"
+    assert record["manufacturer_name"] == "Sony Corporation"
+
+
 def test_scan_session_groups_bluetooth_sightings(tmp_path):
     store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
     session = new_scan_session({"bluetooth"}, mode="bluetooth")
@@ -159,15 +290,48 @@ def test_scan_session_groups_bluetooth_sightings(tmp_path):
     assert record["scan_sessions"][0]["session_id"] == session.id
 
 
+def test_remember_writes_gatt_identity_for_platform_opaque_uuid(tmp_path):
+    store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
+    opaque = _device(identifier="11111111-1111-1111-1111-111111111111", name="<Unknown>")
+    opaque.address_type = "platform-opaque"
+    opaque.service_uuids = ()
+    opaque.service_data_uuids = ()
+    opaque.manufacturer_ids = ()
+    opaque.class_of_device = None
+    assert not store.remember(opaque, force=True)
+
+    opaque.model_number = "WH-CH720N"
+    assert store.remember(opaque, force=True)
+    record = store.offline_devices()[0]
+    assert record["model_number"] == "WH-CH720N"
+
+
+def test_remember_persists_advertisement_for_resolvable_private(tmp_path):
+    store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
+    private = _device(identifier="40:11:22:33:44:55", name="<Unknown>")
+    private.address_type = "resolvable-private"
+    assert store.remember(private, force=True)
+    record = store.offline_devices()[0]
+    assert record["service_uuids"] == ["180f"]
+
+
 def test_history_rejects_rotating_synthetic_and_empty_observations(tmp_path):
     store = BluetoothHistoryStore(tmp_path / "bluetooth.sqlite3")
 
-    private = _device(identifier="40:11:22:33:44:55")
+    private = _device(identifier="40:11:22:33:44:55", name="<Unknown>")
     private.address_type = "resolvable-private"
+    private.service_uuids = ()
+    private.service_data_uuids = ()
+    private.manufacturer_ids = ()
+    private.class_of_device = None
     assert not store.remember(private, force=True)
 
-    opaque = _device(identifier="11111111-1111-1111-1111-111111111111")
+    opaque = _device(identifier="11111111-1111-1111-1111-111111111111", name="<Unknown>")
     opaque.address_type = "platform-opaque"
+    opaque.service_uuids = ()
+    opaque.service_data_uuids = ()
+    opaque.manufacturer_ids = ()
+    opaque.class_of_device = None
     assert not store.remember(opaque, force=True)
 
     empty = _device(identifier="00:11:22:33:44:55", name="<Unknown>")

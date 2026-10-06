@@ -21,7 +21,7 @@ def test_format_iface_channel_hopping():
     assert format_iface_channel(iface) == "CH 11 · hop"
 
 
-def test_iface_role_for_portal_twin():
+def test_iface_role_for_evil_twin():
     twin = object()
     punt = object()
     active = SimpleNamespace(twin_iface=twin, punt_iface=punt)
@@ -38,7 +38,7 @@ def test_format_iface_channel_shows_live_vs_campaign_mismatch():
     assert format_iface_channel(iface, expected=4) == "CH 8 ≠ 4"
 
 
-def test_campaign_expected_channel_portal_twin_legs():
+def test_campaign_expected_channel_evil_twin_legs():
     twin = object()
     punt = object()
     active = SimpleNamespace(twin_iface=twin, punt_iface=punt, twin_channel=4, target_channel=8)

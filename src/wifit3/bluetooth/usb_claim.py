@@ -2,7 +2,7 @@
 
 Wi-Fi dongles in wifit3 are usually unbound from the kernel driver (udev / WinUSB) or have no
 in-tree driver on macOS, so ``claim_interface`` succeeds on START. Bluetooth HCI adapters are
-claimed by bluetoothd (macOS), btusb (Linux), or the Windows Bluetooth stack — the same libusb
+claimed by bluetoothd (macOS), btusb (Linux), or the Windows Bluetooth stack - the same libusb
 detach path often fails until the OS lets go. These helpers try a software release (no replug)
 before retrying claim.
 """
@@ -76,18 +76,13 @@ def _macos_release(*, allow_radio_power_off: bool) -> list[str]:
     steps: list[str] = []
     if not allow_radio_power_off:
         return steps
-    blueutil = shutil.which("blueutil")
-    if blueutil is None:
-        steps.append(
-            "Install blueutil (brew install blueutil) or turn Bluetooth off in "
-            "System Settings, then retry claim"
-        )
-        return steps
-    if _run_quiet([blueutil, "-p", "0"]):
-        steps.append("Turned macOS Bluetooth power off (blueutil)")
-        time.sleep(0.6)
-    else:
-        steps.append("blueutil could not turn Bluetooth off (try System Settings)")
+    # macOS exposes no public, dependency-free API for detaching its Bluetooth
+    # driver or changing radio power. Keep reclaim portable: retry the native
+    # libusb claim, then direct the user to the built-in System Settings switch.
+    steps.append(
+        "Turn Bluetooth off in System Settings, then retry claim or replug the "
+        "dedicated adapter"
+    )
     return steps
 
 

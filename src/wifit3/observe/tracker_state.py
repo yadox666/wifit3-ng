@@ -14,6 +14,9 @@ class TrackerState:
     alert: bool
     source: str
     confidence: str = "high"
+    live: str = ""
+    live_strong: bool = False
+    sentence: str = ""
 
 
 _DULT_NETWORKS = {
@@ -42,6 +45,13 @@ def decode_dult(payload: bytes) -> TrackerState | None:
         detail=detail,
         alert=separated,
         source="DULT advertisement",
+        live=state,
+        live_strong=separated,
+        sentence=(
+            ""
+            if separated
+            else "Near the owner. Separated is the state that can follow you."
+        ),
     )
 
 
@@ -60,4 +70,11 @@ def decode_find_hub(payload: bytes) -> TrackerState | None:
         detail=detail,
         alert=separated,
         source="Find Hub advertisement",
+        live=state,
+        live_strong=separated,
+        sentence=(
+            ""
+            if separated
+            else "Co-travel is often your own tag, or someone who joined with their own keys."
+        ),
     )

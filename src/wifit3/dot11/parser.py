@@ -1,6 +1,7 @@
 """Pure-Python 802.11 frame parsing: ``WlanFrameParser`` builds the typed ``Packet`` hierarchy
 (see ``dot11.packet``) from raw MPDU bytes.
 """
+import hashlib
 import struct
 from typing import Optional, List, Dict, Any
 
@@ -16,7 +17,12 @@ from wifit3.dot11.wsc.messages import (
     ATTR_MODEL_NAME,
     ATTR_MODEL_NUMBER,
     ATTR_PRIMARY_DEV_TYPE,
+    ATTR_RESPONSE_TYPE,
+    ATTR_RF_BANDS,
+    ATTR_OS_VERSION,
+    ATTR_SERIAL_NUMBER,
     ATTR_SELECTED_REGISTRAR,
+    ATTR_UUID_E,
     ATTR_VENDOR_EXTENSION,
     ATTR_VERSION,
     ATTR_WPS_STATE as ATTR_STATE,
@@ -135,8 +141,10 @@ class WlanFrameParser:
             # value keeps the field default.
             for key in ("channel", "country_code", "rsn_ie_raw", "wps", "wps_locked", "wps_version",
                         "wps_state", "wps_config_methods", "wps_device_password_id",
-                        "wps_selected_registrar", "wsc_manufacturer", "wsc_model_name",
-                        "wsc_model_number", "wsc_device_name", "wsc_device_type"):
+                        "wps_selected_registrar", "wps_uuid_e", "wps_rf_bands",
+                        "wps_os_version", "wps_response_type", "wsc_manufacturer",
+                        "wsc_model_name", "wsc_model_number", "wsc_device_name",
+                        "wsc_device_type", "wsc_serial_number"):
                 if key in tags:
                     fields[key] = tags[key]
             return BeaconPacket(**base, **fields)
@@ -511,6 +519,14 @@ class WlanFrameParser:
                 out["wps_device_password_id"] = (val[0] << 8) | val[1]
             elif attr == ATTR_SELECTED_REGISTRAR and ln >= 1:
                 out["wps_selected_registrar"] = val[0] == 0x01
+            elif attr == ATTR_UUID_E and ln == 16:
+                out["wps_uuid_e"] = val.hex()
+            elif attr == ATTR_RF_BANDS and ln >= 1:
+                out["wps_rf_bands"] = val[0]
+            elif attr == ATTR_OS_VERSION and ln >= 4:
+                out["wps_os_version"] = int.from_bytes(val[:4], "big")
+            elif attr == ATTR_RESPONSE_TYPE and ln >= 1:
+                out["wps_response_type"] = val[0]
             elif attr == ATTR_MANUFACTURER:
                 text = cls._wps_text(val)
                 if text:
@@ -527,6 +543,10 @@ class WlanFrameParser:
                 text = cls._wps_text(val)
                 if text:
                     out["wsc_device_name"] = text
+            elif attr == ATTR_SERIAL_NUMBER:
+                text = cls._wps_text(val)
+                if text:
+                    out["wsc_serial_number"] = text
             elif attr == ATTR_PRIMARY_DEV_TYPE:
                 label = device_type_label(val)
                 if label:
@@ -612,14 +632,61 @@ class WlanFrameParser:
         channel_ds: Optional[int] = None
         channel_ht: Optional[int] = None
         channel_vht: Optional[int] = None
+        remote_report = None
 
         # Per 802.11 the SSID IE is mandatory and FIRST. A later tag_id=0 is a malformed
         # frame or the walker straying into trailing bytes (unstripped metadata, padding),
         # so honor only the first occurrence.
         seen_ssid = False
         wps_payloads: List[bytes] = []
+        stable_ie_order: list[str] = []
 
         for tag_id, tag_data, raw_elem in iter_information_elements(frame, start=ptr):
+            stable_kind = None
+            stable_body = None
+            if tag_id in (45, 70, 127, 191):
+                stable_kind = {
+                    45: "ht_cap",
+                    70: "rm_cap",
+                    127: "extended_cap",
+                    191: "vht_cap",
+                }[tag_id]
+                stable_body = bytes(tag_data)
+                if tag_id == 45 and len(tag_data) >= 2:
+                    # Mask band/power-state traits from HT Capability Info:
+                    # 20/40 support, SM power save, SGI-40, DSSS/CCK-40 and
+                    # 40 MHz intolerance. Keep implementation/MCS evidence.
+                    normalised = bytearray(tag_data)
+                    capability_info = int.from_bytes(
+                        normalised[:2], "little",
+                    )
+                    capability_info &= ~0x504E
+                    normalised[:2] = capability_info.to_bytes(2, "little")
+                    stable_body = bytes(normalised)
+            elif tag_id == 255 and tag_data:
+                extension_id = tag_data[0]
+                if extension_id == 35 and len(tag_data) >= 7:
+                    # HE MAC capabilities are implementation traits. Exclude
+                    # HE PHY/channel-width bytes, which vary by band.
+                    stable_kind = "he_mac_cap"
+                    stable_body = bytes(tag_data[1:7])
+                elif extension_id == 106 and len(tag_data) >= 3:
+                    stable_kind = "eht_mac_cap"
+                    stable_body = bytes(tag_data[1:3])
+            elif tag_id == 221 and len(tag_data) >= 4:
+                vendor_token = (
+                    f"{tag_data[0]:02X}:{tag_data[1]:02X}:"
+                    f"{tag_data[2]:02X}:{tag_data[3]:02X}"
+                )
+                capabilities.client_vendor_tokens.add(vendor_token)
+                stable_ie_order.append(f"vendor:{vendor_token}")
+            if stable_kind is not None and stable_body is not None:
+                digest = hashlib.sha256(stable_body).hexdigest()
+                capabilities.client_ie_hashes.setdefault(
+                    stable_kind, set(),
+                ).add(digest)
+                stable_ie_order.append(stable_kind)
+
             if tag_id == 0 and not seen_ssid: # SSID (only the first)
                 seen_ssid = True
                 if len(tag_data) == 0:
@@ -767,6 +834,7 @@ class WlanFrameParser:
                         if report is not None:
                             capabilities.remote_id = report.summary
                             capabilities.signature_watch = True
+                            remote_report = report
             elif tag_id == 255 and tag_data: # Extension elements
                 extension_id = tag_data[0]
                 if extension_id in (35, 36):
@@ -775,6 +843,13 @@ class WlanFrameParser:
                     capabilities.phy_modes.add("802.11be")
                 elif extension_id == 107:
                     capabilities.multi_link = True
+
+        if stable_ie_order:
+            capabilities.client_ie_order_hashes.add(
+                hashlib.sha256(
+                    "\x00".join(stable_ie_order).encode("ascii"),
+                ).hexdigest(),
+            )
 
         if wps_payloads:
             parsed.update(cls._parse_wps_ie(b"".join(wps_payloads)))
@@ -822,6 +897,22 @@ class WlanFrameParser:
             capabilities.signature_label = notes.label
         if notes.alert:
             capabilities.signature_watch = True
+        from wifit3.observe.product_catalog import (
+            apply_capabilities,
+            overlay_remote_id,
+            resolve_catalog_hit,
+            match_wifi,
+        )
+
+        bssid = mac_to_str(frame[16:22]) if len(frame) >= 22 else ""
+        auto = match_wifi(parsed.get("ssid"), bssid, capabilities.vendor_ouis)
+        apply_capabilities(
+            capabilities,
+            overlay_remote_id(
+                resolve_catalog_hit(auto, capabilities),
+                remote_report,
+            ),
+        )
         return parsed
 
     # ---- RSN IE helpers -----------------------------------------------------

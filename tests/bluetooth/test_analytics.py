@@ -1,6 +1,14 @@
 import pytest
 
-from wifit3.bluetooth.analytics import protocol_type_hint
+from wifit3.bluetooth.analytics import (
+    ble_advertisement_matches_target,
+    device_lacks_usb_hci_bd_addr,
+    discovery_names_match,
+    hci_bd_addr_bytes,
+    is_bluetooth_bd_addr,
+    le_hci_peer_address_type,
+    protocol_type_hint,
+)
 
 
 @pytest.mark.parametrize(
@@ -158,3 +166,47 @@ def test_airhound_flock_rule_requires_name_and_company():
     assert hint["protocol_type"] == "Flock Safety camera/accessory"
     assert hint["protocol_confidence"] == "high"
     assert protocol_type_hint({0x09C8: b"\x00"}, {}, name="Other") == {}
+
+
+def test_le_hci_peer_address_type_random_static():
+    assert le_hci_peer_address_type(
+        "random-static",
+        "C0:5A:82:D9:F0:96",
+    ) == 0x01
+
+
+def test_le_hci_peer_address_type_public():
+    assert le_hci_peer_address_type("public", "00:12:6F:FF:2A:F2") == 0x00
+
+
+def test_is_bluetooth_bd_addr_rejects_corebluetooth_uuid():
+    uuid = "6804E0C3-0714-E78A-A9E1-96898F237D05"
+    assert not is_bluetooth_bd_addr(uuid)
+    with pytest.raises(ValueError, match="not a Bluetooth address"):
+        hci_bd_addr_bytes(uuid)
+
+
+def test_hci_bd_addr_bytes_endianness():
+    assert hci_bd_addr_bytes("00:12:6F:FF:2A:F2") == bytes.fromhex("f22aff6f1200")
+
+
+def test_device_lacks_usb_hci_bd_addr_for_corebluetooth_uuid():
+    uuid = "6804E0C3-0714-E78A-A9E1-96898F237D05"
+    assert device_lacks_usb_hci_bd_addr(uuid, ())
+    assert not device_lacks_usb_hci_bd_addr(
+        uuid,
+        ("AA:BB:CC:DD:EE:FF",),
+    )
+
+
+def test_discovery_names_match_desktop_hostname():
+    assert discovery_names_match("DESKTOP-JOI2SAP", "Desktop-JOI2SAP")
+
+
+def test_ble_advertisement_matches_by_device_name():
+    assert ble_advertisement_matches_target(
+        "AA:BB:CC:DD:EE:FF",
+        "TVVictor",
+        "6804E0C3-0714-E78A-A9E1-96898F237D05",
+        target_name="TVVictor",
+    )

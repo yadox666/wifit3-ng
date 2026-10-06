@@ -148,6 +148,76 @@ def test_ensure_accepts_a_gzip_body(tmp_path, one_vendor):
     assert path_text(tmp_path / "oui.txt").startswith("00-11-22")
 
 
+class _FakeResponse:
+    def __init__(self, body: bytes, content_length: str | None):
+        self._body = body
+        self._pos = 0
+        self.headers = {"Content-Length": content_length} if content_length else {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def read(self, size):
+        chunk = self._body[self._pos:self._pos + size]
+        self._pos += len(chunk)
+        return chunk
+
+
+class _FakeOpener:
+    def __init__(self, response):
+        self._response = response
+
+    def open(self, _request, timeout=None):
+        return self._response
+
+
+def test_download_reports_progress_with_content_length(monkeypatch):
+    body = b"x" * (64 * 1024) + b"y" * 1000  # two reads at the 64 KiB block size
+    total = len(body)
+    monkeypatch.setattr(
+        oui_db.urllib.request, "build_opener",
+        lambda *_h: _FakeOpener(_FakeResponse(body, str(total))),
+    )
+    seen: list[tuple[int, int | None]] = []
+    data = oui_db._download(
+        oui_db._OUI_URL, progress=lambda done, exp: seen.append((done, exp)),
+    )
+
+    assert data == body
+    assert seen[0] == (0, total)             # initial tick before any bytes
+    assert seen[-1] == (total, total)        # final tick at completion
+    assert all(exp == total for _done, exp in seen)
+    assert [done for done, _ in seen] == [0, 64 * 1024, total]
+
+
+def test_download_reports_progress_without_content_length(monkeypatch):
+    body = b"z" * 500
+    monkeypatch.setattr(
+        oui_db.urllib.request, "build_opener",
+        lambda *_h: _FakeOpener(_FakeResponse(body, None)),
+    )
+    seen: list[tuple[int, int | None]] = []
+    oui_db._download(
+        oui_db._OUI_URL, progress=lambda done, exp: seen.append((done, exp)),
+    )
+
+    assert seen[0] == (0, None)              # unknown total -> None throughout
+    assert seen[-1] == (len(body), None)
+    assert all(exp is None for _done, exp in seen)
+
+
+def test_download_rejects_oversized_content_length(monkeypatch):
+    monkeypatch.setattr(
+        oui_db.urllib.request, "build_opener",
+        lambda *_h: _FakeOpener(_FakeResponse(b"x", str(oui_db._MAX_BYTES + 1))),
+    )
+    with pytest.raises(ValueError):
+        oui_db._download(oui_db._OUI_URL)
+
+
 def path_text(path):
     return path.read_text(encoding="utf-8")
 

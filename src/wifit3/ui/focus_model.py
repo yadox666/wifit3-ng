@@ -9,6 +9,7 @@ from typing import Optional, TYPE_CHECKING
 from rich.markup import escape
 from wifit3.wlan.array import WlanArray
 
+from .catalog_format import catalog_detail_lines
 from .encryption_format import format_encryption_markup
 from ..campaigns.campaign import Campaign
 from ..campaigns.pmkid import PmkidHarvestAttack
@@ -362,6 +363,11 @@ def router_advertised_details(ap: AccessPoint) -> str:
         features.append("Beacon Protection")
     if features:
         rows.append(f"[dim]Features:[/dim] {' · '.join(features)}")
+    if caps.remote_id:
+        rows.append(f"[dim]Remote ID:[/dim] {escape(caps.remote_id)}")
+    if caps.signature_label:
+        rows.append(f"[dim]Signature:[/dim] {escape(caps.signature_label)}")
+    rows.extend(catalog_detail_lines(caps))
     if caps.vendor_ouis:
         rows.append(f"[dim]Vendor IEs:[/dim] {', '.join(sorted(caps.vendor_ouis))}")
     if caps.capability_flags:

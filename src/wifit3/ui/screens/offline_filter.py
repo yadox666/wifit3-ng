@@ -1,16 +1,21 @@
 """Filter bar and predicates for the offline history database view."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.message import Message
-from textual.widgets import Input, Select
+from textual.widgets import Button, Input, Select
+
+from wifit3.ui.search_input import SearchInput, sync_search_input_has_text
 
 from wifit3.id import vendor_for_mac
+from wifit3.observe.product_catalog import family_classes
+from wifit3.bluetooth.gatt_metadata import gatt_identity_search_text
+from wifit3.ui.catalog_format import catalog_record_class, catalog_search_text
 from wifit3.ui.encryption_format import EncryptionType
 from wifit3.ui.screens.filter import EncryptionFilter, text_matches
 from wifit3.ui.target_filter import (
@@ -55,6 +60,14 @@ def _record_has_gps(record: dict[str, Any]) -> bool:
     return isinstance(positions, list) and bool(positions)
 
 
+def _session_blob(record: dict[str, Any]) -> str:
+    return " ".join(
+        str(item.get("name") or "")
+        for item in (record.get("scan_sessions") or [])
+        if isinstance(item, dict)
+    )
+
+
 def _channel_band(channel: Any) -> str | None:
     try:
         ch = int(channel)
@@ -65,6 +78,13 @@ def _channel_band(channel: Any) -> str | None:
     if ch <= 196:
         return "5"
     return "6"
+
+
+def _matches_catalog_class(record: dict[str, Any], filters: OfflineFilters) -> bool:
+    wanted = filters.catalog_class
+    if wanted in {"", "all"}:
+        return True
+    return catalog_record_class(record) == wanted
 
 
 def _tri_state(value: str, present: bool) -> bool:
@@ -86,6 +106,7 @@ class OfflineFilters:
     client_aps: str = "all"
     bt_category: str = "All"
     bt_radio: str = "all"
+    catalog_class: str = "all"
     target_id: str = ""
 
 
@@ -108,6 +129,8 @@ def record_matches(
 
 
 def _matches_ap(record: dict[str, Any], filters: OfflineFilters) -> bool:
+    if not _matches_catalog_class(record, filters):
+        return False
     if not _tri_state(filters.gps, _record_has_gps(record)):
         return False
     if not _tri_state(filters.ap_clients, bool(record.get("clients"))):
@@ -137,6 +160,8 @@ def _matches_ap(record: dict[str, Any], filters: OfflineFilters) -> bool:
         f"ch{record.get('channel')}" if record.get("channel") is not None else "",
         clients,
         _identity_blob(record.get("identity_evidence")),
+        _session_blob(record),
+        catalog_search_text(record),
     )))
     return text_matches(filters.text, bssid, searchable)
 
@@ -160,11 +185,14 @@ def _matches_client(record: dict[str, Any], filters: OfflineFilters) -> bool:
         mac,
         vendor_for_mac(mac),
         aps,
+        _session_blob(record),
     )))
     return text_matches(filters.text, mac, searchable)
 
 
 def _matches_bluetooth(record: dict[str, Any], filters: OfflineFilters) -> bool:
+    if not _matches_catalog_class(record, filters):
+        return False
     if filters.bt_category != "All":
         protocol = record.get("protocol") or {}
         analysis = record.get("analysis") or {}
@@ -193,6 +221,9 @@ def _matches_bluetooth(record: dict[str, Any], filters: OfflineFilters) -> bool:
         protocol.get("category"),
         " ".join(str(uuid) for uuid in (record.get("service_uuids") or [])),
         " ".join(str(item) for item in (record.get("radio_types") or [])),
+        _session_blob(record),
+        catalog_search_text(record),
+        gatt_identity_search_text(record),
     )))
     return text_matches(filters.text, identifier, searchable)
 
@@ -258,7 +289,43 @@ class OfflineFilterBar(Horizontal):
     OfflineFilterBar > #offline-filter-bt-category { width: 14; }
     OfflineFilterBar > #offline-filter-bt-radio { width: 12; }
     OfflineFilterBar > #offline-filter-target { width: 18; }
-    OfflineFilterBar > Input { width: 1fr; min-width: 16; }
+    OfflineFilterBar > #offline-filter-catalog-class { width: 18; }
+    OfflineFilterBar > #offline-filter-text-box {
+        width: 1fr;
+        min-width: 16;
+        height: auto;
+        padding: 0;
+        margin: 0;
+    }
+    OfflineFilterBar #offline-filter-text {
+        width: 1fr;
+        min-width: 12;
+        border: none;
+        padding: 0 1;
+        margin: 0;
+        background: transparent;
+    }
+    OfflineFilterBar #offline-filter-text.-has-text {
+        background: $surface-darken-2;
+    }
+    OfflineFilterBar #clear-offline-filter-text {
+        width: 3;
+        min-width: 3;
+        max-width: 3;
+        height: 1;
+        min-height: 1;
+        border: none;
+        padding: 0;
+        margin: 0;
+        background: transparent;
+        color: $text-muted;
+        content-align: center middle;
+    }
+    OfflineFilterBar #clear-offline-filter-text:hover,
+    OfflineFilterBar #clear-offline-filter-text:focus {
+        background: $primary;
+        color: $text;
+    }
     """
 
     BINDINGS = [Binding("escape", "leave", "", show=False)]
@@ -340,23 +407,53 @@ class OfflineFilterBar(Horizontal):
             compact=True,
             id="offline-filter-target",
         )
-        yield Input(placeholder="SSID, BSSID, vendor…", compact=True, id="offline-filter-text")
+        yield Select(
+            [("All classes", "all")],
+            value="all",
+            allow_blank=False,
+            compact=True,
+            id="offline-filter-catalog-class",
+        )
+        yield Horizontal(
+            SearchInput(
+                placeholder="SSID, BSSID, vendor, family…",
+                compact=True,
+                id="offline-filter-text",
+            ),
+            Button(
+                "×",
+                id="clear-offline-filter-text",
+                tooltip="Clear search",
+                compact=True,
+            ),
+            id="offline-filter-text-box",
+        )
 
     def on_mount(self) -> None:
         store = getattr(self.app, "target_store", None)
         refresh_target_select(self.query_one("#offline-filter-target", Select), store)
+        self.refresh_catalog_class_options()
 
     def refresh_target_options(self) -> None:
         store = getattr(self.app, "target_store", None)
         refresh_target_select(self.query_one("#offline-filter-target", Select), store)
 
+    def refresh_catalog_class_options(self) -> None:
+        select = self.query_one("#offline-filter-catalog-class", Select)
+        current = str(select.value or "all")
+        options = [("All classes", "all"), *((name, name) for name in family_classes())]
+        select.set_options(options)
+        if current not in {value for _label, value in options}:
+            current = "all"
+            select.value = "all"
+
     def set_kind(self, kind: str) -> None:
         self._kind = kind
         self._update_visibility()
         placeholders = {
-            "aps": "SSID, BSSID, vendor, channel, client MAC…",
-            "clients": "client MAC, vendor, associated SSID or BSSID…",
-            "bluetooth": "name, address, manufacturer, service UUID…",
+            "aps": "SSID, BSSID, vendor, family, session, client MAC…",
+            "clients": "client MAC, session, associated SSID or BSSID…",
+            "bluetooth": "name, address, family, session, service UUID…",
         }
         self.query_one("#offline-filter-text", Input).placeholder = placeholders[kind]
         titles = {
@@ -385,6 +482,20 @@ class OfflineFilterBar(Horizontal):
     def on_select_changed(self) -> None:
         self._emit()
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "clear-offline-filter-text":
+            return
+        event.stop()
+        search = self.query_one("#offline-filter-text", Input)
+        filters = self._current_filters()
+        if not filters.text:
+            search.focus()
+            return
+        search.value = ""
+        sync_search_input_has_text(search)
+        self.post_message(self.FilterChanged(replace(filters, text="")))
+        search.focus()
+
     def _update_visibility(self) -> None:
         ap = self._kind == "aps"
         client = self._kind == "clients"
@@ -397,6 +508,7 @@ class OfflineFilterBar(Horizontal):
         self.query_one("#offline-filter-client-aps", Select).display = client
         self.query_one("#offline-filter-bt-category", Select).display = bt
         self.query_one("#offline-filter-bt-radio", Select).display = bt
+        self.query_one("#offline-filter-catalog-class", Select).display = ap or bt
 
     def _emit(self) -> None:
         self.post_message(self.FilterChanged(self._current_filters()))
@@ -412,6 +524,9 @@ class OfflineFilterBar(Horizontal):
             client_aps=str(self.query_one("#offline-filter-client-aps", Select).value),
             bt_category=str(self.query_one("#offline-filter-bt-category", Select).value),
             bt_radio=str(self.query_one("#offline-filter-bt-radio", Select).value),
+            catalog_class=str(
+                self.query_one("#offline-filter-catalog-class", Select).value or "all"
+            ),
             target_id=str(self.query_one("#offline-filter-target", Select).value or ""),
         )
 

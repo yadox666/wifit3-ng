@@ -31,10 +31,10 @@ from wifit3.persist.targets import SavedTarget, TargetStore, TargetStoreError
 from wifit3.persist.locations import LocationStore
 from wifit3.persist.scan_sessions import (
     ScanSession,
-    allocate_session_name,
     collect_session_metadata,
-    new_scan_session,
+    allocate_session_name,
     persisted_session_names,
+    new_scan_session,
     session_end_metadata_patch,
 )
 from wifit3.persist.vault import Vault
@@ -52,7 +52,6 @@ from .screens.scanner import ScannerView
 from .screens.spectrum import RfSpectrumView
 from .screens.bluetooth_scanner import BluetoothScannerView
 from .screens.bluetooth_focus import BluetoothFocusView
-from .screens.bluetooth_classic_focus import BluetoothClassicFocusView
 from .screens.client_focus import ClientFocusView
 from .screens.offline import OfflineDatabaseView
 from .screens.about import AboutModal, UpdateAvailableModal
@@ -148,13 +147,10 @@ class WifiteApp(App):
         width: auto;
         height: auto;
         align: center middle;
-        margin-top: 1;
+        margin-top: 2;
     }
     #bluetooth-btn, #background-btn {
         margin-left: 2;
-    }
-    #primary-actions #background-btn {
-        width: 16;
     }
     #offline-btn {
         margin-left: 2;
@@ -171,15 +167,28 @@ class WifiteApp(App):
         color: $text;
     }
     #primary-actions Button, #uninstall-btn {
-        width: 13;
+        width: 16;
         height: 3;
     }
-    #bluetooth-usb-btn {
-        width: 22;
-        margin-left: 2;
+    #oui-progress {
+        display: none;
+        width: 44;
+        height: auto;
+        margin-top: 1;
+    }
+    #oui-progress-status {
+        width: 1fr;
+        content-align: center middle;
+        color: $text-muted;
+    }
+    #oui-progress-bar {
+        width: 1fr;
+        margin-top: 1;
+    }
+    #oui-progress-bar Bar {
+        width: 1fr;
     }
     #spectrum-btn {
-        width: 17;
         margin-left: 2;
     }
     #primary-actions Button:focus, #uninstall-btn:focus {
@@ -206,6 +215,28 @@ class WifiteApp(App):
         margin-right: 1;
         min-width: 12;
     }
+    /* The USB-Bluetooth reclaim action is an icon, not a primary button.
+       Keep the global Button minimum from turning it into an empty black bar. */
+    BluetoothPicker .bt-reclaim {
+        width: 3;
+        min-width: 3;
+        max-width: 3;
+        height: 1;
+        min-height: 1;
+        margin: 0 0 0 1;
+        padding: 0;
+        border: none;
+        background: transparent;
+        color: $error;
+        text-style: bold;
+        content-align: center middle;
+    }
+    BluetoothPicker .bt-reclaim:hover,
+    BluetoothPicker .bt-reclaim:focus {
+        border: none;
+        background: $error 18%;
+        color: $error;
+    }
     /* App CSS outranks a widget's DEFAULT_CSS, so lower the global min-width for the
        EvilTwin modal's compact BSSID buttons from here, not the modal. */
     EvilTwinInputModal #bssid-btns Button { min-width: 4; }
@@ -216,10 +247,18 @@ class WifiteApp(App):
     vault_open: reactive[bool] = reactive(False)
 
 
-    def __init__(self, cli_log_level=None, *, background: bool = False, background_all: bool = False):
+    def __init__(
+        self,
+        cli_log_level=None,
+        *,
+        background: bool = False,
+        background_all: bool = False,
+        case_prompt: bool = False,
+    ):
         super().__init__()
         self.background_autostart = background
         self.background_all = background_all
+        self.case_prompt = case_prompt
         self._config_error: Optional[str] = None
         try:
             Config.load()
@@ -227,18 +266,21 @@ class WifiteApp(App):
             self._config_error = str(e)
         _configure_file_logging(cli_log_level)
         self.array: Optional[WlanArray] = None
-        # Per physical card (instance_key): "all" | "2g" | "5g" — scanner hop only.
+        # Per physical card (instance_key): "all" | "2g" | "5g" - scanner hop only.
         self.scan_band_by_instance: dict[tuple, str] = {}
         self.location_store = LocationStore()
         self.gps_manager = GpsManager(
             port=Config.gps_port,
+            enabled=Config.gps_enabled,
             on_error=self._gps_error,
         )
         self.bluetooth_history_store = BluetoothHistoryStore()
         self.bluetooth_manager = BluetoothManager(
             history=self.bluetooth_history_store,
             location_store=self.location_store,
-            fix_provider=lambda: self.gps_manager.latest_fix,
+            fix_provider=lambda: (
+                self.gps_manager.latest_fix if self.gps_manager.enabled else None
+            ),
             movement_provider=lambda: Config.gps_movement_threshold_m,
             accuracy_provider=lambda: Config.gps_max_accuracy_m,
             os_ble_enabled=Config.os_ble_enabled,
@@ -333,7 +375,7 @@ class WifiteApp(App):
         if self.active_scan_session is not None:
             self.end_scan_session()
         started_at = time.time()
-        gps_fix = self.gps_manager.latest_fix
+        gps_fix = self.gps_manager.latest_fix if self.gps_manager.enabled else None
         gps_port = (
             self.gps_manager.status.port
             if self.gps_manager.status is not None
@@ -375,7 +417,7 @@ class WifiteApp(App):
         ended_at = time.time()
         patch = session_end_metadata_patch(
             ended_at,
-            gps_fix=self.gps_manager.latest_fix,
+            gps_fix=self.gps_manager.latest_fix if self.gps_manager.enabled else None,
         )
         if "wifi" in session.media:
             self.ap_history_store.end_scan_session(
@@ -391,12 +433,27 @@ class WifiteApp(App):
             )
         self.active_scan_session = None
 
+    def _begin_app_scan_session(self) -> None:
+        if self.case_prompt:
+            self._prompt_scan_session()
+        else:
+            self._auto_start_scan_session()
+
+    def _auto_start_scan_session(self) -> None:
+        existing = self._existing_session_names()
+        self._on_scan_session_start(
+            SessionStartInput(
+                name=allocate_session_name(None, existing),
+                description="",
+            ),
+        )
+
     def _prompt_scan_session(self) -> None:
         default_name = allocate_session_name(
             None,
             self._existing_session_names(),
         )
-        gps_fix = self.gps_manager.latest_fix
+        gps_fix = self.gps_manager.latest_fix if self.gps_manager.enabled else None
         self.push_screen(
             SessionStartModal(
                 default_name,
@@ -429,11 +486,6 @@ class WifiteApp(App):
             name=final_name,
             description=result.description,
         )
-        if self.background_autostart:
-            from wifit3.ui.screens.splash import SplashView
-
-            splash = self.get_screen("splash", SplashView)
-            splash.autostart_background()
 
     @property
     def locked_target(self) -> SavedTarget | None:
@@ -462,7 +514,7 @@ class WifiteApp(App):
         self._target_sightings_notified.add(target.id)
         label = "Whitelist" if target.role == "whitelist" else "Target"
         self.notify(
-            f"«{target.alias}» ({target.identifier}) — {where}",
+            f"«{target.alias}» ({target.identifier}) - {where}",
             title=f"{label} in range",
             persist=True,
         )
@@ -529,7 +581,6 @@ class WifiteApp(App):
         self.install_screen(RfSpectrumView(), name="spectrum")
         self.install_screen(BluetoothScannerView(), name="bluetooth")
         self.install_screen(BluetoothFocusView(), name="bluetooth-focus")
-        self.install_screen(BluetoothClassicFocusView(), name="bluetooth-classic-focus")
         self.install_screen(ClientFocusView(), name="client-focus")
         self.install_screen(FocusViewV2(), name="focus")
         self.install_screen(OfflineDatabaseView(), name="offline")
@@ -540,7 +591,7 @@ class WifiteApp(App):
         self.call_after_refresh(self.device_watch.poll)
         self.call_after_refresh(self._poll_jobs)
         self.gps_manager.start()
-        self.call_after_refresh(self._prompt_scan_session)
+        self.call_after_refresh(self._begin_app_scan_session)
         if Config.auto_check_updates:
             self.check_updates()
 
@@ -692,19 +743,37 @@ class WifiteApp(App):
         self.array = None
         self.target_ap = None
 
+    def _background_monitor_active(self) -> bool:
+        from wifit3.ui.screens.splash import SplashView
+
+        try:
+            splash = self.get_screen("splash", SplashView)
+        except Exception:
+            return False
+        return splash._background_active
+
     def action_preferences(self) -> None:
+        if self._background_monitor_active():
+            self.notify(
+                "Stop the background monitor before opening Preferences.",
+                severity="warning",
+            )
+            return
         self.push_screen(PreferencesModal(), self._on_preferences_closed)
 
     def _on_preferences_closed(self, _result) -> None:
-        from wifit3.ui.screens.splash import SplashView
-
-        if isinstance(self.screen, SplashView):
-            self.screen.refresh_regulatory_subtitle()
+        return
 
     def action_about(self) -> None:
         self.push_screen(AboutModal())
 
     def action_diagnostics(self) -> None:
+        if self._background_monitor_active():
+            self.notify(
+                "Stop the background monitor before opening Diagnostics.",
+                severity="warning",
+            )
+            return
         self.push_screen(AdapterDiagnosticsModal())
 
     @work(thread=True, exclusive=True, group="updates")
@@ -777,31 +846,36 @@ class WifiteApp(App):
             return
         self.open_targets_editor()
 
-    def action_toggle_vault(self) -> None:
+    def action_toggle_vault(self, access_point: AccessPoint | None = None) -> None:
         """Open the vault drawer."""
         if isinstance(
             self.screen, (
                 BluetoothScannerView, BluetoothFocusView,
-                BluetoothClassicFocusView,
             ),
         ):
             return
         if not isinstance(self.screen, VaultDrawer):
+            if access_point is None and isinstance(self.screen, FocusViewV2):
+                access_point = self.screen._target_ap or self.target_ap
             self.vault_open = True
             
             def _on_dismiss(_=None):
                 self.vault_open = False
                 
-            self.push_screen(VaultDrawer(), callback=_on_dismiss)
+            self.push_screen(VaultDrawer(access_point), callback=_on_dismiss)
 
     def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
         if action == "toggle_vault" and isinstance(
             self.screen, (
                 BluetoothScannerView, BluetoothFocusView,
-                BluetoothClassicFocusView,
             )
         ):
             return False
+        if self._background_monitor_active() and action in {
+            "preferences",
+            "diagnostics",
+        }:
+            return None
         return True
 
 _FILE_LOGGING_CONFIGURED = False  # Avoid duplicate loggers

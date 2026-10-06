@@ -48,8 +48,8 @@ LE_SCAN_PARAMETERS = struct.pack(
     0x00,
 )
 # GIAC 0x9E8B33. Inquiry_Length in units of 1.28 s (HCI spec).
-CLASSIC_INQUIRY_LENGTH_SHORT = 0x05  # ~6.4 s — when USB also runs LE scan on a shared radio
-CLASSIC_INQUIRY_LENGTH_FULL = 0x0A  # ~12.8 s — Classic-only USB path (OS Bleak owns BLE)
+CLASSIC_INQUIRY_LENGTH_SHORT = 0x05  # ~6.4 s - when USB also runs LE scan on a shared radio
+CLASSIC_INQUIRY_LENGTH_FULL = 0x0A  # ~12.8 s - Classic-only USB path (OS Bleak owns BLE)
 CLASSIC_INQUIRY_LENGTH = CLASSIC_INQUIRY_LENGTH_SHORT
 CLASSIC_INQUIRY_PARAMETERS = bytes(
     (0x33, 0x8B, 0x9E, CLASSIC_INQUIRY_LENGTH_SHORT, 0x00),
@@ -269,17 +269,17 @@ def hci_status_message(status: int) -> str:
     if status == 0x0B:
         return (
             f"{label}: an ACL to this address may already exist on the target or "
-            "controller — disconnect other Bluetooth users and retry."
+            "controller - disconnect other Bluetooth users and retry."
         )
     if status == 0x12:
         return (
             f"{label}: the controller rejected a pairing command as malformed "
-            "(invalid HCI parameters) — this is a lab bug, not a device issue."
+            "(invalid HCI parameters) - this is a lab bug, not a device issue."
         )
     if status == 0x21:
         return (
             f"{label}: the controller rejected the pairing step for the current "
-            "master/slave role — the lab retries the ACL with role switch disabled."
+            "master/slave role - the lab retries the ACL with role switch disabled."
         )
     return label
 
@@ -308,6 +308,15 @@ class DiscoveryObservation:
     clock_offset: int = 0
     decode_state: str = ""
     signature_watch: str = ""
+    catalog_labels: tuple[str, ...] = ()
+    catalog_class: str = ""
+    catalog_notes: str = ""
+    catalog_attention: str = ""
+    catalog_live: str = ""
+    catalog_live_strong: bool = False
+    catalog_sentence: str = ""
+    manufacturer_data: tuple[tuple[int, bytes], ...] = ()
+    service_data: tuple[tuple[str, bytes], ...] = ()
 
 
 def command_packet(opcode: int, parameters: bytes = b"") -> bytes:
@@ -450,10 +459,29 @@ def _advertising_data(data: bytes) -> dict:
         "class_of_device": class_of_device,
         "appearance": appearance,
         "payload_fingerprint": raw_payload_fingerprint(data),
-        **protocol_type_hint(
-            manufacturer_payloads, service_payloads, services, name=name,
+        **_observation_identity(
+            manufacturer_payloads, service_payloads, services, name,
         ),
+        "manufacturer_data": tuple(manufacturer_payloads.items()),
+        "service_data": tuple(service_payloads.items()),
     }
+
+
+def _observation_identity(manufacturers, service_payloads, services, name: str) -> dict:
+    """Protocol hint plus product-family fields. Protocol keys stay as they were."""
+    from wifit3.observe.product_catalog import (
+        device_fields,
+        match_bluetooth,
+        with_protocol_live,
+    )
+
+    hint = protocol_type_hint(manufacturers, service_payloads, services, name=name)
+    hit = with_protocol_live(
+        match_bluetooth(manufacturers, service_payloads, services, name=name),
+        hint.get("protocol_type", ""),
+        hint.get("decode_state", ""),
+    )
+    return {**hint, **device_fields(hit)}
 
 
 def _parse_inquiry_results(parameters: bytes) -> list[DiscoveryObservation]:

@@ -140,11 +140,23 @@ def test_wps_identity_fields_persist_on_ap():
         "wsc_manufacturer": "MikroTik",
         "wsc_model_name": "RouterBOARD",
         "wsc_device_name": "Office AP",
+        "wsc_serial_number": "SERIAL-1",
+        "wps_state": 2,
+        "wps_uuid_e": "00112233445566778899aabbccddeeff",
+        "wps_rf_bands": 3,
+        "wps_os_version": 0x80000001,
+        "wps_response_type": 3,
     }), W0)
     ap = s.access_points[BSSID]
     assert ap.identity.manufacturer == "MikroTik"
     assert ap.identity.model_name == "RouterBOARD"
     assert ap.identity.device_name == "Office AP"
+    assert ap.identity.serial_number == "SERIAL-1"
+    assert ap.wps_state == 2
+    assert ap.wps_uuid_e == "00112233445566778899aabbccddeeff"
+    assert ap.wps_rf_bands == 3
+    assert ap.wps_os_version == 0x80000001
+    assert ap.wps_response_type == 3
     assert ap.identity.summary == "MikroTik RouterBOARD"
 
 

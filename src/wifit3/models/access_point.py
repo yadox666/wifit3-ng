@@ -84,6 +84,11 @@ class AccessPoint:
     wps_version: Optional[str] = None  # "1.0" / "2.0"
     wps_config_methods: int = 0  # 0x1008 bitmask
     wps_device_password_id: Optional[int] = None  # 0x0004 = PBC
+    wps_state: Optional[int] = None
+    wps_uuid_e: Optional[str] = None
+    wps_rf_bands: Optional[int] = None
+    wps_os_version: Optional[int] = None
+    wps_response_type: Optional[int] = None
     identity: ApIdentity = field(default_factory=ApIdentity)
     # Set while the AP is advertising an active Registrar (PIN or, with
     # DevPwId 0x0004, a Push-Button walk window). Drives wps_pbc_active.

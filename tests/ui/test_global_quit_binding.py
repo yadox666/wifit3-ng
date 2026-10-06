@@ -4,6 +4,7 @@ from wifit3.ui.screens.bluetooth_scanner import BluetoothScannerView
 from wifit3.ui.screens.focus_v2 import FocusViewV2
 from wifit3.ui.screens.scanner import ScannerView
 from wifit3.ui.screens.splash import SplashView
+from wifit3.ui.screens.spectrum import RfSpectrumView
 from wifit3.ui.screens.vault_drawer import VaultDrawer
 
 
@@ -15,6 +16,7 @@ def test_quit_uses_global_ctrl_q_binding_only():
     for screen in (
         SplashView,
         ScannerView,
+        RfSpectrumView,
         FocusViewV2,
         BluetoothScannerView,
         BluetoothFocusView,

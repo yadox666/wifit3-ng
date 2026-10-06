@@ -83,7 +83,7 @@ class UsbHciGattAccess:
             )
         else:
             self._step(
-                "BLE: no advertisement in window — will still attempt direct connect",
+                "BLE: no advertisement in window - will still attempt direct connect",
             )
         self._step("BLE: pausing USB LE scan for connection…")
         self.pause_le_scan()
@@ -145,7 +145,7 @@ class UsbHciGattAccess:
             "USB BLE lab needs a 6-byte Bluetooth address (AA:BB:CC:DD:EE:FF). "
             f"This row uses an OS-only identifier ({opaque}). "
             "The dongle did not hear a matching advertisement with a MAC during "
-            "the listen window — keep the device awake and in range, or pick a "
+            "the listen window - keep the device awake and in range, or pick a "
             "row whose ADDRESS / ID column shows a MAC."
         )
 
@@ -530,7 +530,7 @@ class UsbHciGattAccess:
                     att.parse_error_response(data)
                 )
                 descriptor.read_error = (
-                    f"{att.att_error_name(error_code)} — request opcode "
+                    f"{att.att_error_name(error_code)} - request opcode "
                     f"0x{request_opcode:02x}, handle 0x{attribute_handle:04x}"
                 )
                 return

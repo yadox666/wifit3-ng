@@ -1,0 +1,10 @@
+{
+  "bt:0006:0001": "Windows PC (Bluetooth)",
+  "bt:0006:0002": "Windows Phone / Mobile",
+  "bt:0006:0003": "Xbox Wireless Controller",
+  "usb:045e:092f": "Microsoft Surface Mobile Mouse",
+  "usb:045e:07a5": "Microsoft Designer Bluetooth Mouse",
+  "usb:045e:0823": "Microsoft Surface Ergonomic Keyboard",
+  "usb:045e:0922": "Microsoft Surface Pro Keyboard",
+  "usb:045e:07cd": "Microsoft Surface Headphones"
+}

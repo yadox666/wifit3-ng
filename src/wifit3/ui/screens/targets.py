@@ -1,4 +1,4 @@
-"""Targets UI — centered targets editor (see targets_editor)."""
+"""Targets UI - centered targets editor (see targets_editor)."""
 
 from wifit3.ui.screens.targets_editor import (
     TargetsEditorDrawer,

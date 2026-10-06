@@ -77,6 +77,20 @@ def platform_address_type(identifier: str) -> str:
     return "unknown"
 
 
+def normalize_ble_mac(mac: str) -> str:
+    """Uppercase colon-separated BD_ADDR, or empty when invalid."""
+    text = str(mac or "").strip().upper()
+    return text if is_bluetooth_bd_addr(text) else ""
+
+
+def resolved_ble_mac(device) -> str:
+    """Best available 6-byte address for UI, USB HCI, and persistence."""
+    identifier = normalize_ble_mac(getattr(device, "identifier", ""))
+    if identifier:
+        return identifier
+    return normalize_ble_mac(getattr(device, "ble_mac", ""))
+
+
 def is_bluetooth_bd_addr(identifier: str) -> bool:
     """True when ``identifier`` is a colon-separated 6-byte Bluetooth address."""
     parts = identifier.split(":")

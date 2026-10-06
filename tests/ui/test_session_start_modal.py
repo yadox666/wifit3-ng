@@ -26,6 +26,37 @@ async def test_session_start_modal_returns_edited_values():
 
 
 @pytest.mark.asyncio
+async def test_session_start_modal_enter_accepts_and_closes():
+    app = App()
+    results: list[SessionStartInput] = []
+    async with app.run_test() as pilot:
+        app.push_screen(SessionStartModal("cedar-orbit"), results.append)
+        await pilot.pause()
+        # The name input is focused on mount; Enter should accept immediately.
+        await pilot.press("enter")
+        await pilot.pause()
+    assert len(results) == 1
+    assert results[0].name == "cedar-orbit"
+    assert results[0].description == ""
+
+
+@pytest.mark.asyncio
+async def test_session_start_modal_enter_accepts_edited_name_from_notes():
+    app = App()
+    results: list[SessionStartInput] = []
+    async with app.run_test() as pilot:
+        app.push_screen(SessionStartModal("cedar-orbit"), results.append)
+        await pilot.pause()
+        app.screen.query_one("#session-name", Input).value = "client-demo"
+        app.screen.query_one("#session-description", Input).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+    assert len(results) == 1
+    assert results[0].name == "client-demo"
+
+
+@pytest.mark.asyncio
 async def test_session_start_modal_hides_gps_row_without_receiver():
     app = App()
     async with app.run_test() as pilot:

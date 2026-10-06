@@ -9,7 +9,6 @@ from wifit3.bluetooth.usb_hci import HciCaptureRecord
 from wifit3.ui.bluetooth_export import (
     export_bluetooth_bundle,
     export_bluetooth_snapshot,
-    export_btsnoop,
 )
 
 
@@ -111,16 +110,3 @@ def test_bluetooth_bundle_writes_private_json_and_jsonl(tmp_path, monkeypatch):
         assert stat.S_IMODE(jsonl_path.stat().st_mode) == 0o600
 
 
-def test_btsnoop_export_contains_h4_packet_and_timestamp(tmp_path, monkeypatch):
-    monkeypatch.setattr(Config, "captures_dir", str(tmp_path))
-
-    path = export_btsnoop([
-        HciCaptureRecord(1.0, 0x01, False, bytes.fromhex("030c00")),
-    ])
-
-    data = path.read_bytes()
-    assert data[:16] == b"btsnoop\x00" + struct.pack(">II", 1, 1002)
-    original, included, flags, drops, timestamp = struct.unpack_from(">IIIIQ", data, 16)
-    assert (original, included, flags, drops) == (4, 4, 2, 0)
-    assert timestamp == 0x00DC_DDB3_0F2F_8000 + 1_000_000
-    assert data[40:] == bytes.fromhex("01030c00")

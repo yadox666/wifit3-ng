@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Static
+from textual.widgets import Checkbox, Static
 
 from wifit3.gps import GpsStatus
 from wifit3.models.location import LocationFix
@@ -41,6 +41,18 @@ class GpsPicker(Vertical):
         min-height: 1;
         align: left middle;
     }
+    GpsPicker .gps-row Checkbox {
+        width: auto;
+        height: 1;
+        margin: 0 1 0 0;
+        padding: 0;
+        border: none;
+        background: transparent;
+    }
+    GpsPicker .gps-row Checkbox:focus {
+        border: none;
+        background: transparent;
+    }
     GpsPicker .gps-name {
         width: 1fr;
         height: 1;
@@ -48,6 +60,9 @@ class GpsPicker(Vertical):
         text-wrap: nowrap;
         text-overflow: ellipsis;
         overflow: hidden;
+    }
+    GpsPicker .gps-name.-muted {
+        color: $text-muted;
     }
     GpsPicker .gps-mode {
         width: auto;
@@ -57,16 +72,26 @@ class GpsPicker(Vertical):
         color: $text-muted;
         text-style: bold;
     }
+    GpsPicker .gps-mode.-muted {
+        color: $text-muted 60%;
+    }
     """
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._status: GpsStatus | None = None
         self._preferred_width = _PICKER_MIN
+        self._checked = True
 
     @property
     def preferred_width(self) -> int:
         return self._preferred_width
+
+    def is_enabled(self) -> bool:
+        try:
+            return self.query_one("#gps-chk-0", Checkbox).value
+        except Exception:
+            return self._checked
 
     def set_status(
         self,
@@ -108,9 +133,24 @@ class GpsPicker(Vertical):
         self.mount(row)
         full_text = f"{name} · {mode}"
         row.tooltip = full_text
+        checkbox = Checkbox("", value=self._checked, id="gps-chk-0", compact=True)
+        checkbox.tooltip = (
+            "Enable or disable use of this GPS receiver inside wifit3; "
+            "this does not disconnect or power off the receiver"
+        )
+        row.mount(checkbox)
         name_widget = Static(name, classes="gps-name")
+        name_widget.set_class(not self._checked, "-muted")
         name_widget.tooltip = full_text
         row.mount(name_widget)
         mode_widget = Static(mode, classes="gps-mode")
+        mode_widget.set_class(not self._checked, "-muted")
         mode_widget.tooltip = full_text
         row.mount(mode_widget)
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        self._checked = event.value
+        for selector in (".gps-name", ".gps-mode"):
+            matches = list(self.query(selector))
+            if matches:
+                matches[0].set_class(not self._checked, "-muted")

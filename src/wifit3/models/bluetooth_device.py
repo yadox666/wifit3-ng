@@ -44,7 +44,50 @@ def has_coherent_persistent_identity(device: "BluetoothDevice") -> bool:
         or device.modalias
         or device.hardware_vendor
         or device.hardware_product
+        or _gatt_identity_present(device)
     )
+
+
+def _gatt_identity_present(device: "BluetoothDevice") -> bool:
+    from wifit3.bluetooth.gatt_metadata import GATT_IDENTITY_STORAGE_FIELDS
+
+    return any(
+        str(getattr(device, field, "") or "").strip()
+        for field in GATT_IDENTITY_STORAGE_FIELDS
+    )
+
+
+def _is_platform_uuid_identifier(identifier: str) -> bool:
+    text = identifier.strip()
+    return len(text) == 36 and text.count("-") == 4
+
+
+def has_advertisement_signal(device: "BluetoothDevice") -> bool:
+    return bool(
+        device.service_uuids
+        or device.service_data_uuids
+        or device.manufacturer_ids
+        or device.class_of_device is not None
+        or device.appearance is not None
+    )
+
+
+def _persistible_unstable_identifier(device: "BluetoothDevice") -> bool:
+    if device.address_type in {"anonymous", "non-resolvable-private"}:
+        return False
+    identifier = device.identifier.strip()
+    if re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", identifier):
+        return True
+    return _is_platform_uuid_identifier(identifier)
+
+
+def should_persist_bluetooth_observation(device: "BluetoothDevice") -> bool:
+    """Whether this row should be written to offline Bluetooth history."""
+    if has_coherent_persistent_identity(device):
+        return True
+    if not _persistible_unstable_identifier(device):
+        return False
+    return _gatt_identity_present(device) or has_advertisement_signal(device)
 
 
 @dataclass(slots=True)
@@ -69,6 +112,7 @@ class BluetoothDevice:
     similar_identifier_count: int = 1
     radio_types: tuple[str, ...] = (BLE_RADIO,)
     discovery_source: str = "system"
+    observation_sources: tuple[str, ...] = ()
     class_of_device: int | None = None
     page_scan_repetition_mode: int | None = None
     clock_offset: int | None = None
@@ -94,6 +138,9 @@ class BluetoothDevice:
     related_identifiers: tuple[str, ...] = ()
     correlation_confidence: str = ""
     correlation_evidence: tuple[str, ...] = ()
+    correlation_links: tuple[
+        tuple[str, str, tuple[str, ...]], ...
+    ] = ()
     positions: list[SignalPosition] = field(default_factory=list)
     decode_state: str = ""
     signature_watch: bool = False
@@ -105,6 +152,15 @@ class BluetoothDevice:
     manufacturer_name: str = ""
     gatt_device_name: str = ""
     pnp_id: str = ""
+    catalog_labels: tuple[str, ...] = ()
+    catalog_class: str = ""
+    catalog_notes: str = ""
+    catalog_attention: str = ""
+    catalog_live: str = ""
+    catalog_live_strong: bool = False
+    catalog_sentence: str = ""
+    catalog_family_id: str = ""
+    ble_mac: str = ""
 
     @property
     def radio_label(self) -> str:

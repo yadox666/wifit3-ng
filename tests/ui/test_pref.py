@@ -119,21 +119,6 @@ async def test_gps_accuracy_preference_can_be_saved(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_regulatory_country_preference_can_be_saved(monkeypatch):
-    monkeypatch.setattr(Config, "wifi_regulatory_country", "00")
-    monkeypatch.setattr(Config, "save", staticmethod(lambda: None))
-    app = _Host()
-    async with app.run_test() as pilot:
-        app.push_screen(PreferencesModal())
-        await pilot.pause(0)
-        app.screen.query_one("#wifi_regulatory_country", Select).value = "US"
-        app.screen.query_one("#save", Button).press()
-        await pilot.pause(0)
-
-        assert Config.wifi_regulatory_country == "US"
-
-
-@pytest.mark.asyncio
 async def test_history_deletion_is_not_available_in_preferences():
     app = _Host()
     async with app.run_test() as pilot:

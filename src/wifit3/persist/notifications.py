@@ -18,6 +18,13 @@ DISPLAY_LIMIT = 60
 _RETAIN_MAX = 500
 
 
+def _default_title(severity: str) -> str:
+    normalized = (severity or "information").strip().casefold()
+    if normalized == "info":
+        normalized = "information"
+    return normalized.replace("_", " ").replace("-", " ").title() or "Information"
+
+
 class NotificationStoreError(RuntimeError):
     pass
 
@@ -93,6 +100,8 @@ class NotificationStore:
         severity = (severity or "information").strip().casefold()
         if not message and not title:
             message = "(empty notification)"
+        if not title:
+            title = _default_title(severity)
         row = StoredNotification(
             id=str(uuid.uuid4()),
             created_at=time.time(),
@@ -179,12 +188,13 @@ class NotificationStore:
 
     @staticmethod
     def _row_to_notification(row: sqlite3.Row) -> StoredNotification:
+        severity = str(row["severity"])
         return StoredNotification(
             id=str(row["id"]),
             created_at=float(row["created_at"]),
-            title=str(row["title"]),
+            title=str(row["title"]).strip() or _default_title(severity),
             message=str(row["message"]),
-            severity=str(row["severity"]),
+            severity=severity,
             read=bool(row["read"]),
         )
 

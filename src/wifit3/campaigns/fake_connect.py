@@ -17,12 +17,21 @@ from wifit3.dot11.connectivity import (
     TCP_SYN,
     build_arp_request,
     build_dns_query,
+    build_mdns_service_query,
+    build_nbns_node_status_query,
+    build_ssdp_discovery_query,
     build_tcp_frame,
+    build_wsd_probe,
+    classify_announced_services,
     parse_arp_reply,
     parse_arp_reply_any,
     parse_dns_response,
     parse_http_response,
+    parse_mdns_services,
+    parse_nbns_node_status,
+    parse_ssdp_services,
     parse_tcp_segment,
+    parse_wsd_services,
     random_ephemeral_port,
 )
 from wifit3.dot11.dhcp import (
@@ -56,6 +65,11 @@ ARP_SWEEP_MAX_HOSTS = 256           # cap the sweep (a /24 is 254 usable hosts)
 ARP_SWEEP_PACING_SECONDS = 0.005    # gap between broadcast ARP requests
 ARP_SWEEP_SETTLE_SECONDS = 1.5      # listen window after the last request
 ARP_SWEEP_LOG_LIMIT = 20            # neighbors listed inline before "+N more"
+BONJOUR_DISCOVERY_SECONDS = 2.0
+BONJOUR_SERVICE_LIMIT = 64
+LOCAL_DISCOVERY_SECONDS = 2.0
+NBNS_DISCOVERY_MAX_HOSTS = 64
+NBNS_DISCOVERY_PACING_SECONDS = 0.01
 
 
 @dataclass(slots=True)
@@ -203,6 +217,14 @@ class FakeConnectCampaign(Campaign):
         self.datapath_verified = False
         self.arp_neighbors: list[tuple[str, str]] = []   # (ip, mac) discovered on-subnet
         self.arp_neighbors_recorded = False
+        self.bonjour_services: list[tuple[str, str | None, str]] = []
+        self.bonjour_services_recorded = False
+        self.ssdp_services: list[tuple[str, str | None, str]] = []
+        self.wsd_services: list[tuple[str, str | None, str]] = []
+        self.nbns_roles: list[tuple[str, str | None, str]] = []
+        self.discovered_services: list[tuple[str, str | None, str, str]] = []
+        self.device_roles: list[tuple[str, str | None, str]] = []
+        self.local_services_recorded = False
         self.metadata_recorded = False
         self.lease_recorded = False
         self.connectivity_recorded = False
@@ -495,6 +517,11 @@ class FakeConnectCampaign(Campaign):
             # reader: a second _codec.open() on the same frame trips CCMP replay.
             inbox.stop()
             await self._sweep_arp_neighbors(iface, bssid, lease)
+            await self._discover_bonjour(iface, bssid, lease)
+            await self._discover_ssdp(iface, bssid, lease)
+            await self._discover_wsd(iface, bssid, lease)
+            await self._discover_nbns(iface, bssid, lease)
+            self._classify_discovered_hosts()
             return result
         finally:
             lease = self.dhcp_lease
@@ -706,6 +733,273 @@ class FakeConnectCampaign(Campaign):
         remaining = len(self.arp_neighbors) - ARP_SWEEP_LOG_LIMIT
         if remaining > 0:
             self.log(f"[dim]  … +{remaining} more[/dim]")
+
+    async def _discover_bonjour(
+        self,
+        iface,
+        bssid: bytes,
+        lease: DhcpOffer,
+    ) -> None:
+        """Enumerate local DNS-SD service types after the bounded ARP sweep."""
+        found: set[tuple[str, str]] = set()
+
+        def _rx(packet) -> None:
+            raw = self._decode_data(bytes(getattr(packet, "raw", b"")))
+            if raw is None:
+                return
+            response = parse_mdns_services(raw)
+            if response is None:
+                return
+            for service_type in response.service_types:
+                if len(found) >= BONJOUR_SERVICE_LIMIT:
+                    break
+                found.add((response.source_ip, service_type))
+
+        self.log("[cyan]Bonjour discovery[/cyan] · enumerating local DNS-SD services")
+        iface.register_rx_callback(_rx)
+        try:
+            await self._send_data(
+                iface,
+                build_mdns_service_query(bssid, self.source_mac, lease.offered_ip),
+            )
+            await asyncio.sleep(BONJOUR_DISCOVERY_SECONDS)
+        finally:
+            iface.unregister_rx_callback(_rx)
+
+        mac_by_ip = {ip: mac for ip, mac in self.arp_neighbors}
+        self.bonjour_services = sorted(
+            (
+                (ip, mac_by_ip.get(ip), service_type)
+                for ip, service_type in found
+            ),
+            key=lambda item: (
+                tuple(int(octet) for octet in item[0].split(".")),
+                item[2],
+            ),
+        )
+        if not self.bonjour_services:
+            self.log("[dim]Bonjour discovery · no services advertised[/dim]")
+            return
+        self.log(
+            f"[bold green]Bonjour discovery[/bold green] · "
+            f"{len(self.bonjour_services)} service"
+            f"{'s' if len(self.bonjour_services) != 1 else ''} discovered"
+        )
+        for ip, _mac, service_type in self.bonjour_services[:ARP_SWEEP_LOG_LIMIT]:
+            self.log(f"[dim]  {ip:<15} {service_type}[/dim]")
+        remaining = len(self.bonjour_services) - ARP_SWEEP_LOG_LIMIT
+        if remaining > 0:
+            self.log(f"[dim]  … +{remaining} more[/dim]")
+
+    async def _discover_ssdp(
+        self,
+        iface,
+        bssid: bytes,
+        lease: DhcpOffer,
+    ) -> None:
+        source_port = random_ephemeral_port()
+        found: set[tuple[str, str]] = set()
+
+        def _rx(packet) -> None:
+            raw = self._decode_data(bytes(getattr(packet, "raw", b"")))
+            response = (
+                parse_ssdp_services(raw, source_port)
+                if raw is not None else None
+            )
+            if response is not None:
+                found.update(
+                    (response.source_ip, service)
+                    for service in response.service_types
+                )
+
+        self.log("[cyan]SSDP discovery[/cyan] · querying UPnP devices")
+        iface.register_rx_callback(_rx)
+        try:
+            await self._send_data(
+                iface,
+                build_ssdp_discovery_query(
+                    bssid,
+                    self.source_mac,
+                    lease.offered_ip,
+                    source_port=source_port,
+                ),
+            )
+            await asyncio.sleep(LOCAL_DISCOVERY_SECONDS)
+        finally:
+            iface.unregister_rx_callback(_rx)
+        self.ssdp_services = self._correlate_local_services(found)
+        self._log_local_services("SSDP discovery", self.ssdp_services)
+
+    async def _discover_wsd(
+        self,
+        iface,
+        bssid: bytes,
+        lease: DhcpOffer,
+    ) -> None:
+        source_port = random_ephemeral_port()
+        found: set[tuple[str, str]] = set()
+
+        def _rx(packet) -> None:
+            raw = self._decode_data(bytes(getattr(packet, "raw", b"")))
+            response = (
+                parse_wsd_services(raw, source_port)
+                if raw is not None else None
+            )
+            if response is not None:
+                found.update(
+                    (response.source_ip, service)
+                    for service in response.service_types
+                )
+
+        self.log("[cyan]WS-Discovery[/cyan] · querying local devices")
+        iface.register_rx_callback(_rx)
+        try:
+            await self._send_data(
+                iface,
+                build_wsd_probe(
+                    bssid,
+                    self.source_mac,
+                    lease.offered_ip,
+                    source_port=source_port,
+                ),
+            )
+            await asyncio.sleep(LOCAL_DISCOVERY_SECONDS)
+        finally:
+            iface.unregister_rx_callback(_rx)
+        self.wsd_services = self._correlate_local_services(found)
+        self._log_local_services("WS-Discovery", self.wsd_services)
+
+    async def _discover_nbns(
+        self,
+        iface,
+        bssid: bytes,
+        lease: DhcpOffer,
+    ) -> None:
+        source_port = random_ephemeral_port()
+        pending: dict[int, str] = {}
+        found: set[tuple[str, str]] = set()
+
+        def _rx(packet) -> None:
+            raw = self._decode_data(bytes(getattr(packet, "raw", b"")))
+            response = (
+                parse_nbns_node_status(raw, source_port)
+                if raw is not None else None
+            )
+            if (
+                response is None
+                or pending.get(response.transaction_id) != response.source_ip
+            ):
+                return
+            found.update(
+                (response.source_ip, role)
+                for role in response.roles
+            )
+
+        targets = self.arp_neighbors[:NBNS_DISCOVERY_MAX_HOSTS]
+        if not targets:
+            return
+        self.log(
+            f"[cyan]NBNS discovery[/cyan] · querying {len(targets)} ARP neighbour"
+            f"{'s' if len(targets) != 1 else ''}"
+        )
+        iface.register_rx_callback(_rx)
+        try:
+            for target_ip, target_mac in targets:
+                if self.stopped:
+                    break
+                transaction_id = secrets.randbits(16)
+                while transaction_id in pending:
+                    transaction_id = secrets.randbits(16)
+                pending[transaction_id] = target_ip
+                await self._send_data(
+                    iface,
+                    build_nbns_node_status_query(
+                        bssid,
+                        self.source_mac,
+                        str_to_mac(target_mac),
+                        lease.offered_ip,
+                        target_ip,
+                        source_port=source_port,
+                        transaction_id=transaction_id,
+                    ),
+                )
+                await asyncio.sleep(NBNS_DISCOVERY_PACING_SECONDS)
+            await asyncio.sleep(LOCAL_DISCOVERY_SECONDS)
+        finally:
+            iface.unregister_rx_callback(_rx)
+        self.nbns_roles = self._correlate_local_services(found)
+        self._log_local_services("NBNS discovery", self.nbns_roles)
+
+    def _correlate_local_services(
+        self,
+        found: set[tuple[str, str]],
+    ) -> list[tuple[str, str | None, str]]:
+        mac_by_ip = {ip: mac for ip, mac in self.arp_neighbors}
+        return sorted(
+            (
+                (ip, mac_by_ip.get(ip), service)
+                for ip, service in found
+            ),
+            key=lambda item: (
+                tuple(int(octet) for octet in item[0].split(".")),
+                item[2],
+            ),
+        )
+
+    def _log_local_services(
+        self,
+        label: str,
+        services: list[tuple[str, str | None, str]],
+    ) -> None:
+        if not services:
+            self.log(f"[dim]{label} · no services advertised[/dim]")
+            return
+        self.log(
+            f"[bold green]{label}[/bold green] · {len(services)} "
+            f"service{'s' if len(services) != 1 else ''} discovered"
+        )
+        for ip, _mac, service in services[:ARP_SWEEP_LOG_LIMIT]:
+            self.log(f"[dim]  {ip:<15} {service}[/dim]")
+
+    def _classify_discovered_hosts(self) -> None:
+        observations: list[tuple[str, str | None, str, str]] = []
+        for source, services in (
+            ("mdns", self.bonjour_services),
+            ("ssdp", self.ssdp_services),
+            ("wsd", self.wsd_services),
+            ("nbns", self.nbns_roles),
+        ):
+            observations.extend(
+                (ip, mac, service, source)
+                for ip, mac, service in services
+            )
+        self.discovered_services = observations
+        grouped: dict[tuple[str, str | None], set[str]] = {}
+        for ip, mac, service, source in observations:
+            roles = (
+                (service,)
+                if source == "nbns"
+                else classify_announced_services((service,))
+            )
+            grouped.setdefault((ip, mac), set()).update(roles)
+        self.device_roles = sorted(
+            (
+                (ip, mac, role)
+                for (ip, mac), roles in grouped.items()
+                for role in roles
+            ),
+            key=lambda item: (
+                tuple(int(octet) for octet in item[0].split(".")),
+                item[2],
+            ),
+        )
+        if self.device_roles:
+            self.log(
+                f"[bold green]Host roles[/bold green] · "
+                f"{len(self.device_roles)} classified"
+            )
+            for ip, _mac, role in self.device_roles[:ARP_SWEEP_LOG_LIMIT]:
+                self.log(f"[dim]  {ip:<15} {role}[/dim]")
 
     async def _resolve_arp(
         self,

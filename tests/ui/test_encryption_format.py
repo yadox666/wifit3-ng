@@ -14,9 +14,7 @@ def test_open_is_red_and_scanner_marks_it_weak():
     scanner._theme_fg = "dim"
 
     assert format_encryption_markup(ap) == "[bright_red]OPEN[/bright_red]"
-    assert scanner._encryption_markup(ap) == (
-        "[bright_red]OPEN[/bright_red]       [bold red]!WEAK[/bold red]"
-    )
+    assert scanner._encryption_markup(ap) == "[bright_red]OPEN[/bright_red]"
 
 
 # ---- WEP ENCRYPT cell (attackable, carries an IV count) --------------------

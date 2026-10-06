@@ -43,6 +43,9 @@ class _Host(App):
     def on_mount(self):
         self.push_screen(ScannerView())
 
+    def sdr_jam_available(self) -> bool:
+        return False
+
 
 def _plain(cell) -> str:
     return cell.plain if hasattr(cell, "plain") else str(cell)
@@ -52,6 +55,12 @@ def _plain(cell) -> str:
 async def test_scanner_table_uses_vendor_id_and_client_manufacturers():
     ap = AccessPoint(bssid="00:11:22:33:44:55", ssid="Lab")
     ap.signal_by_card = {"card0": -40}
+    ap.capabilities.phy_modes = {"802.11ax"}
+    ap.capabilities.channel_widths_mhz = {20, 40, 80}
+    ap.capabilities.max_spatial_streams = 2
+    ap.capabilities.supported_rates_mbps = {6.0, 12.0, 24.0}
+    ap.capabilities.capability_flags = {"ESS"}
+    ap.capabilities.vendor_ouis = {"00:50:F2"}
     clients = [
         Client(mac="11:22:33:00:00:01", bssid=ap.bssid),
         Client(mac="aa:bb:cc:00:00:03", bssid=ap.bssid),
@@ -81,5 +90,25 @@ async def test_scanner_table_uses_vendor_id_and_client_manufacturers():
         table = scanner.query_one("#ap-table")
         assert "mfr" not in table.columns
         assert _plain(table.get_cell(ap.bssid, "identity")) == "Acme"
+        column_keys = [key.value for key in table.columns]
+        assert column_keys.index("identity") + 1 == column_keys.index("catalog_class")
+        assert column_keys.index("catalog_class") + 1 == (
+            column_keys.index("catalog_family")
+        )
+        assert column_keys.index("catalog_family") + 1 == (
+            column_keys.index("clients")
+        )
+        assert column_keys.index("clients") + 1 == (
+            column_keys.index("stations")
+        )
+        assert column_keys.index("last_seen") + 1 == (
+            column_keys.index("location")
+        )
+        assert column_keys.index("ssid") + 1 == column_keys.index("captures")
+        assert column_keys.index("captures") + 1 == column_keys.index("channel")
+        assert column_keys.index("signal") + 1 == column_keys.index("country")
+        assert column_keys.index("bssid") + 1 == column_keys.index("identity")
+        assert _plain(table.get_cell(ap.bssid, "catalog_class")) == "·"
+        assert _plain(table.get_cell(ap.bssid, "catalog_family")) == "·"
         assert _plain(table.get_cell(ap.bssid, "stations")) == "Zebra, Apple, Apple"
         assert scanner._row_states[ap.bssid].clients == 4

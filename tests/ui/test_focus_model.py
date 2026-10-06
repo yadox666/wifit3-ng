@@ -103,6 +103,7 @@ def _wpa_ap(*, wps_pbc_psk=None):
     return types.SimpleNamespace(
         encryption="WPA2", wep_key=None, wep=None, handshakes={},
         wpa3=False, transition_mode=False, bssid="aa:bb:cc:dd:ee:ff",
+        ssid="WpaNet",
         wps_pbc_psk=wps_pbc_psk, wps_pin_psk=None,
     )
 

@@ -37,6 +37,9 @@ class AdvertisedCapabilities:
     reduced_neighbor_report: bool = False
     multi_link: bool = False
     vendor_ouis: set[str] = field(default_factory=set)
+    client_ie_hashes: dict[str, set[str]] = field(default_factory=dict)
+    client_ie_order_hashes: set[str] = field(default_factory=set)
+    client_vendor_tokens: set[str] = field(default_factory=set)
     pmf_capable: bool = False
     pmf_required: bool = False
     wps_manufacturer: str | None = None
@@ -46,6 +49,14 @@ class AdvertisedCapabilities:
     remote_id: str | None = None
     signature_label: str | None = None
     signature_watch: bool = False
+    catalog_labels: tuple[str, ...] = ()
+    catalog_class: str = ""
+    catalog_notes: str = ""
+    catalog_attention: str = ""
+    catalog_live: str = ""
+    catalog_live_strong: bool = False
+    catalog_sentence: str = ""
+    catalog_family_id: str = ""
 
     def merge(self, newer: "AdvertisedCapabilities") -> None:
         """Merge newly advertised evidence without erasing previously observed fields."""
@@ -54,8 +65,15 @@ class AdvertisedCapabilities:
         self.supported_rates_mbps.update(newer.supported_rates_mbps)
         self.capability_flags.update(newer.capability_flags)
         self.vendor_ouis.update(newer.vendor_ouis)
+        for kind, digests in newer.client_ie_hashes.items():
+            self.client_ie_hashes.setdefault(kind, set()).update(digests)
+        self.client_ie_order_hashes.update(newer.client_ie_order_hashes)
+        self.client_vendor_tokens.update(newer.client_vendor_tokens)
         if newer.max_spatial_streams is not None:
-            self.max_spatial_streams = newer.max_spatial_streams
+            self.max_spatial_streams = max(
+                self.max_spatial_streams or 0,
+                newer.max_spatial_streams,
+            )
         operation_fields = (
             "operating_width_mhz", "secondary_channel_offset",
             "center_channel_0", "center_channel_1",
@@ -75,10 +93,22 @@ class AdvertisedCapabilities:
             if value is not None:
                 setattr(self, name, value)
         self.signature_watch = self.signature_watch or newer.signature_watch
+        if newer.catalog_family_id:
+            self.catalog_family_id = newer.catalog_family_id
+        if newer.catalog_labels or newer.catalog_live or newer.catalog_attention:
+            self.catalog_labels = tuple(newer.catalog_labels)
+            self.catalog_class = newer.catalog_class
+            self.catalog_notes = newer.catalog_notes
+            self.catalog_attention = newer.catalog_attention
+            self.catalog_live = newer.catalog_live
+            self.catalog_live_strong = newer.catalog_live_strong
+            self.catalog_sentence = newer.catalog_sentence
         if newer.country_channels:
             self.country_channels = list(newer.country_channels)
         if newer.supported_channel_ranges:
-            self.supported_channel_ranges = list(newer.supported_channel_ranges)
+            self.supported_channel_ranges = sorted(
+                set(self.supported_channel_ranges) | set(newer.supported_channel_ranges),
+            )
         for name in (
             "radio_measurement", "fast_transition", "bss_transition", "wmm",
             "multi_bssid", "reduced_neighbor_report", "multi_link",

@@ -5,7 +5,12 @@ from textual.widgets import Button, Input, Select
 
 from wifit3.models import AccessPoint
 from wifit3.ui.encryption_format import EncryptionType
-from wifit3.ui.screens.filter import EncryptionFilter, FilterBar, ScanFilter, text_matches
+from wifit3.ui.screens.filter import (
+    EncryptionFilter,
+    FilterBar,
+    ScanFilter,
+    text_matches,
+)
 
 
 def _ap(**kw) -> AccessPoint:
@@ -125,6 +130,18 @@ def test_hidden_ap_found_by_guessed_ssid():
     assert ScanFilter(text="castle").matches(hidden, ssid="Castle Crasher")
 
 
+def test_scan_filter_catalog_family():
+    from wifit3.models import AccessPoint
+    from wifit3.ui.screens.filter import ScanFilter
+
+    flock = AccessPoint(bssid="b4:1e:52:10:20:30", ssid="Flock-ABC123")
+    other = _ap(ssid="RandomNet")
+    filt = ScanFilter(catalog_family_id="flock-cameras")
+    assert filt.catalog_family_matches(flock)
+    assert not filt.catalog_family_matches(other)
+    assert ScanFilter().catalog_family_matches(other)
+
+
 def test_scan_filter_supports_signal_wps_and_country():
     ap = _ap(ssid="Office", wps=True, country_code="US")
     ap.signal_by_card = {"card0": -65}
@@ -198,6 +215,19 @@ async def test_signal_and_wps_selects_emit_scan_filter():
         assert scan[-1][1].wps is True
 
 
+async def test_catalog_family_select_emits_scan_filter():
+    app = _Host([1, 6, 11])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        options = app.query_one("#filter-catalog-family", Select)._options
+        family_id = next(value for _label, value in options if value)
+        app.events.clear()
+        app.query_one("#filter-catalog-family", Select).value = family_id
+        await pilot.pause()
+        scan = [event for event in app.events if event[0] == "scan"]
+        assert scan[-1][1].catalog_family_id == family_id
+
+
 async def test_association_select_emits_client_filter():
     app = _Host([1, 6, 11])
     async with app.run_test() as pilot:
@@ -219,6 +249,19 @@ async def test_channels_button_requests_dialog():
         app.query_one("#filter-channels", Button).press()
         await pilot.pause()
         assert any(e[0] == "channels" for e in app.events)
+
+
+async def test_clear_filter_text_button_clears_search():
+    app = _Host([1, 6, 11])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#filter-text", Input).value = "net"
+        await pilot.pause()
+        app.query_one("#clear-filter-text", Button).press()
+        await pilot.pause()
+        assert app.query_one("#filter-text", Input).value == ""
+        scan = [e for e in app.events if e[0] == "scan"]
+        assert scan and scan[-1][1].text == ""
 
 
 def test_channels_label_drops_band_prefix_for_partial_sets():

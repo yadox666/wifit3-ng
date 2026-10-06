@@ -14,14 +14,15 @@ from wifit3.bluetooth.usb_hci import UsbBluetoothController
 from wifit3.persist.config import Config
 from wifit3.persist.targets import TargetStore
 from wifit3.ui.app import WifiteApp
+from wifit3.ui.bluetooth_detail import _address_kind_label
 from wifit3.ui.screens.bluetooth_scanner import (
     _BluetoothSortReadout,
     BluetoothScannerView,
-    _address_kind_label,
     _connection_error_message,
     _device_has_expired,
     _group_anonymous_apple_devices,
 )
+from wifit3.ui.screens.confirm_active import ConfirmEndScanModal
 from wifit3.ui.screens.splash import SplashView
 
 
@@ -64,8 +65,8 @@ def test_timeout_error_has_actionable_ble_message():
 def test_bluetooth_expiry_uses_shared_scanner_preference(monkeypatch):
     ble_only = _anonymous_apple("AA:BB:CC:DD:EE:01")
     monkeypatch.setattr(Config, "scanner_ap_expiry", 120.0)
-    assert _device_has_expired(ble_only, 119.9) is False
-    assert _device_has_expired(ble_only, 120.0) is True
+    assert _device_has_expired(ble_only, 599.9) is False
+    assert _device_has_expired(ble_only, 600.0) is True
 
     monkeypatch.setattr(Config, "scanner_ap_expiry", -1.0)
     assert _device_has_expired(ble_only, 100_000.0) is False
@@ -91,7 +92,8 @@ def test_bluetooth_expiry_extends_named_classic_rows(monkeypatch):
     )
     monkeypatch.setattr(Config, "scanner_ap_expiry", 30.0)
     assert _device_has_expired(classic, 60.0) is False
-    assert _device_has_expired(classic, 180.0) is True
+    assert _device_has_expired(classic, 899.9) is False
+    assert _device_has_expired(classic, 900.0) is True
 
 
 @pytest.mark.asyncio
@@ -128,7 +130,7 @@ async def test_splash_shows_and_can_disable_os_ble_source():
 
         assert panel.border_title == "Operating-system BLE"
         assert "Test vendor TestBleak" in panel.query_one(".os-ble-name").render().plain
-        assert panel.query_one(".os-ble-state").render().plain == "OS-READY"
+        assert panel.query_one(".os-ble-state").render().plain == "READY"
         assert not splash.query_one("#bluetooth-btn").disabled
 
         splash.query_one("#os-ble-enabled", Checkbox).value = False
@@ -136,8 +138,11 @@ async def test_splash_shows_and_can_disable_os_ble_source():
 
         assert app.bluetooth_manager.os_ble_enabled is False
         assert Config.os_ble_enabled is False
-        assert panel.query_one(".os-ble-state").render().plain == "APP-DISABLED"
-        assert splash.query_one("#bluetooth-btn").disabled
+        assert panel.query_one(".os-ble-state").render().plain == "OFF (Enable)"
+        # No radio available (OS BLE off, no USB) -> button stays visible, disabled.
+        bluetooth_btn = splash.query_one("#bluetooth-btn")
+        assert bluetooth_btn.display is True
+        assert bluetooth_btn.disabled is True
 
 
 @pytest.mark.asyncio
@@ -164,37 +169,55 @@ async def test_splash_marks_unavailable_os_ble_layer_in_red():
         await pilot.pause(0)
         state = app.screen.query_one(".os-ble-state").render()
 
-        assert state.plain == "OS-DISABLED"
+        assert state.plain == "OFF (Enable)"
         assert any("red" in str(span.style) for span in state.spans)
-        assert app.screen.query_one("#bluetooth-btn").disabled
+        bluetooth_btn = app.screen.query_one("#bluetooth-btn")
+        assert bluetooth_btn.display is True
+        assert bluetooth_btn.disabled is True
 
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
 async def test_splash_primary_buttons_share_a_centered_row():
+    # All primary buttons are always mounted (never removed), even with no
+    # SDR/background hardware - they just end up disabled. The row layout must
+    # account for all of them every time.
     app = WifiteApp()
-    async with app.run_test(size=(100, 36)) as pilot:
+    async with app.run_test(size=(130, 36)) as pilot:
         await pilot.pause(0)
-        wifi = app.screen.query_one("#start-btn").region
-        bluetooth = app.screen.query_one("#bluetooth-btn").region
-        offline = app.screen.query_one("#offline-btn").region
-        assert wifi.y == bluetooth.y == offline.y
-        assert bluetooth.x >= wifi.right + 2
-        assert offline.x >= bluetooth.right + 2
-        assert abs((wifi.x + offline.right) - 100) <= 1
+        ids = (
+            "start-btn", "bluetooth-btn", "spectrum-btn",
+            "background-btn", "offline-btn",
+        )
+        regions = [app.screen.query_one(f"#{i}").region for i in ids]
+        y = regions[0].y
+        assert all(region.y == y for region in regions)
+        for prev, cur in zip(regions, regions[1:]):
+            assert cur.x >= prev.right + 2
+        assert abs((regions[0].x + regions[-1].right) - 130) <= 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
 async def test_splash_wifi_and_bluetooth_buttons_have_hotkeys():
+    from wifit3.chips.driver import DeviceID
+
     app = WifiteApp()
     async with app.run_test() as pilot:
         splash = app.screen
         wifi = splash.query_one("#start-btn")
         bluetooth = splash.query_one("#bluetooth-btn")
         offline = splash.query_one("#offline-btn")
-        assert wifi.label.plain == "START WI-FI"
-        assert bluetooth.label.plain == "SCAN BLE"
+
+        assert wifi.label.plain == "WI-FI"
+        assert wifi.disabled is True
+
+        splash.render_devices([DeviceID(0x0BDA, 0x8812, "RTL8812AU", bus=1, address=3)])
+        await pilot.pause(0)
+
+        assert wifi.label.plain == "WI-FI"
+        assert wifi.disabled is False
+        assert bluetooth.label.plain == "BLE"
         assert offline.label.plain == "OFFLINE DB"
         assert any("yellow" in str(span.style) for span in wifi.label.spans)
         assert any("yellow" in str(span.style) for span in bluetooth.label.spans)
@@ -210,42 +233,46 @@ async def test_splash_wifi_and_bluetooth_buttons_have_hotkeys():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
-async def test_splash_shows_separate_dual_mode_button_when_controller_is_detected(monkeypatch):
+async def test_splash_adaptive_button_shows_bt_ble_with_dual_controller(monkeypatch):
     app = WifiteApp()
     controller = UsbBluetoothController(
         0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
     )
     app.bluetooth_manager.available_usb_controllers = lambda: [controller]
     app.bluetooth_manager.start_parallel = AsyncMock(return_value=[])
-    type(app.bluetooth_manager).is_scanning = property(lambda self: True)
+    # Restore after the test so the class-level property can't leak into others.
+    monkeypatch.setattr(
+        type(app.bluetooth_manager), "is_scanning", property(lambda self: True)
+    )
     switched = []
     monkeypatch.setattr(app, "switch_screen", switched.append)
 
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(0)
         splash = app.screen
-        button = splash.query_one("#bluetooth-usb-btn")
+        button = splash.query_one("#bluetooth-btn")
         picker = splash.query_one("#bluetooth-picker")
+        # One adaptive button: OS BLE (BLE) + the dual dongle running Classic.
         assert button.display
-        assert button.label.plain == "BT/BLE Scan"
+        assert button.label.plain == "BT+BLE"
         assert picker.display
         assert picker.region.height == 3
         assert picker.selected_controllers() == [controller]
 
-        splash.action_start_usb_bluetooth()
+        splash.action_start_bluetooth()
         for _ in range(40):
             await pilot.pause(0)
             if switched:
                 break
 
         app.bluetooth_manager.start_parallel.assert_awaited_once()
-        assert app.bluetooth_manager.start_parallel.await_args.kwargs["controller"] == controller
+        assert app.bluetooth_manager.start_parallel.await_args.kwargs["controllers"] == [controller]
         assert switched == ["bluetooth"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
-async def test_unchecked_bluetooth_adapter_is_not_started():
+async def test_unchecked_bluetooth_adapter_is_not_started(monkeypatch):
     app = WifiteApp()
     first = UsbBluetoothController(
         0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
@@ -256,35 +283,48 @@ async def test_unchecked_bluetooth_adapter_is_not_started():
     )
     app.bluetooth_manager.available_usb_controllers = lambda: [first, second]
     app.bluetooth_manager.start_parallel = AsyncMock(return_value=[])
-    type(app.bluetooth_manager).is_scanning = property(lambda self: True)
+    # Restore after the test so the class-level property can't leak into others.
+    monkeypatch.setattr(
+        type(app.bluetooth_manager), "is_scanning", property(lambda self: True)
+    )
+    monkeypatch.setattr(app, "switch_screen", lambda name: None)
 
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(0)
         splash = app.screen
         picker = splash.query_one("#bluetooth-picker")
         assert picker.region.height == 4
-        assert [str(mode.content) for mode in picker.query(".bt-mode")] == ["BT+BLE", "BT"]
+        from wifit3.ui.screens.bluetooth_picker import BluetoothModeBar
 
+        realtek_bar = picker.query_one("#bt-mode-bar-0", BluetoothModeBar)
+        sena_bar = picker.query_one("#bt-mode-bar-1", BluetoothModeBar)
+        assert [key for _label, key in realtek_bar.choices] == ["all", "bt", "ble"]
+        assert [key for _label, key in sena_bar.choices] == ["bt"]
+        assert sena_bar.has_class("-fixed")
+
+        # Uncheck the Realtek: only the Sena should be handed to start_parallel.
         splash.query_one("#bt-chk-0", Checkbox).value = False
         await pilot.pause(0)
-        button = splash.query_one("#bluetooth-usb-btn")
-        assert not button.disabled
-        splash.action_start_usb_bluetooth()
+        assert splash.query_one("#bluetooth-btn").display
+        splash.action_start_bluetooth()
         for _ in range(20):
             await pilot.pause(0)
             if app.bluetooth_manager.start_parallel.await_count:
                 break
         assert (
-            app.bluetooth_manager.start_parallel.await_args.kwargs["controller"] == second
+            app.bluetooth_manager.start_parallel.await_args.kwargs["controllers"] == [second]
         )
 
+        # Uncheck the Sena too: neither dongle is started (OS BLE runs alone).
         splash.query_one("#bt-chk-1", Checkbox).value = False
         await pilot.pause(0)
-        assert button.disabled
         app.bluetooth_manager.start_parallel.reset_mock()
-        splash.action_start_usb_bluetooth()
-        await pilot.pause(0)
-        app.bluetooth_manager.start_parallel.assert_not_awaited()
+        splash.action_start_bluetooth()
+        for _ in range(20):
+            await pilot.pause(0)
+            if app.bluetooth_manager.start_parallel.await_count:
+                break
+        assert app.bluetooth_manager.start_parallel.await_args.kwargs["controllers"] == []
 
 
 @pytest.mark.asyncio
@@ -312,6 +352,73 @@ async def test_bluetooth_picker_rebuilds_rows():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_picker_shows_segmented_scan_mode():
+    from wifit3.bluetooth import scan_modes
+    from wifit3.ui.screens.bluetooth_picker import BluetoothModeBar
+
+    app = WifiteApp()
+    realtek = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+    )
+    sena = UsbBluetoothController(
+        0x0A12, 0x0001, "BlueCore4-ROM", "Sena", "Parani-UD100", 1, 3,
+        supports_le=False,
+    )
+    async with app.run_test(size=(120, 40)) as pilot:
+        splash = app.screen
+        picker = splash.query_one("#bluetooth-picker")
+        picker.set_os_ble_active(True)
+        picker.set_controllers([realtek, sena])
+        await pilot.pause()
+        # Segments mirror the Wi-Fi band bar: ALL | BT | BLE for a dual dongle,
+        # a single fixed BT for the Classic-only Sena.
+        realtek_bar = picker.query_one("#bt-mode-bar-0", BluetoothModeBar)
+        assert [label for label, _key in realtek_bar.choices] == ["ALL", "BT", "BLE"]
+        # With OS BLE active, the dual dongle defaults to Classic (BLE on the OS).
+        assert realtek_bar.value == "bt"
+        assert picker.scan_mode_for(realtek) == scan_modes.BT
+
+        # Turning OS BLE off re-pins the untouched dongle to ALL (both radios).
+        picker.set_os_ble_active(False)
+        await pilot.pause()
+        assert realtek_bar.value == "all"
+        assert picker.scan_mode_for(realtek) == scan_modes.BT_BLE
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_bluetooth_picker_selects_scan_mode_on_segment_click():
+    from wifit3.bluetooth import scan_modes
+    from wifit3.ui.screens.bluetooth_picker import BluetoothModeBar
+
+    app = WifiteApp()
+    realtek = UsbBluetoothController(
+        0x0BDA, 0x8771, "RTL8761BU", "Realtek", "Bluetooth Adapter", 1, 2,
+    )
+    async with app.run_test(size=(120, 40)) as pilot:
+        splash = app.screen
+        picker = splash.query_one("#bluetooth-picker")
+        picker.set_os_ble_active(True)
+        picker.set_controllers([realtek])
+        await pilot.pause()
+
+        # Clicking the BLE segment selects it and makes the choice sticky.
+        bar = picker.query_one("#bt-mode-bar-0", BluetoothModeBar)
+        ble_opt = picker.query_one("#bt-mode-bar-0 .bt-mode-ble")
+        ble_opt.on_click(type("E", (), {"stop": lambda self: None})())
+        await pilot.pause()
+        assert bar.value == "ble"
+        assert picker.scan_mode_for(realtek) == scan_modes.BLE
+
+        # A manual pick is not overridden when OS BLE availability changes.
+        picker.set_os_ble_active(False)
+        await pilot.pause()
+        assert bar.value == "ble"
+        assert picker.scan_mode_for(realtek) == scan_modes.BLE
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
 async def test_bluetooth_picker_shows_reclaim_icon_when_not_claimed():
     app = WifiteApp()
     controller = UsbBluetoothController(
@@ -324,61 +431,14 @@ async def test_bluetooth_picker_shows_reclaim_icon_when_not_claimed():
         await pilot.pause()
         reclaim = picker.query_one("#bt-reclaim-0", Button)
         assert reclaim.display is True
-        assert "⎋" in str(reclaim.render())
+        assert "↻" in str(reclaim.render())
+        assert reclaim.styles.width.value == 3
+        assert reclaim.styles.min_width.value == 3
+        assert reclaim.styles.background.a == 0
         picker.set_controllers([controller], not_claimed=set())
         await pilot.pause()
         reclaim = picker.query_one("#bt-reclaim-0", Button)
         assert reclaim.display is False
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("no_usb_devices")
-async def test_shift_l_opens_usb_lab_on_highlighted_row(monkeypatch):
-    app = WifiteApp()
-    now = time.time()
-    device = BluetoothDevice(
-        identifier="AA:BB:CC:DD:EE:FF",
-        name="Lab Target",
-        rssi=-50,
-        service_uuids=(),
-        service_data_uuids=(),
-        manufacturer_ids=(),
-        manufacturer_data_bytes=0,
-        service_data_bytes=0,
-        tx_power=None,
-        advertisement_count=1,
-        advertisement_interval=0.25,
-        first_seen=now,
-        last_seen=now,
-    )
-    app.bluetooth_manager.devices = lambda: [device]
-    monkeypatch.setattr(
-        BluetoothManager,
-        "usb_lab_available",
-        property(lambda self: True),
-    )
-
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.switch_screen("bluetooth")
-        await pilot.pause()
-        scanner = app.screen
-        scanner.query_one("#bluetooth-table", DataTable).focus()
-        scanner.refresh_table()
-        await pilot.pause()
-        log = scanner.query_one("#bluetooth-log")
-        log_visible = log.display
-        await pilot.press("l")
-        await pilot.pause()
-        assert not isinstance(app.screen, BluetoothUsbLabView)
-        assert log.display == log_visible
-        await pilot.press("shift+l")
-        await pilot.pause()
-        assert isinstance(app.screen, BluetoothUsbLabView)
-        app.pop_screen()
-        await pilot.pause()
-        await pilot.press("L")
-        await pilot.pause()
-        assert isinstance(app.screen, BluetoothUsbLabView)
 
 
 @pytest.mark.asyncio
@@ -424,16 +484,18 @@ async def test_bluetooth_scanner_renders_discovered_device():
         row = table.get_row("AA:BB:CC:DD:EE:FF")
         assert row[0].plain == "Test Beacon"
         assert row[1].plain == "·"
-        assert row[2].plain == "-42 dBm"
-        assert row[3].plain == "BLE Beacon"
-        assert row[4].plain == "12"
-        assert row[5].plain == "250 ms"
-        assert row[6].plain == "now"
-        assert row[7].plain == "now"
-        assert row[8].plain == "Apple, Inc. (004C)"
-        assert row[9].plain == "Battery Service"
-        assert row[10].plain == "AA:BB:CC:DD:EE:FF"
-        assert row[11].plain == "51.50300, -0.14400 ±5m"
+        assert row[2].plain == "·"
+        assert row[3].plain == "·"
+        assert row[4].plain == "BLE Beacon"
+        assert row[5].plain == "Apple, Inc."
+        assert row[6].plain == "-42 dBm"
+        assert row[7].plain == "12"
+        assert row[8].plain == "250 ms"
+        assert row[9].plain == "now"
+        assert row[10].plain == "now"
+        assert row[11].plain == "Battery Service"
+        assert row[12].plain == "AA:BB:CC:DD:EE:FF"
+        assert row[13].plain == "51.50300, -0.14400 ±5m"
 
         device = replace(
             device,
@@ -599,13 +661,13 @@ async def test_bluetooth_scanner_cycles_sort_column_and_direction():
         assert table.columns[ColumnKey("rssi")].label.plain == "▲ POWER"
         assert table.get_row_at(0)[0].plain == "Weak Sensor"
 
-        while table.columns[ColumnKey("advertisements")].label.plain == "  OBS":
+        while table.columns[ColumnKey("advertisements")].label.plain == "  #ADV":
             scanner.action_cycle_sort()
-        assert table.columns[ColumnKey("advertisements")].label.plain == "▲ OBS"
+        assert table.columns[ColumnKey("advertisements")].label.plain == "▲ #ADV"
         assert table.get_row_at(0)[0].plain == "Strong Sensor"
 
         scanner.action_toggle_sort_dir()
-        assert table.columns[ColumnKey("advertisements")].label.plain == "▼ OBS"
+        assert table.columns[ColumnKey("advertisements")].label.plain == "▼ #ADV"
         assert table.get_row_at(0)[0].plain == "Weak Sensor"
 
 
@@ -632,6 +694,31 @@ async def test_bluetooth_sort_change_shows_toast_and_header_status():
         scanner.action_toggle_sort_dir()
         assert readout.summary == "Sorted: LAST SEEN (<)"
         assert toasts[-1] == ("Sort changed", "Sorted by LAST SEEN ascending")
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_touching_bluetooth_header_selects_and_reverses_sort():
+    app = WifiteApp()
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        scanner = app.screen
+        table = scanner.query_one("#bluetooth-table", DataTable)
+        column_key = ColumnKey("name")
+        event = DataTable.HeaderSelected(
+            table,
+            column_key,
+            table.get_column_index(column_key),
+            table.columns[column_key].label,
+        )
+
+        scanner.sort_from_header(event)
+        assert table.columns[column_key].label.plain == "DEVICE ▲"
+
+        scanner.sort_from_header(event)
+        assert table.columns[column_key].label.plain == "DEVICE ▼"
 
 
 @pytest.mark.asyncio
@@ -692,7 +779,7 @@ async def test_default_sort_keeps_new_devices_at_the_bottom():
         app.switch_screen("bluetooth")
         await pilot.pause(0)
         scanner = app.screen
-        table = scanner.query_one("#bluetooth-table", DataTable)
+        table = scanner.query_one("#bluetooth-private-table", DataTable)
         scanner.refresh_table()
         assert [table.get_row_at(i)[0].plain for i in range(2)] == ["First", "Second"]
 
@@ -733,14 +820,14 @@ async def test_default_first_seen_order_stays_put_as_labels_tick(monkeypatch):
         app.switch_screen("bluetooth")
         await pilot.pause(0)
         scanner = app.screen
-        table = scanner.query_one("#bluetooth-table", DataTable)
+        table = scanner.query_one("#bluetooth-private-table", DataTable)
         scanner.refresh_table()
         assert [table.get_row_at(i)[0].plain for i in range(2)] == ["Earlier", "Later"]
 
         clock["now"] = base + 0.3
         scanner.refresh_table()
-        assert table.get_row_at(0)[6].plain == "5s ago"
-        assert table.get_row_at(1)[6].plain == "5s ago"
+        assert table.get_row_at(0)[9].plain == "5s ago"
+        assert table.get_row_at(1)[9].plain == "5s ago"
         assert [table.get_row_at(i)[0].plain for i in range(2)] == ["Earlier", "Later"]
 
 
@@ -761,7 +848,7 @@ async def test_first_seen_sort_uses_timestamps_not_formatted_ages():
         app.switch_screen("bluetooth")
         await pilot.pause(0)
         scanner = app.screen
-        table = scanner.query_one("#bluetooth-table", DataTable)
+        table = scanner.query_one("#bluetooth-private-table", DataTable)
         scanner.refresh_table()
 
         table.update_cell(older.identifier, "first_seen", Text("1 minute ago"))
@@ -796,7 +883,7 @@ def test_anonymous_apple_identifiers_form_approximate_group():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
-async def test_apple_group_can_expand_and_collapse():
+async def test_anonymous_apple_devices_render_in_private_table_pane():
     app = WifiteApp()
     devices = [
         _anonymous_apple("11111111-1111-1111-1111-111111111111"),
@@ -808,18 +895,14 @@ async def test_apple_group_can_expand_and_collapse():
         app.switch_screen("bluetooth")
         await pilot.pause(0)
         scanner = app.screen
-        table = scanner.query_one("#bluetooth-table", DataTable)
+        main = scanner.query_one("#bluetooth-table", DataTable)
+        private = scanner.query_one("#bluetooth-private-table", DataTable)
         scanner.refresh_table()
-        assert table.row_count == 1
-        assert table.get_row("approximate:apple:004c")[0].plain == "≈ Apple devices (~2 IDs)"
-
-        scanner.action_toggle_apple_group()
-        assert table.row_count == 2
-        assert table.get_row(devices[0].identifier)[0].plain == "Apple private ID"
-
-        scanner.action_toggle_apple_group()
-        assert table.row_count == 1
-        assert table.get_row("approximate:apple:004c")[0].plain == "≈ Apple devices (~2 IDs)"
+        assert main.row_count == 0
+        assert private.row_count == 2
+        assert private.display is True
+        assert private.get_row(devices[0].identifier) is not None
+        assert private.get_row(devices[1].identifier) is not None
 
 
 @pytest.mark.asyncio
@@ -962,4 +1045,33 @@ async def test_ble_timeout_without_classic_still_opens_observation_focus(monkeyp
         assert app.bluetooth_manager.focus_device is device
         assert "timeout" in app.bluetooth_manager.focus_connection_error.casefold()
         assert pushed == ["bluetooth-focus"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_escape_from_bluetooth_scan_asks_before_leaving():
+    app = WifiteApp()
+    app.bluetooth_manager.stop = AsyncMock()
+    async with app.run_test() as pilot:
+        app.switch_screen("bluetooth")
+        await pilot.pause(0)
+        assert isinstance(app.screen, BluetoothScannerView)
+
+        await pilot.press("escape")
+        await pilot.pause(0)
+        modal = app.screen
+        assert isinstance(modal, ConfirmEndScanModal)
+        modal.query_one("#end-scan-cancel", Button).press()
+        await pilot.pause(0)
+        assert isinstance(app.screen, BluetoothScannerView)
+
+        await pilot.press("escape")
+        await pilot.pause(0)
+        app.screen.query_one("#end-scan-confirm", Button).press()
+        for _ in range(20):
+            await pilot.pause(0)
+            if isinstance(app.screen, SplashView):
+                break
+        assert isinstance(app.screen, SplashView)
+        app.bluetooth_manager.stop.assert_awaited()
 

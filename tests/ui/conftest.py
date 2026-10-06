@@ -15,6 +15,29 @@ def _isolate_config(tmp_path, monkeypatch):
         "wifit3.persist.locations.LOCATION_HISTORY_PATH",
         tmp_path / "location_history.sqlite3",
     )
+    # Keep the persisted history/notification stores off the real on-disk
+    # databases: the app opens them at startup, and a dev machine's DB may sit at
+    # a newer schema (surfacing spurious "schema too new" error notifications).
+    from wifit3.persist.ap_history import ApHistoryStore
+    from wifit3.persist.bluetooth_history import BluetoothHistoryStore
+    from wifit3.persist.notifications import NotificationStore
+    from wifit3.persist.targets import TargetStore
+    monkeypatch.setattr(
+        "wifit3.ui.app.BluetoothHistoryStore",
+        lambda: BluetoothHistoryStore(tmp_path / "bluetooth_history.sqlite3"),
+    )
+    monkeypatch.setattr(
+        "wifit3.ui.app.ApHistoryStore",
+        lambda: ApHistoryStore(tmp_path / "ap_history.sqlite3"),
+    )
+    monkeypatch.setattr(
+        "wifit3.ui.app.NotificationStore",
+        lambda: NotificationStore(tmp_path / "notifications.sqlite3"),
+    )
+    monkeypatch.setattr(
+        "wifit3.ui.app.TargetStore",
+        lambda: TargetStore(tmp_path / "targets.sqlite3"),
+    )
     monkeypatch.setattr("wifit3.gps.manager.list_ports.comports", lambda: [])
 
     async def ready_os_ble(manager):
@@ -51,14 +74,20 @@ def _isolate_config(tmp_path, monkeypatch):
     yield
 
 
+_real_begin_app_scan_session = WifiteApp._begin_app_scan_session
+
+
 @pytest.fixture(autouse=True)
 def _auto_start_scan_session(monkeypatch):
     """UI tests boot WifiteApp without blocking on the session naming modal."""
 
-    def _prompt(self) -> None:
+    def _begin(self) -> None:
+        if self.case_prompt:
+            _real_begin_app_scan_session(self)
+            return
         self.start_scan_session({"wifi", "bluetooth"}, mode="app")
 
-    monkeypatch.setattr(WifiteApp, "_prompt_scan_session", _prompt)
+    monkeypatch.setattr(WifiteApp, "_begin_app_scan_session", _begin)
 
 
 @pytest.fixture

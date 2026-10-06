@@ -280,6 +280,74 @@ class NetworkMetadata:
             )
         return changed
 
+    def observe_bonjour_services(
+        self,
+        services: Iterable[tuple[str, str | None, str]],
+        *,
+        now: float,
+    ) -> bool:
+        """Record sanitized DNS-SD service types without instance/TXT names."""
+        changed = False
+        for _ip, mac, service_type in services:
+            service_type = service_type.casefold().strip()
+            if not re.fullmatch(r"_[a-z0-9-]{1,63}\._(?:tcp|udp)\.local", service_type):
+                continue
+            client_mac = mac.casefold() if mac and _valid_mac(mac.casefold()) else None
+            changed |= self.add(
+                "bonjour_services",
+                service_type,
+                source="mdns_service_enumeration_active",
+                confidence="advertised",
+                now=now,
+                client_mac=client_mac,
+            )
+        return changed
+
+    def observe_local_discovery(
+        self,
+        services: Iterable[tuple[str, str | None, str, str]],
+        roles: Iterable[tuple[str, str | None, str]],
+        *,
+        now: float,
+    ) -> bool:
+        """Record bounded protocol/role evidence without host or instance names."""
+        changed = False
+        allowed_sources = {"mdns", "ssdp", "wsd", "nbns"}
+        for _ip, mac, service, protocol in services:
+            protocol = protocol.casefold()
+            service = service.casefold().strip()
+            if protocol not in allowed_sources or not _safe_local_service(protocol, service):
+                continue
+            client_mac = mac.casefold() if mac and _valid_mac(mac.casefold()) else None
+            changed |= self.add(
+                "announced_services",
+                service,
+                source=f"{protocol}_discovery_active",
+                confidence="advertised",
+                now=now,
+                client_mac=client_mac,
+            )
+        allowed_roles = {
+            "apple_media", "browser_service", "camera", "domain_controller",
+            "domain_master_browser", "file_sharing", "master_browser",
+            "media_cast", "media_renderer", "media_server", "messaging",
+            "printer", "router", "smart_home", "workstation",
+        }
+        for _ip, mac, role in roles:
+            role = role.casefold().strip()
+            if role not in allowed_roles:
+                continue
+            client_mac = mac.casefold() if mac and _valid_mac(mac.casefold()) else None
+            changed |= self.add(
+                "device_roles",
+                role,
+                source="local_service_classification",
+                confidence="inferred",
+                now=now,
+                client_mac=client_mac,
+            )
+        return changed
+
     def observe_connectivity(
         self,
         result: Any,
@@ -514,6 +582,22 @@ def _load_facts(value: Any) -> dict[str, list[NetworkFact]]:
         if parsed:
             result[kind[:64]] = parsed
     return result
+
+
+def _safe_local_service(protocol: str, value: str) -> bool:
+    if not value or len(value) > 320:
+        return False
+    if protocol == "mdns":
+        return bool(re.fullmatch(r"_[a-z0-9-]{1,63}\._(?:tcp|udp)\.local", value))
+    if protocol in {"ssdp", "wsd"}:
+        return value.startswith(f"{protocol}:") and all(
+            character.isalnum() or character in "._:-"
+            for character in value
+        )
+    return protocol == "nbns" and value in {
+        "browser_service", "domain_controller", "domain_master_browser",
+        "file_sharing", "master_browser", "messaging", "workstation",
+    }
 
 
 def _valid_mac(value: Any) -> bool:

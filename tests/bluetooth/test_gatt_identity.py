@@ -4,6 +4,8 @@ from wifit3.bluetooth.gatt_metadata import (
     decode_pnp_id,
     display_model_label,
     gatt_identity_fields,
+    gatt_identity_parts,
+    merge_gatt_identity_fields,
 )
 from wifit3.bluetooth.apple_identifiers import format_device_model_number
 from wifit3.models import BluetoothCharacteristic, BluetoothDevice, BluetoothService
@@ -14,6 +16,32 @@ def test_decode_pnp_id_bluetooth_sig_company():
     decoded = decode_pnp_id(raw)
     assert "Samsung" in decoded or "0075" in decoded
     assert "0xabcd" in decoded.casefold()
+
+
+def test_unknown_apple_pnp_product_populates_generic_model_without_guessing():
+    raw = struct.pack("<BHHH", 0x01, 0x004C, 0x2018, 0x0100)
+    decoded = decode_pnp_id(raw)
+    assert "Apple" in decoded
+    assert "product 0x2018" in decoded
+
+    device = BluetoothDevice(
+        identifier="AA:BB:CC:DD:EE:FF",
+        name="<Unknown>",
+        rssi=-50,
+        service_uuids=("180a",),
+        service_data_uuids=(),
+        manufacturer_ids=(0x004C,),
+        manufacturer_data_bytes=0,
+        service_data_bytes=0,
+        tx_power=None,
+        advertisement_count=1,
+        advertisement_interval=None,
+        first_seen=0,
+        last_seen=1,
+        pnp_id=decoded,
+    )
+    assert display_model_label(device) == "Apple Bluetooth device (PID 0x2018)"
+    assert "product 0x2018" in display_model_label(device, include_identifier=True)
 
 
 def test_gatt_identity_fields_collects_dis_gap_and_pnp():
@@ -65,6 +93,40 @@ def test_gatt_identity_fields_collects_dis_gap_and_pnp():
     assert fields["manufacturer_name"] == "samsung"
     assert fields["gatt_device_name"] == "Galaxy S21"
     assert "pnp_id" in fields
+
+
+def test_merge_gatt_identity_fields_fills_empty_device_fields():
+    device = BluetoothDevice(
+        identifier="AA:BB:CC:DD:EE:FF",
+        name="adv",
+        rssi=-50,
+        service_uuids=(),
+        service_data_uuids=(),
+        manufacturer_ids=(),
+        manufacturer_data_bytes=0,
+        service_data_bytes=0,
+        tx_power=None,
+        advertisement_count=1,
+        advertisement_interval=None,
+        first_seen=0.0,
+        last_seen=1.0,
+    )
+    merged = merge_gatt_identity_fields(
+        device,
+        {"model_number": "iPhone13,4", "manufacturer_name": "Apple Inc."},
+    )
+    assert merged.model_number == "iPhone13,4"
+    assert merged.manufacturer_name == "Apple Inc."
+
+
+def test_gatt_identity_parts_brand_model_submodel():
+    parts = gatt_identity_parts({
+        "manufacturer_name": "Apple Inc.",
+        "model_number": "iPhone13,4",
+    })
+    assert parts.brand == "Apple Inc."
+    assert parts.model == "iPhone 12 Pro Max"
+    assert parts.submodel == "iPhone13,4"
 
 
 def test_display_model_label_prefers_model_then_gatt_name():

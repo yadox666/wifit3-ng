@@ -1,9 +1,9 @@
 # wifit3-ng
-> Version 0.3.11. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
+> Version 0.3.12. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
 
-**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.11 - yadox666`.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.12 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.11**. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.12**. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
@@ -50,32 +50,29 @@ These capabilities come from the original [derv82/wifit3](https://github.com/der
 
 The sections below are the additions in this fork (0.3.4 through current). They sit on top of the original auditor.
 
-**Unreleased ([CHANGELOG](CHANGELOG.md#unreleased)):** **scan session dialog** at startup (editable name, optional notes, metadata JSON with platform and GPS when available; names deduped against history); **named app sessions**; startup **background monitor** (`G`); **observer signature pack**; **notification history**; **vault SSID reuse** and contextual vault entry; **targets editor v2**; **USB Bluetooth claim** with passive **MODEL** / GATT identity on the scanner — full list in the changelog.
-
-**0.3.11:** compact **Wi‑Fi / Bluetooth / SDR / GPS** startup pickers with per-card **All | 2.4 | 5G**; conditional **BT/BLE Scan** and **RF-SPECTRUM**; **spread** scanner hop order; **Offline DB** (`O`) filters; **Client Focus** layout; scanner **CC** / **UPTIME**; DFS 5 GHz hops; **targets & whitelist** (`Shift+T`); **Focus leave** confirmation; tabbed **Preferences**; whitelist **deauth** guard; GPS history and globe links; Fake-Connect; BLE GATT value view; MT792 replug guidance.
+**0.3.12 (full notes in [CHANGELOG](CHANGELOG.md)):** **observer signature pack** (DULT, Find Hub, OpenDroneID; stock/user JSON outside the binary); **named app sessions** (auto memorable label each run; optional **`--case`** / `./start.sh --case` dialog — **Enter** accepts name/notes) and startup **background monitor** (`G`); touchable **column-header sorting** on live scanners and Offline DB; expandable, copyable **notification history**; contextual **Vault PSK** from AP rows; compact **Wi‑Fi / OS BLE / Bluetooth / SDR / GPS** pickers (shared width, per-row enable checkboxes, **All | 2.4 | 5G** / **ALL | BT | BLE** modes); unified startup actions that **disable** (never hide) **WI-FI**, **Bluetooth**, **RF-SPECTRUM**, **BACKGROUND**, and **OFFLINE DB** with matching footer keys; **OUI** refresh progress bar under the buttons; **Offline DB** filters; **Client Focus** v2; scanner **CC** / **UPTIME** / **BSSID**; editable **product catalog** (CLASS/FAMILY columns, regex families + user overrides); **targets & whitelist** (`Shift+T`); **Focus leave** confirmation (user-started capture only); GPS history and globe links; per-adapter USB BT **reclaim**; Bluetooth scanner **MODEL** column with passive **GATT identity** reads (GAP name, Device Information, PnP ID) and Apple marketing-name mapping — details in the changelog.
 
 ### Navigation
 
-The startup screen shows centered **START WI-FI** and **SCAN BLE** buttons on one line. `W` starts Wi-Fi. `B` starts Bluetooth/BLE. `U` refreshes the IEEE OUI manufacturer database from the startup screen.
+The startup screen shows a centered row of primary actions: **START WI-FI**, an adaptive **SCAN BT / SCAN BLE / SCAN BT+BLE** button, **RF-SPECTRUM**, **BACKGROUND**, and **OFFLINE DB**. Buttons and footer keys stay visible; they disable when no checked adapter or radio can run that action (for example unchecked Wi-Fi cards, OS BLE off with no USB Bluetooth selected, or no HackRF row checked). Disabled Wi-Fi reads **WI-FI** without the **START** prefix. `U` refreshes the IEEE OUI database and shows a compact download progress bar below the buttons.
 
 | Key | Where | Action |
 |---|---|---|
-| `W` | Startup | Start Wi-Fi on the selected adapters |
-| `B` | Startup | Start the Bluetooth/BLE scanner |
-| `D` | Startup (USB BT adapter detected) | Start direct Bluetooth Classic + BLE scanning on the selected dedicated USB controller |
-| `R` | Startup (supported SDR detected) | Open the receive-only RF Spectrum analyzer |
+| `W` | Startup | Start Wi-Fi on the checked adapters |
+| `B` | Startup | Start Bluetooth discovery (OS BLE and/or selected USB controller per row modes) |
+| `G` | Startup | Start or stop the background monitor |
+| `R` | Startup | Open the receive-only RF Spectrum analyzer (checked HackRF) |
 | `O` | Startup | Open **Offline DB** (browse saved Wi-Fi and Bluetooth history with no adapter started) |
 | `C` | Offline DB | **Clear-DB** — delete saved Wi-Fi and/or Bluetooth history (type `DELETE NOW!` to confirm) |
-| `U` | Startup | Update the local OUI database |
+| `U` | Startup | Update the local OUI database (progress bar; 10 s start timeout on failure) |
 | `Ctrl+P` | Everywhere | Preferences (tabbed). `A` About, `T` targets library |
-| `Shift+T` | Wi-Fi/BLE scanners, Offline DB, Focus | Targets & whitelist library |
+| `Shift+T` | Wi-Fi/BLE scanners, Offline DB, Focus | Open Targets & whitelist; **New** uses the current row or focused device |
 | `Ctrl+D` | Everywhere | Adapter and GPS diagnostics |
 | `Ctrl+Q` | Everywhere | Quit |
 | `Escape` | Scanners and focus | Scanners return to device selection. Focus returns to the scanner (or client list) — if attacks, capture, or honeypots are still running, a confirmation dialog lists them first |
 | `T` | Wi-Fi scanner | Switch between the AP table and the client table |
 | `I` | Wi-Fi AP table | Expand or collapse a same-SSID infrastructure |
 | `Enter` | Grouped AP | Expand a collapsed infrastructure |
-| `N` | Wi-Fi or Bluetooth scanner | Open the targets library (`Shift+T`); with a row selected, prefill a new or existing entry |
 | `A` | Wi-Fi client table | Test a selected directed probe with an automated open AP |
 | `X` | Wi-Fi scanner | Export the scan as CSV and JSON |
 | `X` | AP Focus | Start or stop a focused libpcap capture |
@@ -84,41 +81,70 @@ The startup screen shows centered **START WI-FI** and **SCAN BLE** buttons on on
 | `R` | Bluetooth Focus | Re-read the selected GATT characteristic |
 | `A` | Bluetooth Focus | Toggle the GATT value column between on-wire bytes and parsed payload hex |
 | `V` | Wi-Fi AP/client tables and AP Focus | Open Vault |
+| `P` | Vault opened from an AP or AP Focus | Add a WPA/WPA2 PSK with that AP's SSID/BSSID prefilled |
 
-Vault is available only in Wi-Fi mode.
+Vault is available only in Wi-Fi mode. Opening it from an AP row or AP Focus
+retains that AP as context: **Add PSK** prefills the confirmed SSID and BSSID,
+then focuses the masked credential field. The generic **Add** action remains
+available for WPA, WEP, and WPS imports.
+
+### Notification history
+
+The envelope on the right side of the header opens notification history; its
+badge is the unread count. Warnings and errors are retained automatically, and
+selected informational notices may opt in. Opening the history marks its items
+read.
+
+The newest 60 notices are listed. Select a row and press Enter or Space, or
+click it, to expand the full title, timestamp, severity, and wrapped message in
+a scrollable detail panel. Use **Copy** or `C` to copy the complete notification
+to the system clipboard. Up to 500 notices are retained in the private local
+`notifications.sqlite3` database.
 
 ### Startup adapter picker
 
-- **Wi‑Fi adapters** — one bordered panel, one line per USB card: **checkbox** (include on START), **chipset · product** name, and a compact **All | 2.4 | 5G** band control on the right. Dual-band cards can pin the AP/Clients scanner to one band; single-band hardware (for example AR9271) shows a fixed band label from the driver's channel list. The choice is remembered per device and affects **only** scanner hopping — not Focus, EvilTwin, or deauth campaigns. With every card on **All**, the pool still **SPREAD**-partitions channels across adapters. After **START**, the panel subtitle shows **World (reg)**, **US (reg)**, or your configured ISO code when the driver applied the default **World (reg)** domain on bring-up.
-- **Bluetooth adapters** — when a supported USB dongle is plugged in, a matching panel appears below Wi‑Fi (the panel slot stays hidden until then). Each row has a checkbox and a mode tag (**BT+BLE**, **BT**, or **BLE**). The **BT/BLE Scan** action and footer **`D`** appear only while at least one dongle is present; they use the checked dongle (highlighted row wins when several are checked). With none checked, the button stays disabled. **SCAN BLE** (`B`) still uses the OS radio through Bleak.
-- **Software-defined radios** — when a supported SDR (HackRF One) is detected, a **Software-defined radios** panel appears and the action bar gains **RF-SPECTRUM** (`R`). With no SDR, that panel and button stay hidden so the startup row stays compact.
-- **Scan session** — after the splash mounts, a modal asks for a **session name** (editable suggested label) and optional **notes** before the run starts. Escape keeps the suggestion. Names already in Wi-Fi or Bluetooth history are skipped for suggestions; if you reuse an existing label, the app warns and picks a new unique name. Each session stores notes plus JSON metadata (wifit3/OS/Python versions, UTC start/end, GPS start/end when a fix exists).
+All hardware panels use the same bordered style and a **shared width** so rows stay aligned when you enable or disable sources.
+
+- **Wi‑Fi adapters** — one bordered panel, one line per USB card: **checkbox** (include on START), **chipset · product** name, and a compact **All | 2.4 | 5G** band control on the right. Unchecking every card disables **START WI-FI** and **BACKGROUND** (when no other radio is available). Dual-band cards can pin the AP/Clients scanner to one band; single-band hardware (for example AR9271) shows a fixed band label from the driver's channel list. The choice is remembered per device and affects **only** scanner hopping — not Focus, EvilTwin, or deauth campaigns. With every card on **All**, the pool still **SPREAD**-partitions channels across adapters. The orange row highlight appears only when **two or more** cards are listed.
+- **Operating-system BLE** — always shown: checkbox, detected backend name (for example Apple CoreBluetooth), and a **BLE** tag. Disabling the row mutes the text but keeps the real backend name and panel width; it removes OS BLE from the **`B`** action and background monitor until re-enabled.
+- **Bluetooth adapters** — when a supported USB dongle is plugged in, a matching panel appears below OS BLE (the slot stays hidden until then). Each row has a checkbox, **ALL | BT | BLE** mode chips, and a green capability tag. If the OS still owns a dongle, a red **`⎋`** reclaim control appears on that row. The unified **`B`** / **SCAN …** button and footer key use OS BLE (when enabled) plus checked USB rows and their modes.
+- **Software-defined radios** — when a HackRF One is detected, a **Software-defined radios** panel appears. Each row has a checkbox; unchecking disables **RF-SPECTRUM** (`R`). The action stays on the button row at all times but disables when no HackRF row is checked.
 - **GPS / GNSS receivers** — a receiver appears only after checksummed NMEA
-  traffic confirms it is operational. The row shows manufacturer/product,
-  serial port, baud rate, NMEA/fix state, satellites, and accuracy. Hovering a
-  truncated row reveals the complete text. GPS feeds scans automatically, so
-  it has no separate start button or connection toast.
+  traffic confirms it is operational. The row has a checkbox to gate whether
+  wifit3 uses fixes for tagging (the receiver may keep running in the background).
+  The row shows manufacturer/product, serial port, baud rate, NMEA/fix state,
+  satellites, and accuracy. GPS feeds scans when enabled; there is no separate
+  start button or connection toast.
 - Returning from a scanner or analyzer to device selection (**Escape**) clears
   and rebuilds the hardware lists immediately so hot-plug and re-entry stay in
   sync.
 
 ### Wi-Fi scanner
 
-- Channel hopping still visits **every** channel on each card's allowed set, but uses a **spread** permutation (2.4 GHz coprime stride such as 1→6→11→2→7…, then the same idea on 5 GHz) instead of walking 1, 2, 3… so overlapping AP coverage is seen sooner. Dual-band drivers hop **all** 5 GHz primaries the chip can tune, including **DFS** (52–64 and 100–144) for passive beacon capture; this does not enable DFS transmit or radar CAC. Per-card **startup band** pins limit a dongle to 2.4 or 5 GHz; **Channel Lock** (`c`) intersects with that set. When all cards stay on **All bands**, channels are partitioned across the pool so each adapter covers a subset. **Preferences → Wi‑Fi regulatory country** affects TX power where the driver applies regdb, not which channels appear in the hop list.
+- Channel hopping still visits **every** channel on each card's allowed set, but uses a **spread** permutation (2.4 GHz coprime stride such as 1→6→11→2→7…, then the same idea on 5 GHz) instead of walking 1, 2, 3… so overlapping AP coverage is seen sooner. Dual-band drivers hop **all** 5 GHz primaries the chip can tune, including **DFS** (52–64 and 100–144) for passive beacon capture; this does not enable DFS transmit or radar CAC. Per-card **startup band** pins limit a dongle to 2.4 or 5 GHz; **Channel Lock** (`c`) intersects with that set. When all cards stay on **All bands**, channels are partitioned across the pool so each adapter covers a subset.
 - AP and client **system logs** auto-scroll to new lines only while you are already at the bottom, so you can read or copy older lines during a busy scan.
-- AP and client tables share signal colours, fixed columns, sorting, reverse sorting, filtering, pause, channel lock, and export.
+- AP and client tables share signal colours, fixed columns, sorting, reverse
+  sorting, filtering, pause, channel lock, and export. Click or touch any
+  column header to sort by it; touch the active header again to reverse the
+  direction.
 - AP rows show one combined vendor/model identity, **CC** (advertised regulatory
   country from the beacon Country IE when the AP sends it), **UPTIME** (compact
-  beacon timestamp), a client-manufacturer summary, security, WPS, channel,
-  signal, beacon activity, client count, last-seen or expiry information, and
-  (when GPS is available) a clickable globe for Maps. Filter text also matches
-  country codes; export CSV/JSON includes country.
+  beacon timestamp), a client-manufacturer summary, full **BSSID**, security,
+  WPS, channel, signal, beacon activity, client count, last-seen or expiry
+  information, and (when GPS is available) a clickable globe for Maps. The
+  BSSID column is sortable. **CLIENT MFR** is the final column and grows with
+  the observed manufacturer list instead of being clipped at 36 characters.
+  Filter text also matches country codes; export CSV/JSON includes country.
 - Client rows show the associated AP, manufacturer, signal, packets, age, and probe requests.
 - AP expiry is set in Preferences, including a Never option.
-- Manufacturer names come from the local OUI database. `U` updates it immediately. When an update is required, the cache is refreshed if it is older than 30 days. The file is the IEEE `oui.txt` list, stored in the operating system's wifit3 cache directory.
+- Manufacturer names come from the local OUI database. On the startup screen, `U` downloads IEEE `oui.txt` immediately with a progress bar under the action buttons (percentage shown only once the size is known). If the download does not start within 10 seconds, you get a failure toast. When an update is required automatically, the cache is refreshed if it is older than 30 days. The file is stored in the operating system's wifit3 cache directory.
 - Saved **targets** show a red `!`; **whitelist** entries show a green `◇`
   (even when auto-lock is off). The first time each enabled entry is seen in a
   session, a short toast names the alias.
+- A beacon carrying OpenDroneID (vendor IE `FA:0B:BC`, type `0x0D`) appends
+  yellow `· RID` to the SSID. AP Focus lists status, heading, speed, aircraft
+  position, and pilot position. A user signature that matches the SSID can add
+  a yellow `◆` and a Signature line.
 - The highlight follows the same selected AP BSSID or client MAC when live sorting moves it to another row.
 - Hidden `[guess]` rows stay directly below the named sibling that supplied their displayed SSID.
 - Open networks are shown in red with a `!WEAK` marker.
@@ -126,7 +152,7 @@ Vault is available only in Wi-Fi mode.
 ### SSID infrastructures
 
 - Two or more visible APs advertising the same confirmed SSID collapse into one infrastructure row by default.
-- The row aggregates AP count, channels, strongest signal, beacon count, clients, manufacturers, WPS availability, and security.
+- The row aggregates AP count, channels, strongest signal, beacon count, clients, manufacturers, WPS availability, and security. Its BSSID cell says `N BSSIDs`; expand the row to see every member address.
 - Expanded APs stay individually selectable for Focus, capture, and targets.
 - An SSID known only from historical data is not grouped until it is seen again.
 - A shared SSID shows a common ESS name. It does not prove that every AP has the same owner.
@@ -373,6 +399,11 @@ appears, but only performs association. While its temporary client is connected,
 the same button changes to **Disconnect**. After the normal active-action
 confirmation, it:
 
+- Resolves a WPA credential in this order: current-session credential, exact
+  BSSID Vault credential, then one unambiguous credential stored for the exact
+  case-sensitive SSID. This supports hotels and multi-BSSID infrastructures
+  without guessing between conflicting PSKs. Hidden/unknown SSIDs do not use
+  SSID fallback, and an exact-BSSID credential always wins.
 - Generates a randomized temporary client MAC.
 - Performs Open-System authentication and association (WEP uses shared-key privacy when associating). A yellow sibling-derived `SSID [guess]` can be attempted when the hidden AP has no exact name; only the SSID itself is transmitted, and the AP may reject it.
 - With a recovered WEP key or WPA2-PSK, completes protected station traffic (WEP RC4 or WPA2 4-way + CCMP) before DHCP.
@@ -380,6 +411,13 @@ confirmation, it:
 - Sends bounded DHCP Discover probes, requests one offered lease, and releases it after the connectivity check. The same randomized client MAC is reused for that AP during the session to avoid accumulating unclaimed offers.
 - ARP-checks the default gateway, resolves `connectivitycheck.gstatic.com` through the advertised DNS server, and makes one bounded HTTP request to `http://connectivitycheck.gstatic.com/generate_204`. The active-action confirmation discloses this destination before anything is transmitted.
 - Runs a bounded ARP neighbour sweep while the temporary lease is held: it broadcasts an ARP request to each host in the subnet (scoped to the /24 around our address and capped at 256 probes) and logs the responding IP/MAC pairs with vendor and a gateway marker. On encrypted networks the replies arrive under the pairwise key.
+- After ARP, performs bounded local service discovery with Bonjour/mDNS,
+  SSDP/UPnP, WS-Discovery, and NBNS for at most 64 responding neighbours. It
+  correlates advertised services to IP/MAC and infers coarse roles such as
+  Apple media, Cast, HomeKit/Matter, printer, SMB/file sharing, camera, router,
+  and media server. Only sanitized service types and roles are retained:
+  Bonjour instance names/TXT, NetBIOS names, USN/serial values, URLs, and
+  WS-Discovery scopes are discarded.
 - Classifies the expected HTTP 204 as confirmed Internet access, a redirect as an observed captive portal, an unexpected response as suspected interception, and timeouts as limited or inconclusive rather than automatically calling them portals.
 - Immediately merges DHCP and connectivity evidence into the AP and temporary-client NETWORK sections and atomically saves it in the private AP database, even when PCAP recording is not active.
 - Keeps the temporary association active so the AP may emit otherwise-idle broadcast or client-directed traffic for the running capture.
@@ -391,17 +429,21 @@ Fake-Connect is unavailable for WPA3/OWE/enterprise APs, WPA2 without a captured
 
 The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and roughly 30 seconds. It does not submit portal forms or retain HTTP bodies, cookies, DNS history, credentials, or URL paths/query strings.
 
-
 ### Targets and whitelist
 
-- **`Shift+T`** (or **`n`** / **Targets** on the Wi-Fi or Bluetooth scanner, **`t`**
-  from Preferences) opens the centered **targets & whitelist** editor: tabs for
-  All, AP, STA, BLE, BT, and Whitelist; search; detail pane; **Save** / **Delete**.
-- With a scanner row selected, **`n`** prefills observed fields for a new entry
-  (alias required) or jumps to an existing match (BSSID/MAC/UUID or saved
-  SSID/name rule).
-- **Add manual** creates AP, STA, or Bluetooth entries by identifier or by
-  SSID / device name (`match_mode` in `targets.sqlite3`).
+- **`Shift+T`** is the single Targets shortcut on Wi-Fi/Bluetooth scanners,
+  Offline DB, and AP/client/BT/BLE Focus. It opens the centered **targets &
+  whitelist** editor with tabs for All, AP, STA, BLE, BT, and Whitelist,
+  search, detail pane, and **Save** / **Delete**.
+- The editor remembers the row or focused AP/client/BT/BLE device that opened
+  it. Press **New** to start a draft prefilled from that observation (alias is
+  required). With no current observation, **New** creates a manual AP, STA, or
+  Bluetooth entry by identifier or SSID/device name (`match_mode` in
+  `targets.sqlite3`).
+- A collapsed same-SSID infrastructure can be saved directly without expanding
+  it first. **New from selection** creates one SSID-matching rule and previews
+  its AP count, channels, BSSID count, and normalized security level (for
+  example **WPA2-PSK** or **WPA2/3-PSK**).
 - **Whitelist** entries use the same store with `role=whitelist`; they are
   highlighted in scans and block manual deauth in AP/Client Focus.
 - **Targets** (`role=target`) keep aliases, detail snapshots, optional auto-lock,
@@ -416,8 +458,21 @@ The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and 
 - On the startup screen, supported dedicated USB controllers are listed in the **Bluetooth adapters** panel (see [Startup adapter picker](#startup-adapter-picker)); plug-in detection refreshes the list about once per second.
 - The Bluetooth scanner has filters, stable columns, activity counters, signal
   colours, sorting, reverse sorting, and owner-private CSV, JSON, and JSONL
-  exports. Direct USB sessions additionally export bounded HCI command, event,
-  and ACL traffic as a Wireshark-readable `.btsnoop` file.
+  exports. Its headers are directly clickable/touchable for sorting, with a
+  second touch reversing the active column. Direct USB sessions additionally
+  export bounded HCI command, event, and ACL traffic as a Wireshark-readable
+  `.btsnoop` file.
+- A **MODEL** column is filled after read-only GATT identity collection: while
+  you stay on the scanner, a background sweep connects briefly to connectable
+  BLE devices (OS Bleak and/or USB HCI, with discovery paused during each
+  read), reads standardized **Generic Access** device name and **Device
+  Information** (model, manufacturer, serial, firmware/hardware/software, **PnP
+  ID**), and caches the result on the row. Apple internal model strings map to
+  marketing names from bundled identifier tables; other vendors show DIS text,
+  GATT name, or decoded PnP vendor/product labels. The column width tracks the
+  longest visible friendly model string (without repeating the internal ID in
+  parentheses). The sweep stops when you open Bluetooth Focus or leave the
+  scanner; values persist in Bluetooth history (schema v10).
 - Supported dedicated USB controllers perform Bluetooth Classic inquiry,
   resolve remote names, retain page-scan and clock-offset metadata, and browse
   public SDP service records over a bounded ACL/L2CAP session. SDP Focus does
@@ -468,6 +523,22 @@ The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and 
   4.0 [CLUES](https://github.com/darkmentorllc/CLUES_Schema) dataset are useful
   research references but are not bundled because their licenses cannot be
   incorporated into this GPL-2.0-only distribution.
+- **Observer signatures** sit on top of that compiled catalog. Decoders ship
+  inside every OS binary. Match rules live in two JSON files in the OS
+  user-data directory (`signatures-stock.json`, seeded on first launch, and
+  `signatures-user.json`). **Preferences → Scanner** refreshes stock from the
+  pinned GitHub raw URL, exports your rules into `captures/scan_exports/`, and
+  imports a file whose path you type. A refresh never replaces your file.
+  Adding a UUID, company id, SSID fragment, or name does not require a new
+  `wifit3` binary; a new message layout does.
+- Built-in decoders read public advertisements and show state, not only a
+  family name. DULT (`FCB2`) reports the network and **Separated** or **Near
+  owner** (separated is marked `◆`; near owner is not). Find Hub (`FEAA` frames
+  `0x40` and `0x41`) reports **Nearby** or **Separated**; other Eddystone
+  frames stay Eddystone. OpenDroneID on BLE `FFFA` uses the same sentence as
+  the Wi-Fi `· RID` row. The category column shows `DULT tracker · …`,
+  `Find Hub · …`, or `Remote ID · …`. Bluetooth Focus and the JSON export keep
+  the longer sentence. A watch mark is a hypothesis from the advertisement.
 - When privacy-limited platform scans expose only a company identifier, the row
   shows an honest manufacturer-specific device label instead of generic
   `Unknown`/`Other`; it does not invent a phone, computer, or headset subtype.
@@ -479,8 +550,9 @@ The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and 
   network, sensor, display, appliance, and vehicle. Recognized subtypes include
   earbuds, headsets, headphones, speakers, keyboards, mice, gamepads,
   smartwatches, health sensors, and common smart-home devices.
-- Columns include manufacturer, likely type, advertised services, advertisement
-  counts, intervals, identifiers, first seen, and last seen.
+- Columns include device name, **MODEL** (post-GATT identity), signal, likely
+  type, observation counts, intervals, manufacturer, advertised services,
+  identifier, GPS, first seen, and last seen.
 - Anonymous Apple privacy identifiers can appear as a clearly marked approximate group. Expanding that group does not treat rotating identifiers as one physical device.
 - An exact Bluetooth device can be connected read-only, without pairing.
 - Bluetooth Focus shows identity, manufacturer, evidence-backed likely type,
@@ -515,7 +587,8 @@ The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and 
   fingerprint, payload fingerprint, normalized protocol evidence, BlueZ
   modalias, and locally resolved hardware vendor/product/source. Dynamic
   summaries are debounced to at most one database update per device every five
-  seconds; schema v7 migrates existing Bluetooth databases in place.
+  seconds; schema v10 adds GATT identity fields (model, revisions, manufacturer
+  name, GATT device name, PnP ID) on top of earlier migrations.
 
 ### Hidden SSID history
 
@@ -559,11 +632,21 @@ ordinary files; historical PCAPs are not reanalyzed.
 **Offline DB** (`O` on the startup screen, or the yellow **OFFLINE DB** button)
 opens the private SQLite histories with **no Wi-Fi or Bluetooth scan started**.
 Three tabs list saved access points, Wi-Fi clients, and Bluetooth/BLE devices
-with identity, summary, last-seen, and GPS columns. Press **Enter** on a row to
+with identity, summary, app-session, last-seen, and GPS columns. Every time
+wifit3 starts it creates one memorable random two/three-word session name (for
+example `amber-orbit` or `cedar-river-signal`); pass `--case` or
+`./start.sh --case` to name the run and add notes in a dialog first (**Enter**
+in the name or notes field starts the session). That session remains active
+across all Wi-Fi, Bluetooth/BLE, and background scans until the app quits.
+Repeated observations retain all app-session memberships; the table shows the
+latest session plus `+N`, and expanding the row shows every session. Session
+names are also searchable, making separate runs on the same day easy to distinguish.
+Press **Enter** on a row to
 expand every stored field (security, associations, captures, position clusters,
 and similar). **`r`** reloads from disk; **`c` · Clear-DB** opens the history
 deletion dialog (Wi-Fi and/or Bluetooth/BLE, with confirmation phrase
-`DELETE NOW!`); **Escape** returns to device selection.
+`DELETE NOW!`); **Escape** returns to device selection. Every tab's column
+headers can be clicked or touched to sort and touched again to reverse.
 
 Clear-DB removes the selected medium's observations, event history, and saved
 targets. PCAPs, keys, reports, and scan exports are retained.
@@ -572,14 +655,34 @@ A **search row** above the tabs mirrors the live scanners:
 
 | Tab | Dropdown filters | Text search (whitespace tokens, all must match) |
 | --- | --- | --- |
-| Access points | Encryption, WPS, has clients, band (2.4 / 5 / 6 GHz), GPS | SSID, BSSID, vendor, channel, client MACs, identity evidence |
-| Clients | Associated vs unassociated, GPS | Client MAC, vendor, linked SSID or BSSID |
-| BT / BLE | Device category, radio (BLE only, Classic only, or dual) | Name, address, manufacturer, services, protocol |
+| Access points | Encryption, WPS, has clients, band (2.4 / 5 / 6 GHz), GPS | SSID, BSSID, vendor, session, channel, client MACs, identity evidence |
+| Clients | Associated vs unassociated, GPS | Client MAC, session, vendor, linked SSID or BSSID |
+| BT / BLE | Device category, radio (BLE only, Classic only, or dual) | Name, address, session, manufacturer, services, protocol |
 
 Press **`f`** or **`/`** to focus the search field; **Escape** returns focus to
 the table. The table title shows **`matched / total`** when filters hide rows.
 Filter dropdowns are laid out on one line so labels do not wrap on typical
 terminal widths.
+
+### Product catalog
+
+Offline DB rows carry **CLASS** and **FAMILY** columns that label a saved AP,
+client, or Bluetooth/BLE device from a product catalog (for example a vacuum
+`cleaning-robot-wifi`, a wearable, a speaker, or a camera). The catalog ships as
+data outside the binary: a bundled set of **regex families** (SSID, device name,
+vendor, service, and manufacturer patterns grouped into classes) plus your own
+**user overrides**, so a new product family needs no new build.
+
+- **`y` · Catalog** opens a browsable, editable catalog view. Filter by class or
+  free text, inspect each family's match rules, and press **`e`** to edit, **`n`**
+  for a new family, **`s`** to save, or **`d` · Apply to DB rows** to re-classify
+  existing Offline DB records against the current rules. Stock rules stay
+  read-only; your edits are saved as user overrides.
+- **`g` · Family** assigns a catalog family directly to the selected Offline DB
+  row(s) through a small modal, for quick manual labeling without writing a rule.
+
+User catalog overrides live in the OS user-data directory alongside the other
+signature/catalog data and are never overwritten by a stock refresh.
 
 ### RF Spectrum analyzer
 
@@ -591,7 +694,13 @@ directly through PyUSB/libusb; it does not require the operating system's
 - Sweep scopes cover 2.4 GHz Wi-Fi plus Bluetooth/BLE, 5 GHz Wi-Fi, the
   5925–6000 MHz portion of 6 GHz that is inside HackRF One's tuning limit,
   Bluetooth/BLE alone, or the complete 2.4–6.0 GHz range. A second selector
-  can center analysis on one Wi-Fi or BLE advertising channel.
+  can center analysis on one Wi-Fi, Bluetooth Classic, or BLE channel.
+- The scrollable channel-energy table lists the exact center frequency for
+  every visible Wi-Fi channel, all Bluetooth Classic channels **0–78**, and
+  all BLE data/advertising channels **0–39**. Touch any header to sort by
+  radio, channel, frequency, live power, occupancy, or state; touch it again
+  to reverse. The layout was checked at wide (`130×45`) and compact (`100×35`)
+  terminal sizes.
 - FFT resolution adapts to the selected span: 100 kHz for a narrow channel,
   250–500 kHz for individual bands, and 1 MHz for the complete range.
   Processing uses a Hann window, mean/DC removal, and center-spur suppression.
@@ -675,11 +784,10 @@ form). Each setting has a short label above the control.
 | Tab | Settings |
 |-----|----------|
 | **General** | Theme, check for updates on startup |
-| **Scanner** | Table sort delay, hide inactive Wi-Fi/Bluetooth rows |
+| **Scanner** | Table sort delay, hide inactive Wi-Fi/Bluetooth rows, signature pack (refresh stock, export or import user rules) |
 | **Safety** | Deauth/broadcast intensity, confirm before active actions, WPS PBC auto-capture |
 | **Captures** | Save directory, `.pcap` handshakes, target reacquire timeout, capture file size and rotation, auto-lock saved targets |
 | **GPS** | Serial port (blank = auto), movement threshold (≥20 m), max fix error radius |
-| **Radio** | Wi‑Fi regulatory country (World or ISO alpha-2); bundled regdb on supported drivers (splash **(reg)** subtitle) |
 
 **About** (`a`) and the **targets library** (`t`) open from Preferences without
 leaving the modal stack.
@@ -699,6 +807,8 @@ Automatic update checking is off until it is enabled. When it is on, startup sen
 | `bluetooth_history.sqlite3` | Same user-data directory | Bluetooth/BT/BLE identity history and bounded advertisement/GATT event captures |
 | `location_history.sqlite3` | Same user-data directory | Per-AP single-cluster positions and movement-threshold clusters for portable Wi-Fi clients and Bluetooth devices |
 | `oui.txt` | OS user-cache directory for `wifit3` | IEEE manufacturer database |
+| `signatures-stock.json` | OS user-data directory for `wifit3` | Bundled observer rules (DULT, Find Hub, Remote ID). Refresh replaces this file only |
+| `signatures-user.json` | Same user-data directory | Your observer rules. Stock refresh does not touch this file; export copies it under `captures/scan_exports/` |
 | `captures/` | Path set in Preferences, default `captures` | Handshakes (`.hc22000`), EAP lab MS-CHAPv2/NetNTLMv2 Hashcat lines, focused PCAP files, sanitized Enterprise reports, and other Vault artifacts |
 | `captures/scan_exports/` | Under the capture directory | Wi-Fi CSV/JSON, Bluetooth CSV/JSON/JSONL snapshots, and direct-USB Bluetooth `.btsnoop` captures |
 
@@ -773,7 +883,7 @@ PortaPack LCD may remain unchanged while the host tunes the radio.
 
 ### Dedicated Bluetooth Classic + BLE adapter
 
-The normal **SCAN BLE** action continues to use the operating system's Bluetooth adapter through Bleak and does not require dedicated hardware. When a supported controller is detected, **BT/BLE Scan** appears. Classic-only controllers run direct Classic HCI concurrently with system BLE; dual-mode controllers can perform direct Classic inquiry and passive BLE discovery.
+The startup **`B`** action uses the operating system's BLE adapter through Bleak when OS BLE is enabled, and adds selected USB controllers when present. Classic-only dongles run direct Classic HCI; dual-mode sticks support per-row **ALL | BT | BLE** modes and can run Classic inquiry alongside OS BLE.
 
 | Chipset | Modes | Supported USB IDs | Notes |
 |---|---|---|---|
@@ -797,11 +907,11 @@ Documented commercial RTL8761BU/RTL8761BUV adapters:
 document that the silicon fitted to many of these dongles is marked
 `RTL8761BUV`; this is distinct from the UART-oriented `RTL8761BTV`.
 
-Retail vendors may change chipsets without changing a product name, so support is determined by USB ID rather than branding. Use a dedicated adapter: direct mode temporarily claims it from the operating system, and Windows requires the adapter to be bound to WinUSB. If macOS or Linux has already claimed the Sena controller, the red alert asks you to unplug and re-plug it so wifit3 can reserve it.
+Retail vendors may change chipsets without changing a product name, so support is determined by USB ID rather than branding. Use a dedicated adapter: direct mode temporarily claims it from the operating system, and Windows requires the adapter to be bound to WinUSB. If macOS has already claimed a dedicated controller (Sena or a dual-mode stick such as RTL8761BU), the red alert asks you to unplug and re-plug it. wifit3 reserves the adapter as soon as it reappears, so the next scan does not have to win a race against the OS driver.
 
 ## Installation and running
 
-Python 3.11 or newer is required to run from source. Release **0.3.11** binaries are published from this fork.
+Python 3.11 or newer is required to run from source. Release **0.3.12** binaries are published from this fork.
 
 ### Option 1: Download a prebuilt binary
 
@@ -826,7 +936,9 @@ uv sync
 uv run wifit3
 ```
 
-`./start.sh` creates a local virtualenv, installs the package, and launches the same entry point.
+`./start.sh` creates a local virtualenv, installs the package, and launches the same entry point. Each run gets an automatic memorable scan-session name for Offline DB grouping; add **`--case`** when you want to set the name and optional notes in a dialog first (**Enter** accepts; `wifit3 --case` works the same).
+
+`./start.sh --background --all` stays on the startup screen and records Wi-Fi, Bluetooth Classic, and BLE together until Ctrl+Q or **Stop monitor**. GPS positions are stored when a receiver is connected. The on-screen **BACKGROUND** button uses the cards and the OS BLE switch you have enabled; `--all` turns those three sources on for that launch. Combine flags as needed (for example `./start.sh --case --background --all`).
 
 ### Option 3: Build a binary
 

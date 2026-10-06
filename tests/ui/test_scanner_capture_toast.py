@@ -21,7 +21,7 @@ async def test_scanner_capture_win_raises_toast():
         assert isinstance(scanner, ScannerView)
 
         toasts: list = []
-        scanner.notify = lambda msg, **kw: toasts.append((kw.get("title"), msg))
+        app.notify = lambda msg, **kw: toasts.append((kw.get("title"), msg))
 
         ap = AccessPoint(bssid="aa:bb:cc:dd:ee:06", ssid="dd-wrt", channel=6)
         ev = CaptureEvent(kind=CaptureKind.WEP_KEY, bssid=ap.bssid, ssid=ap.ssid,
@@ -42,7 +42,7 @@ async def test_scanner_withheld_handshake_is_log_only_no_toast():
         scanner = app.screen
 
         toasts: list = []
-        scanner.notify = lambda msg, **kw: toasts.append((kw.get("title"), msg))
+        app.notify = lambda msg, **kw: toasts.append((kw.get("title"), msg))
 
         ap = AccessPoint(bssid="aa:bb:cc:dd:ee:07", ssid="CorpNet", channel=1)
         ev = CaptureEvent(kind=CaptureKind.UNCRACKABLE_HANDSHAKE, bssid=ap.bssid,

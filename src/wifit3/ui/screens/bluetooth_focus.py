@@ -14,6 +14,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, DataTable, Footer, Static
 
+from wifit3.ui.catalog_format import catalog_detail_lines, catalog_status_line
 from wifit3.ui.notification_center import WifiteHeader
 
 from wifit3.bluetooth.apple_identifiers import format_device_model_number
@@ -308,14 +309,39 @@ def _bluetooth_device_art(
     art.append("\n")
     art.append(centered(manufacturer), style="cyan")
     art.append("\n")
+    if device is not None and device.catalog_labels:
+        family = " · ".join(device.catalog_labels[:2])
+        if device.catalog_attention:
+            family = f"◆ {family}"
+        style = "bold yellow" if device.catalog_attention else "bold cyan"
+        art.append(centered(family), style=style)
+        art.append("\n")
     if device is not None and device.decode_state:
         art.append(centered(device.decode_state), style="bold yellow")
+        art.append("\n")
+    elif device is not None and device.catalog_live:
+        style = "bold yellow" if device.catalog_live_strong else "yellow"
+        art.append(centered(device.catalog_live), style=style)
         art.append("\n")
     if device is not None:
         art.append(centered(f"{device.rssi} dBm"), style=dbm_style(device.rssi))
         art.append("\n")
     art.append(centered(identifier), style="dim")
     return art
+
+
+def _catalog_block(device) -> str:
+    lines = catalog_detail_lines(device)
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n"
+
+
+def _status_with_catalog(primary: str, device) -> str:
+    extra = catalog_status_line(device)
+    if not extra:
+        return primary
+    return f"{primary}\n{extra}"
 
 
 class _BluetoothTrafficDashboard(Static):
@@ -492,7 +518,8 @@ class BluetoothFocusView(Screen):
         Binding("escape", "go_back", "Back"),
         Binding("r", "read_selected", "Read selected"),
         Binding("a", "toggle_ascii", "ASCII"),
-        Binding("shift+t", "targets_editor", "Targets"),
+        Binding("y", "open_catalog", "Catalog"),
+        Binding("n", "targets_editor", "Targets"),
     ]
 
     CSS = """
@@ -694,7 +721,10 @@ class BluetoothFocusView(Screen):
         else:
             status = "[bold cyan]● OBSERVED[/bold cyan]"
         self.query_one("#bt-status", Static).update(
-            f"{status}  {escape(device.name)}  [dim]{mode}[/dim]",
+            _status_with_catalog(
+                f"{status}  {escape(device.name)}  [dim]{mode}[/dim]",
+                device,
+            ),
         )
         self.query_one("#bt-device", Static).update(
             _bluetooth_device_art(None, device=device),
@@ -731,8 +761,11 @@ class BluetoothFocusView(Screen):
             if locked is not None and locked.medium == "bluetooth" else ""
         )
         self.query_one("#bt-status", Static).update(
-            f"[bold {state_color}]● {state}[/bold {state_color}]  "
-            f"{escape(device.name)}{target_status}"
+            _status_with_catalog(
+                f"[bold {state_color}]● {state}[/bold {state_color}]  "
+                f"{escape(device.name)}{target_status}",
+                device,
+            ),
         )
         self.query_one("#bt-device", Static).update(_bluetooth_device_art(inspection))
         characteristic_count = sum(len(service.characteristics) for service in inspection.services)
@@ -752,11 +785,17 @@ class BluetoothFocusView(Screen):
             f"[{style}]{label[0]}{counts[severity]}[/]"
             for severity, (label, style) in sorted(_SEVERITY_STYLES.items(), reverse=True)
         )
+        transport_label = self.app.bluetooth_manager.connection_transport_label()
+        via = (
+            f"[dim]via[/dim] [bold]{escape(transport_label)}[/bold]  "
+            if transport_label and inspection.connected else ""
+        )
         self.query_one("#bt-connection", Static).update(
             f"[cyan]╼━━━━━━━━━━━━[/cyan]"
             f"[bold {state_color}]━━●━━━━━━━━━━━━▶[/bold {state_color}]\n"
             f"[bold cyan]BLE / GATT[/bold cyan]  "
             f"[bold {state_color}]{state}{state_duration}[/bold {state_color}]  "
+            f"{via}"
             f"[bold bright_blue]→ {escape(device.name)}[/bold bright_blue]\n"
             f"[dim]Link[/dim] {device.rssi} dBm  •  "
             f"[dim]Services[/dim] {len(inspection.services)}  •  "
@@ -1010,7 +1049,7 @@ class BluetoothFocusView(Screen):
                     continue
                 value = self._value_markup(characteristic)
                 property_details = "\n".join(
-                    f"  [cyan]•[/cyan] [bold]{escape(property_name)}[/bold] — "
+                    f"  [cyan]•[/cyan] [bold]{escape(property_name)}[/bold] - "
                     f"{escape(characteristic_property_detail(property_name))}"
                     for property_name in characteristic.properties
                 ) or "  [dim]none advertised[/dim]"
@@ -1113,7 +1152,9 @@ class BluetoothFocusView(Screen):
             f"[dim]Category[/dim] {escape(classification.category)} · "
             f"{escape(classification.detail)}\n"
             f"[dim]Protocol[/dim] {escape(device.protocol_type or 'unknown')} "
-            f"({escape(device.protocol_confidence or 'n/a')})\n\n"
+            f"({escape(device.protocol_confidence or 'n/a')})\n"
+            + _catalog_block(device)
+            + "\n"
             f"[bold]Address & privacy[/bold]\n"
             f"[dim]Type[/dim] {escape(device.address_type)}\n"
             f"[dim]Kind[/dim] {escape(_address_kind_label(device.address_type))}\n\n"
@@ -1144,6 +1185,11 @@ class BluetoothFocusView(Screen):
             prefill=bluetooth_candidate(device) if device is not None else None,
         )
 
+
+    def action_open_catalog(self) -> None:
+        from wifit3.ui.screens.catalog import open_catalog
+
+        open_catalog(self)
 
     def action_go_back(self) -> None:
         self.disconnect_and_return()
@@ -1177,6 +1223,11 @@ class BluetoothFocusView(Screen):
             self._show_characteristic(str(row_key.value))
 
     def _shown_value(self, characteristic) -> str:
+        short = compact_uuid(characteristic.uuid)
+        if short == "2a24" and characteristic.value and not self._show_ascii:
+            friendly = format_device_model_number(characteristic.value)
+            if friendly:
+                return friendly
         return gatt_display_value(
             characteristic.value,
             characteristic.value_hex,
@@ -1198,7 +1249,7 @@ class BluetoothFocusView(Screen):
                 raw = bytes.fromhex(characteristic.value_hex.replace(" ", ""))
             except ValueError:
                 raw = b""
-            decoded = decode_pnp_id(raw)
+            decoded = decode_pnp_id(raw, detail=True)
             if decoded:
                 markup += f"\n\n[dim]PnP identity[/dim]\n[bold cyan]{escape(decoded)}[/bold cyan]"
         return markup
@@ -1213,7 +1264,11 @@ class BluetoothFocusView(Screen):
                     return
                 try:
                     await self.app.bluetooth_manager.connect(device)
-                    self.notify("Bluetooth target reacquired", title="Target lock", persist=True)
+                    self.app.notify(
+                        "Bluetooth target reacquired",
+                        title="Target lock",
+                        persist=True,
+                    )
                     return
                 except Exception:
                     await asyncio.sleep(2)
