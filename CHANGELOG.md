@@ -6,6 +6,13 @@ build compared with the original
 
 ## Unreleased
 
+## 0.3.18 - 2026-10-06
+
+### Changed
+
+- Published a follow-up release to test the repaired automatic update path
+  from a frozen 0.3.17 executable.
+
 ## 0.3.17 - 2026-10-06
 
 ### Fixed
