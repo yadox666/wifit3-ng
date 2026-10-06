@@ -6,6 +6,17 @@ build compared with the original
 
 ## Unreleased
 
+## 0.3.17 - 2026-10-06
+
+### Fixed
+
+- Frozen update checks now use a bundled, current CA certificate store instead
+  of relying on OpenSSL paths that are absent from the macOS executable.
+- Automatic update-check failures are shown as notifications instead of being
+  visible only in `wifit3.log`.
+- The release smoke test now verifies that the bundled CA store contains
+  trusted certificate authorities.
+
 ## 0.3.16 - 2026-10-06
 
 ### Changed

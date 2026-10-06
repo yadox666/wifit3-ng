@@ -6,6 +6,7 @@ import sys
 
 import pytest
 
+import wifit3.updates as updates_module
 from wifit3 import __version__
 from wifit3.updates import (
     LATEST_RELEASE_API,
@@ -29,6 +30,32 @@ class _Response:
 
     def read(self, size=-1):
         return json.dumps(self._payload).encode()[:size]
+
+
+def test_secure_opener_uses_bundled_ca_file(monkeypatch):
+    request = object()
+    context = object()
+    calls = {}
+    monkeypatch.setattr(updates_module.certifi, "where", lambda: "/bundle/cacert.pem")
+    monkeypatch.setattr(
+        updates_module.ssl,
+        "create_default_context",
+        lambda *, cafile: calls.setdefault("cafile", cafile) and context,
+    )
+
+    def fake_urlopen(value, *, timeout, context):
+        calls.update(request=value, timeout=timeout, context=context)
+        return "response"
+
+    monkeypatch.setattr(updates_module, "urlopen", fake_urlopen)
+
+    assert updates_module._secure_urlopen(request, timeout=5.0) == "response"
+    assert calls == {
+        "cafile": "/bundle/cacert.pem",
+        "request": request,
+        "timeout": 5.0,
+        "context": context,
+    }
 
 
 def test_update_check_reads_fork_release_response():

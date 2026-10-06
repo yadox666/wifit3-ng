@@ -782,10 +782,13 @@ class WifiteApp(App):
             update = check_for_update()
         except Exception as exc:
             logger.warning("Update check failed: %s", exc)
-            if show_current:
-                self.call_from_thread(
-                    self.notify, str(exc), title="Update check failed", severity="error",
-                )
+            self.call_from_thread(
+                self.notify,
+                str(exc),
+                title="Update check failed",
+                severity="error" if show_current else "warning",
+                timeout=12,
+            )
             return
         if update.update_available:
             self.call_from_thread(

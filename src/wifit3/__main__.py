@@ -16,6 +16,7 @@ async def _smoke() -> None:
       3. ``supported_ids()`` is non-empty: the pkgutil chip-discovery walk only enumerates
          drivers PyInstaller actually collected, so an empty map means the bundle shipped with
          no drivers and the app would launch but show zero interfaces.
+      4. The bundled TLS CA store loads and contains trusted certificate authorities.
     """
     import ctypes
     import os
@@ -40,6 +41,11 @@ async def _smoke() -> None:
 
     if not supported_ids():
         raise RuntimeError("chip discovery found no driver packages (PyInstaller bundling break)")
+
+    from wifit3.updates import _tls_context
+
+    if _tls_context().cert_store_stats().get("x509_ca", 0) < 1:
+        raise RuntimeError("bundled TLS CA store contains no trusted certificate authorities")
 
 
 def build_parser():
