@@ -6,6 +6,13 @@ build compared with the original
 
 ## Unreleased
 
+## 0.3.13 - 2026-10-06
+
+### Fixed
+
+- Release builds no longer force-include Bluetooth lab and evil-twin portal
+  files that the public tree does not ship.
+
 ## 0.3.12 - 2026-10-06
 
 ### Added
