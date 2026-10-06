@@ -6,6 +6,13 @@ build compared with the original
 
 ## Unreleased
 
+## 0.3.14 - 2026-10-06
+
+### Fixed
+
+- macOS universal2 release builds lipo NumPy's arm64 and x86_64 wheels into
+  fat binaries before PyInstaller packs the app.
+
 ## 0.3.13 - 2026-10-06
 
 ### Fixed

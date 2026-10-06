@@ -160,6 +160,53 @@ jobs:
           lipo_output=$(lipo -archs "$target")
           grep -qw x86_64 <<<"$lipo_output" && grep -qw arm64 <<<"$lipo_output"
 
+      # NumPy publishes separate arm64 and x86_64 wheels, not a universal2 wheel. PyInstaller
+      # aborts the fat build on the first thin extension (numpy/_core/_multiarray_tests).
+      - name: Lipo numpy into universal2 binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          ver=$(uv run --no-sync python -c "from importlib.metadata import version; print(version('numpy'))")
+          echo "fattening numpy $ver"
+          meta=$(curl -fsSL "https://pypi.org/pypi/numpy/$ver/json")
+          pick() {
+            python3 -c "import json,sys; print(next(u['url'] for u in json.load(sys.stdin)['urls'] if '$1' in u['filename'] and 'cp312' in u['filename']))" <<<"$meta"
+          }
+          if python3 -c "import json,sys; names=[u['filename'] for u in json.load(sys.stdin)['urls']]; raise SystemExit(0 if any('cp312' in n and 'macosx_14_0_arm64' in n for n in names) and any('cp312' in n and 'macosx_14_0_x86_64' in n for n in names) else 1)" <<<"$meta"; then
+            arm_plat=macosx_14_0_arm64
+            x64_plat=macosx_14_0_x86_64
+          else
+            arm_plat=macosx_11_0_arm64
+            x64_plat=macosx_10_13_x86_64
+          fi
+          curl -fsSL -o "$work/arm.whl" "$(pick "$arm_plat")"
+          curl -fsSL -o "$work/x64.whl" "$(pick "$x64_plat")"
+          unzip -qo "$work/arm.whl" -d "$work/arm"
+          unzip -qo "$work/x64.whl" -d "$work/x64"
+          sp=$(uv run --no-sync python -c "import numpy, pathlib; print(pathlib.Path(numpy.__file__).resolve().parent.parent)")
+          count=0
+          while IFS= read -r armfile; do
+            rel=${armfile#"$work/arm/"}
+            x64file="$work/x64/$rel"
+            if [[ ! -f "$x64file" ]]; then
+              echo "no x86_64 counterpart, leaving thin: $rel"
+              continue
+            fi
+            fat="$work/fat/$rel"
+            mkdir -p "$(dirname "$fat")"
+            lipo -create "$x64file" "$armfile" -output "$fat"
+            codesign --sign - --force "$fat"
+            mkdir -p "$(dirname "$sp/$rel")"
+            cp "$fat" "$sp/$rel"
+            count=$((count + 1))
+          done < <(find "$work/arm/numpy" -type f \( -name '*.so' -o -name '*.dylib' \))
+          echo "fattened $count numpy binaries"
+          test "$count" -gt 0
+          sample=$(find "$sp/numpy" -name '_multiarray_umath*.so' -type f | head -n 1)
+          lipo_output=$(lipo -archs "$sample")
+          grep -qw x86_64 <<<"$lipo_output" && grep -qw arm64 <<<"$lipo_output"
+
       - name: Build onefile binary (universal2)
         run: uv run --no-sync pyinstaller wifit3.spec --noconfirm --clean
 

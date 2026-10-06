@@ -1,9 +1,9 @@
 # wifit3-ng
-> Version 0.3.13. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
+> Version 0.3.14. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
 
-**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.13 - yadox666`.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.14 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.13**. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.14**. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
@@ -49,6 +49,8 @@ These capabilities come from the original [derv82/wifit3](https://github.com/der
 ## Fork additions (yadox666)
 
 The sections below are the additions in this fork (0.3.4 through current). They sit on top of the original auditor.
+
+**0.3.14:** macOS release builds merge NumPy's separate arm64 and Intel wheels into the universal2 binary.
 
 **0.3.13:** release packaging no longer lists Bluetooth lab or evil-twin portal assets that this tree does not ship.
 
@@ -913,7 +915,7 @@ Retail vendors may change chipsets without changing a product name, so support i
 
 ## Installation and running
 
-Python 3.11 or newer is required to run from source. Release **0.3.13** binaries are published from this fork.
+Python 3.11 or newer is required to run from source. Release **0.3.14** binaries are published from this fork.
 
 ### Option 1: Download a prebuilt binary
 
