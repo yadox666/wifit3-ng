@@ -6,6 +6,13 @@ build compared with the original
 
 ## Unreleased
 
+## 0.3.16 - 2026-10-06
+
+### Changed
+
+- Published a follow-up release to exercise the verified in-app update flow
+  introduced in 0.3.15.
+
 ## 0.3.15 - 2026-10-06
 
 ### Added
