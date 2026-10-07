@@ -207,6 +207,38 @@ def test_refresh_stores_a_valid_pack(pack):
     assert pack.stock_path().is_file()
 
 
+def test_signature_download_uses_secure_opener(pack, monkeypatch):
+    class Response:
+        def __init__(self):
+            self._blocks = [b'{"schema": 1, "rules": []}', b""]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def read(self, _size):
+            return self._blocks.pop(0)
+
+    class Opener:
+        def open(self, request, timeout):
+            assert request.full_url == pack._STOCK_URL
+            assert timeout == pack._TIMEOUT_S
+            return Response()
+
+    handlers = []
+
+    def secure_opener(*values):
+        handlers.extend(values)
+        return Opener()
+
+    monkeypatch.setattr(pack, "build_secure_opener", secure_opener)
+
+    assert pack._download(pack._STOCK_URL) == b'{"schema": 1, "rules": []}'
+    assert any(isinstance(handler, pack._HostRedirect) for handler in handlers)
+
+
 def test_refresh_download_refuses_a_foreign_redirect():
     import urllib.error
     import urllib.request

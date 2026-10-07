@@ -4,19 +4,18 @@ import json
 import hashlib
 import os
 import platform
-import ssl
 import stat
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
-import certifi
 from packaging.version import InvalidVersion, Version
 
 from wifit3 import __version__
+from wifit3.https import secure_urlopen
 
 
 LATEST_RELEASE_API = "https://api.github.com/repos/yadox666/wifit3-ng/releases/latest"
@@ -24,15 +23,6 @@ RELEASES_URL = "https://github.com/yadox666/wifit3-ng/releases"
 MAX_RESPONSE_BYTES = 65_536
 MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024
 _RELEASE_PATH_PREFIX = "/yadox666/wifit3-ng/releases/"
-
-
-def _tls_context() -> ssl.SSLContext:
-    return ssl.create_default_context(cafile=certifi.where())
-
-
-def _secure_urlopen(request: Request, *, timeout: float):
-    """Open HTTPS using a CA bundle that is also present in frozen builds."""
-    return urlopen(request, timeout=timeout, context=_tls_context())
 
 
 @dataclass(frozen=True)
@@ -128,7 +118,7 @@ def _asset_is_trusted(asset: UpdateAsset, version: str) -> bool:
     )
 
 
-def check_for_update(*, opener=_secure_urlopen) -> UpdateInfo:
+def check_for_update(*, opener=secure_urlopen) -> UpdateInfo:
     """Query this fork's GitHub release endpoint without sending scan or device data."""
     request = Request(
         LATEST_RELEASE_API,
@@ -169,7 +159,7 @@ def can_install_update(update: UpdateInfo) -> bool:
 def install_update(
     update: UpdateInfo,
     *,
-    opener=_secure_urlopen,
+    opener=secure_urlopen,
     executable_path: Path | None = None,
 ) -> Path:
     """Download, verify, and atomically replace a macOS/Linux one-file executable."""

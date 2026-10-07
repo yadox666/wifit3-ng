@@ -13,6 +13,7 @@ from typing import Mapping
 
 from platformdirs import user_data_dir
 
+from wifit3.https import build_secure_opener
 from wifit3.observe.remote_id import summarize_remote_id
 from wifit3.observe.tracker_state import TrackerState, decode_dult, decode_find_hub
 from wifit3.persist.private_files import write_private_text
@@ -471,7 +472,7 @@ def _download(url: str) -> bytes:
         "Accept": "application/json",
         "Accept-Encoding": "identity",
     })
-    opener = urllib.request.build_opener(_HostRedirect())
+    opener = build_secure_opener(_HostRedirect())
     chunks: list[bytes] = []
     total = 0
     with opener.open(request, timeout=_TIMEOUT_S) as response:

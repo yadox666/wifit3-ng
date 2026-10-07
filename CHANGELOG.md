@@ -6,6 +6,21 @@ build compared with the original
 
 ## Unreleased
 
+## 0.3.19 - 2026-10-07
+
+### Fixed
+
+- Signature-pack refresh now uses the same bundled CA certificate store as
+  release checks, fixing `URLError` in frozen macOS builds.
+- Update and signature downloads now share one verified HTTPS implementation
+  so future remote fetches do not silently fall back to missing OpenSSL paths.
+
+### Documentation
+
+- Updated the README through 0.3.19 with the verified automatic-update flow,
+  bundled CA handling, platform limitations, restart behavior, visible update
+  and signature errors, and SSID-only Vault credential precedence.
+
 ## 0.3.18 - 2026-10-06
 
 ### Changed

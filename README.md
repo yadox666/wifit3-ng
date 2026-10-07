@@ -1,9 +1,9 @@
 # wifit3-ng
-> Version 0.3.14. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
+> Version 0.3.19. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
 
-**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.14 - yadox666`.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.19 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.14**. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.19**. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
@@ -50,6 +50,22 @@ These capabilities come from the original [derv82/wifit3](https://github.com/der
 
 The sections below are the additions in this fork (0.3.4 through current). They sit on top of the original auditor.
 
+**0.3.19:** signature-pack refresh and release checks share the bundled,
+verified HTTPS/CA implementation, fixing `URLError` in frozen macOS builds.
+
+**0.3.18:** follow-up release used to exercise the repaired automatic updater
+from a frozen 0.3.17 executable.
+
+**0.3.17:** frozen builds bundle a current CA certificate store for update
+checks, surface update-check failures as notifications, and verify the CA store
+during release smoke tests.
+
+**0.3.15–0.3.16:** macOS and Linux frozen builds can install a platform-matched
+release after explicit confirmation. The download URL is restricted to this
+repository, its size and GitHub-published SHA-256 digest are verified, and the
+executable is replaced atomically. Vault WPA credentials may also be stored for
+an SSID without a BSSID and reused across that SSID's access points.
+
 **0.3.14:** macOS release builds merge NumPy's separate arm64 and Intel wheels into the universal2 binary.
 
 **0.3.13:** release packaging no longer lists Bluetooth lab or evil-twin portal assets that this tree does not ship.
@@ -90,7 +106,10 @@ The startup screen shows a centered row of primary actions: **START WI-FI**, an 
 Vault is available only in Wi-Fi mode. Opening it from an AP row or AP Focus
 retains that AP as context: **Add PSK** prefills the confirmed SSID and BSSID,
 then focuses the masked credential field. The generic **Add** action remains
-available for WPA, WEP, and WPS imports.
+available for WPA, WEP, and WPS imports. A WPA entry may leave BSSID blank to
+cover every AP advertising that exact, case-sensitive SSID. Exact-BSSID
+credentials take precedence, hidden or unknown SSIDs never use this fallback,
+and conflicting SSID-only credentials are not guessed.
 
 ### Notification history
 
@@ -796,7 +815,26 @@ form). Each setting has a short label above the control.
 **About** (`a`) and the **targets library** (`t`) open from Preferences without
 leaving the modal stack.
 
-Automatic update checking is off until it is enabled. When it is on, startup sends one HTTPS request to the [yadox666/wifit3-ng latest-release API](https://api.github.com/repos/yadox666/wifit3-ng/releases/latest). The check reports an available release. It does not download or install it, and it does not send scan or device data. About can run the same check on demand.
+Automatic update checking is off until it is enabled. When it is on, startup
+sends one HTTPS request to the
+[yadox666/wifit3-ng latest-release API](https://api.github.com/repos/yadox666/wifit3-ng/releases/latest).
+It never sends scan data, device identifiers, credentials, or other local
+content. **About → Check for updates** runs the same check on demand, reports
+the current version, and shows network or certificate failures instead of
+silently ignoring them.
+
+For frozen macOS and Linux releases, an available update offers **Install
+update**. Installation remains opt-in: wifit3 selects only the published asset
+for the running platform, accepts only this repository's HTTPS release path,
+limits the download size, and verifies the exact byte count and GitHub-published
+SHA-256 digest before atomically replacing the executable. The new version is
+used after wifit3 is restarted. The release bundles its own current CA
+certificate store so HTTPS validation does not depend on missing PyInstaller
+OpenSSL paths. Source checkouts (`start.sh`) and Windows builds do not replace
+themselves; they open the validated release page for manual installation.
+Refreshing the stock observer signature pack uses the same verified HTTPS and
+bundled CA path; user signature files are never uploaded or replaced by that
+refresh.
 
 ### Private local files
 
@@ -915,7 +953,7 @@ Retail vendors may change chipsets without changing a product name, so support i
 
 ## Installation and running
 
-Python 3.11 or newer is required to run from source. Release **0.3.14** binaries are published from this fork.
+Python 3.11 or newer is required to run from source. Release **0.3.19** binaries are published from this fork.
 
 ### Option 1: Download a prebuilt binary
 

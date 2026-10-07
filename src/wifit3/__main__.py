@@ -42,9 +42,9 @@ async def _smoke() -> None:
     if not supported_ids():
         raise RuntimeError("chip discovery found no driver packages (PyInstaller bundling break)")
 
-    from wifit3.updates import _tls_context
+    from wifit3.https import tls_context
 
-    if _tls_context().cert_store_stats().get("x509_ca", 0) < 1:
+    if tls_context().cert_store_stats().get("x509_ca", 0) < 1:
         raise RuntimeError("bundled TLS CA store contains no trusted certificate authorities")
 
 
