@@ -1,9 +1,9 @@
 # wifit3-ng
-> Version 0.3.19. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
+> Version 0.3.20. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
 
-**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.19 - yadox666`.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.20 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.19**, with further Enterprise/EAP lab UI and lab-radio work under **[Unreleased](CHANGELOG.md#unreleased)** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.20** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
@@ -50,15 +50,15 @@ These capabilities come from the original [derv82/wifit3](https://github.com/der
 
 The sections below are the additions in this fork (0.3.4 through current). They sit on top of the original auditor.
 
-**0.3.19:** signature-pack refresh and release checks share the bundled,
-verified HTTPS/CA implementation, fixing `URLError` in frozen macOS builds.
-
-**Unreleased:** Enterprise panel refresh — **EAP AP test** and **EAP clients
+**0.3.20:** Enterprise panel refresh — **EAP AP test** and **EAP clients
 test** with spoof-capable **card and channel** pickers (2.4 / 5 GHz labels;
 prefers dual-band **ALFA AWUS1900** when several adapters are connected),
 compact honeypot launch modal (short labels, tooltips for full text), **Save
 Report** as Markdown under `captures/`, and shared EAP lab progress logging in
-Focus and the Wi-Fi scanner. Details in [CHANGELOG → Unreleased](CHANGELOG.md#unreleased).
+Focus and the Wi-Fi scanner. Details in [CHANGELOG → 0.3.20](CHANGELOG.md#0320---2026-10-10).
+
+**0.3.19:** signature-pack refresh and release checks share the bundled,
+verified HTTPS/CA implementation, fixing `URLError` in frozen macOS builds.
 
 **0.3.18:** follow-up release used to exercise the repaired automatic updater
 from a frozen 0.3.17 executable.
@@ -978,7 +978,7 @@ Retail vendors may change chipsets without changing a product name, so support i
 
 ## Installation and running
 
-Python 3.11 or newer is required to run from source. Release **0.3.19** binaries are published from this fork.
+Python 3.11 or newer is required to run from source. Release **0.3.20** binaries are published from this fork.
 
 ### Option 1: Download a prebuilt binary
 
