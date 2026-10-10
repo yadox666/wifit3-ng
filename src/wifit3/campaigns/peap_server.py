@@ -175,7 +175,7 @@ class PeapServerResult:
     detail: str = ""
     misconfiguration: str | None = None
     rejected_lab: bool = False
-    # (username, password) from inner PAP — persisted to Vault, never echoed in detail.
+    # (username, password) from inner PAP - persisted to Vault, never echoed in detail.
     lab_credential: tuple[str, str] | None = None
 
 

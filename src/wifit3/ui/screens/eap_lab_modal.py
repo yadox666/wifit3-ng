@@ -90,7 +90,7 @@ class EapLabModal(ModalScreen[EapLabLaunchConfig | None]):
             yield _option(
                 "Evict real-AP clients",
                 "Evict clients from the real AP (deauth + CSA + BTM). "
-                "Off by default — pauses automatically while a phone joins the lab.",
+                "Off by default - pauses automatically while a phone joins the lab.",
                 value=False,
                 id="lab-eviction",
             )
@@ -128,7 +128,7 @@ class EapLabModal(ModalScreen[EapLabLaunchConfig | None]):
             yield _option(
                 "Request client certificate",
                 "Request a client certificate (EAP-TLS only). Leave off for "
-                "PEAP/MS-CHAPv2 — phones treat CertificateRequest as a "
+                "PEAP/MS-CHAPv2 - phones treat CertificateRequest as a "
                 "user-certificate picker and leave.",
                 value=False,
                 id="lab-client-cert",
@@ -219,7 +219,7 @@ class EnterpriseProbeModal(ModalScreen[EnterpriseProbeConfig | None]):
             yield Label("Enterprise deep lab probe", id="title")
             yield Label(
                 f"Against {self.ssid}: PEAP/TTLS/TLS mapping and MS-CHAPv2 server challenge. "
-                "No password is sent. Nothing is written to Vault — only the "
+                "No password is sent. Nothing is written to Vault - only the "
                 "honeypot saves a complete MS-CHAPv2 capture. "
                 "Default identity is LAB_USER from eap-lab/lab.env. Add more with commas.",
                 id="description",

@@ -230,7 +230,7 @@ class PeapHoneypotCampaign(Campaign):
         self._event(f"RSN profile · {self.rsn_source}")
         if self.ssid == self.target_ssid:
             self._event(
-                f"Join twin {self.bssid_text} — same SSID as "
+                f"Join twin {self.bssid_text} - same SSID as "
                 f"{mac_to_str(self._real_bssid)}. Phones hide it; forget "
                 f"{self.target_ssid} or enable a distinct lab SSID."
             )
@@ -246,7 +246,7 @@ class PeapHoneypotCampaign(Campaign):
             )
             if self._launch.eviction:
                 self._event(
-                    "Eviction still aims at the real AP channel — "
+                    "Eviction still aims at the real AP channel - "
                     "this card cannot punt off-channel"
                 )
         if self._launch.security_assessment:
@@ -388,7 +388,7 @@ class PeapHoneypotCampaign(Campaign):
             self._dispatch(packet)
         except Exception:
             logger.exception("EAP lab RX handler failed")
-            self._event("RX handler error — see wifit3 log")
+            self._event("RX handler error - see wifit3 log")
 
     def _note(self, client_text: str, kind: str, message: str) -> None:
         key = (client_text, kind)
@@ -492,7 +492,7 @@ class PeapHoneypotCampaign(Campaign):
                         source_text,
                         "real-eapol",
                         f"CLIENT {source_text} · EAPOL to the REAL AP "
-                        f"{mac_to_str(self._real_bssid)} — not twin {self.bssid_text}",
+                        f"{mac_to_str(self._real_bssid)} - not twin {self.bssid_text}",
                     )
             return
         if type_id != 0:
@@ -506,7 +506,7 @@ class PeapHoneypotCampaign(Campaign):
                 source_text,
                 f"real-{what}",
                 f"CLIENT {source_text} · {what} to the REAL AP "
-                f"{mac_to_str(self._real_bssid)} — not twin {self.bssid_text}. "
+                f"{mac_to_str(self._real_bssid)} - not twin {self.bssid_text}. "
                 f"Forget {self.ssid} or join {self.bssid_text}",
             )
             return
@@ -548,7 +548,7 @@ class PeapHoneypotCampaign(Campaign):
         if state is None or state.phase < OpenProbePhase.ASSOCIATED:
             if raw.find(LLC_SNAP_EAPOL) == -1:
                 return
-            self._event(f"CLIENT {source_text} · EAPOL before assoc — accepting")
+            self._event(f"CLIENT {source_text} · EAPOL before assoc - accepting")
             state = self._accept_client(source, source_text)
         parsed_dhcp = parse_client_dhcp(raw, source)
         if parsed_dhcp is not None:
@@ -845,7 +845,7 @@ class PeapHoneypotCampaign(Campaign):
             logger.exception("EAP lab tcpdump capture unavailable")
             self._pcap = None
             self.pcap_path = None
-            self._event("tcpdump capture failed — lab continues without pcap")
+            self._event("tcpdump capture failed - lab continues without pcap")
 
     def _capture_frame(self, frame: bytes) -> None:
         if self._pcap is None or not frame:

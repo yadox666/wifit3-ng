@@ -171,7 +171,7 @@ def _assoc_fail_detail(ap, fail_reason: str | None) -> str:
     }
     if "caps-unsupported" in detail and "00:0c:42" in ouis:
         return (
-            f"{detail}; AirOS airMAX is advertised — disable airMAX "
+            f"{detail}; AirOS airMAX is advertised - disable airMAX "
             "so standard 802.11 clients can associate"
         )
     return detail

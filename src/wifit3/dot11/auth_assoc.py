@@ -7,10 +7,10 @@ import struct
 from typing import Optional, Set
 
 from wifit3.dot11.ie import ds_param_ie, ssid_ie, rates_ie, ext_rates_ie, ht_cap_ie
+from wifit3.dot11.mac import mac_header
 
 # STA WMM Information element (not the AP Parameter element).
 WMM_INFO_IE = bytes.fromhex("dd070050f202000100")
-from wifit3.dot11.mac import mac_header
 
 _CAP_ESS = 0x0001
 _CAP_PRIVACY = 0x0010

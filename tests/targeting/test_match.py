@@ -163,11 +163,11 @@ def test_grouped_target_matches_each_member_type(tmp_path):
 def test_catalog_family_member_matches_aps_by_stock_rules(tmp_path):
     store = TargetStore(tmp_path / "targets.sqlite3")
     grouped = store.upsert(
-        alias="ISP routers",
+        alias="Movistar routers",
         medium="catalog",
         kind="family",
-        identifier="home-router-isp",
-        details=catalog_family_candidate("home-router-isp").details,
+        identifier="home-router-movistar",
+        details=catalog_family_candidate("home-router-movistar").details,
         match_mode="id",
     )
     ap = _ap("MOVISTAR-WIFI6-A250", "11:22:33:44:55:66")
