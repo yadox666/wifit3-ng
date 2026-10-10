@@ -97,28 +97,6 @@ def test_generic_audio_names_are_cataloged(name, label):
     assert hit.catalog_class == "Audio"
 
 
-def test_mx_vertical_is_cataloged_as_keyboard_and_mouse():
-    hit = match_bluetooth({}, {}, name="MX Vertical")
-
-    assert hit.labels == ("Keyboard and mouse",)
-    assert hit.catalog_class == "Peripherals"
-
-
-def test_gopro_matches_name_gatt_manufacturer_or_service():
-    named = match_bluetooth({}, {}, name="GoPro HERO")
-    manufacturer = match_bluetooth(
-        {},
-        {},
-        name="<Unknown>",
-        gatt_source={"manufacturer_name": "GoPro, Inc."},
-    )
-    service = match_bluetooth({}, {}, ("fea6",), name="<Unknown>")
-
-    for hit in (named, manufacturer, service):
-        assert hit.labels == ("GoPro",)
-        assert hit.catalog_class == "Cameras"
-
-
 def test_ble_mesh_provisioning_service_gets_network_family():
     hit = match_bluetooth({}, {}, ("1827",), name="<Unknown>")
     assert hit.labels == ("Bluetooth Mesh provisioner",)
@@ -136,6 +114,7 @@ def test_ble_mesh_provisioning_service_gets_network_family():
         ("181a", "Environmental sensor", "Sensor"),
         ("1116", "Bluetooth network device", "Network"),
         ("1122", "Bluetooth printer", "Printer"),
+        ("fea6", "GoPro", "Cameras"),
     ),
 )
 def test_strong_advertised_services_classify_device(
@@ -160,7 +139,12 @@ def test_generic_or_role_ambiguous_services_do_not_classify(service_uuid):
 def test_remote_control_service_is_only_a_tv_or_media_candidate():
     candidate = match_bluetooth({}, {}, ("110c",), name="<Unknown>")
     controller_only = match_bluetooth({}, {}, ("110f",), name="<Unknown>")
-    known_tv = match_bluetooth({}, {}, ("110c",), name="[TV] Samsung Q80")
+    known_tv = match_bluetooth(
+        {},
+        {},
+        ("110c",),
+        name="[TV] Samsung Q80",
+    )
 
     assert candidate.labels == ("TV / media device",)
     assert candidate.catalog_class == "Ambiguous"
@@ -224,6 +208,28 @@ def test_company_wide_ids_are_not_a_product_and_short_names_stay_whole_words():
     pairing = match_bluetooth({}, {"fe2c": b"\x01\x02\x03"}, ("fe2c",))
     assert pairing.catalog_class == "Ambiguous"
     assert match_bluetooth({0x08AA: b"\x01"}, {}).catalog_class == "Drone"
+
+
+def test_mx_vertical_is_cataloged_as_keyboard_and_mouse():
+    hit = match_bluetooth({}, {}, name="MX Vertical")
+
+    assert hit.labels == ("Keyboard and mouse",)
+    assert hit.catalog_class == "Peripherals"
+
+
+def test_gopro_matches_name_or_gatt_manufacturer():
+    named = match_bluetooth({}, {}, name="GoPro HERO")
+    manufacturer = match_bluetooth(
+        {},
+        {},
+        name="<Unknown>",
+        gatt_source={"manufacturer_name": "GoPro, Inc."},
+    )
+
+    assert named.labels == ("GoPro",)
+    assert named.catalog_class == "Cameras"
+    assert manufacturer.labels == ("GoPro",)
+    assert manufacturer.catalog_class == "Cameras"
 
 
 def test_airplay_prefix_is_audio_not_a_phone():
@@ -371,9 +377,16 @@ def test_protocol_oui_in_a_vendor_ie_is_not_a_family():
 
 
 def test_home_router_stock_clues_are_wifi_scoped():
-    family = next(item for item in families() if item.id == "home-router-isp")
-    assert family.clues
-    assert all("Wi‑Fi" in clue for clue in family.clues)
+    router_families = [
+        item for item in families() if item.catalog_class == "Home router"
+    ]
+    assert router_families
+    assert all(family.clues for family in router_families)
+    assert all(
+        "Wi‑Fi" in clue
+        for family in router_families
+        for clue in family.clues
+    )
 
 
 def test_isp_home_router_ssids_do_not_match_ble():
@@ -385,7 +398,7 @@ def test_isp_home_router_ssids_do_not_match_ble():
         "TP-Link_ABC",
     ):
         hit = match_bluetooth({}, {}, name=name)
-        assert hit.labels != ("Home router",)
+        assert not hit.labels
         assert hit.catalog_class != "Home router"
 
 
@@ -395,51 +408,79 @@ def test_european_isp_home_router_ssids():
     livebox = match_wifi("Livebox-6A12", "11:22:33:44:55:66", set())
     smartbox = match_wifi("SMARTBOX-ABCD", "11:22:33:44:55:66", set())
 
-    assert movistar.labels == ("Home router",)
+    assert movistar.labels == ("Movistar",)
     assert movistar.catalog_class == "Home router"
-    assert digi.labels == ("Home router",)
-    assert livebox.labels == ("Home router",)
-    assert smartbox.labels == ("Home router",)
+    assert digi.labels == ("DIGI",)
+    assert livebox.labels == ("Orange",)
+    assert smartbox.labels == ("Vodafone",)
     assert match_wifi("WLAN_A1B2C3", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "Generic ISP router",
     )
     assert match_wifi("MiFibra_9F88", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "MiFibra",
     )
     assert match_wifi("MiFibra-8441", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "MiFibra",
     )
     assert match_wifi("MiFibra-8441-5G", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "MiFibra",
     )
     assert match_wifi("MIWIFI_5G_ABCD", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "MasMovil",
     )
     assert match_wifi("REDWIFI_1234", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "Generic ISP router",
     )
     assert match_wifi("Sagemcom-F3896LG", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "Sagemcom",
     )
     assert match_wifi("Lowi-AB12CD", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "Lowi",
     )
     assert match_wifi("Sercomm_ABC123", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "Sercomm",
     )
     assert match_wifi("TP-LINK_A1B2", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "TP-Link",
     )
     assert match_wifi("TP-Link_5G_Home", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "TP-Link",
     )
     assert match_wifi("TP-Link-8441", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "TP-Link",
     )
     assert match_wifi("Tenda_123456", "11:22:33:44:55:66", set()).labels == (
-        "Home router",
+        "Tenda",
     )
     assert match_wifi("My Cafe WiFi", "11:22:33:44:55:66", set()).labels == ()
+
+
+@pytest.mark.parametrize(("ssid", "family"), (
+    ("DIGIFIBRA-C274", "DIGI"),
+    ("MOVISTAR-WIFI6-A250", "Movistar"),
+    ("Livebox-6A12", "Orange"),
+    ("Vodafone-ABCD", "Vodafone"),
+    ("Jazztel_1234", "Jazztel"),
+    ("O2_WiFi_ABCD", "O2"),
+    ("MIWIFI_ABCD", "MasMovil"),
+    ("Yoigo-ABCD", "Yoigo"),
+    ("Pepephone-ABCD", "Pepephone"),
+    ("MiFibra-8441", "MiFibra"),
+    ("Lowi-AB12CD", "Lowi"),
+    ("Iberdrola_ICE_5G", "Iberdrola"),
+    ("Calima-ABCD", "Calima"),
+    ("Sagemcom-F3896LG", "Sagemcom"),
+    ("Sercomm_ABC123", "Sercomm"),
+    ("TP-Link_5G_Home", "TP-Link"),
+    ("Tenda_123456", "Tenda"),
+    ("ZTE_ABC123", "ZTE"),
+    ("WLAN_A1B2C3", "Generic ISP router"),
+))
+def test_home_router_ssids_are_assigned_to_specific_families(ssid, family):
+    hit = match_wifi(ssid, "11:22:33:44:55:66", set())
+
+    assert hit.catalog_class == "Home router"
+    assert hit.labels == (family,)
 
 
 def test_field_ssid_clues_from_user_db():
@@ -464,7 +505,7 @@ def test_field_ssid_clues_from_user_db():
     assert match_wifi("pm_wireless_01", "11:22:33:44:55:66", set()).catalog_class == (
         "Printer",
     )
-    assert match_wifi("TP-Link_", "11:22:33:44:55:66", set()).labels == ("Home router",)
+    assert match_wifi("TP-Link_", "11:22:33:44:55:66", set()).labels == ("TP-Link",)
     assert match_wifi("S23 Ultra de Maria", "11:22:33:44:55:66", set()).catalog_class == (
         "Phone",
     )
@@ -522,11 +563,11 @@ def test_pioneer_car_stereo_ssid():
 
 
 def test_byd_bluetooth_name_is_a_vehicle():
-    bt_hit = match_bluetooth({}, {}, name="BYD")
+    bluetooth = match_bluetooth({}, {}, name="BYD")
     wifi = match_wifi("BYD ATTO 3", "11:22:33:44:55:66", set())
 
-    assert bt_hit.labels == ("BYD vehicle",)
-    assert bt_hit.catalog_class == "Vehicle"
+    assert bluetooth.labels == ("BYD vehicle",)
+    assert bluetooth.catalog_class == "Vehicle"
     assert wifi.labels == ("BYD vehicle",)
     assert wifi.catalog_class == "Vehicle"
 
@@ -580,19 +621,26 @@ def test_cleaning_device_roomba_ssids():
     assert irobot.catalog_class == "Cleaning device"
 
 
-def test_hospitality_venue_wifi_ssids():
+def test_hospitality_wifi_ssids_are_split_into_families():
     hotel = match_wifi("Gran Hotel Las Palmas", "11:22:33:44:55:66", set())
     apt = match_wifi("APARTAMENTO_4B_WIFI", "11:22:33:44:55:66", set())
+    restaurant = match_wifi("Restaurante La Plaza", "11:22:33:44:55:66", set())
     chill = match_wifi("LAVENTURACHILLOUT_PLUS", "11:22:33:44:55:66", set())
     cafe = match_wifi("Cafe del Mar Guests", "11:22:33:44:55:66", set())
+    workspace = match_wifi("Central Coworking", "11:22:33:44:55:66", set())
+    guest = match_wifi("Venue Guest WiFi", "11:22:33:44:55:66", set())
 
     assert hotel.catalog_class == "Hospitality"
-    assert hotel.labels == ("Hospitality venue",)
+    assert hotel.labels == ("Hotel / lodging",)
     assert apt.catalog_class == "Hospitality"
-    assert chill.catalog_class == "Hospitality"
-    assert cafe.catalog_class == "Hospitality"
-    assert match_wifi("NORMAL_BURGER", "11:22:33:44:55:66", set()).catalog_class == (
-        "Hospitality"
+    assert apt.labels == ("Apartment",)
+    assert restaurant.labels == ("Restaurant",)
+    assert chill.labels == ("Café / lounge",)
+    assert cafe.labels == ("Café / lounge",)
+    assert workspace.labels == ("Workspace / coworking",)
+    assert guest.labels == ("Guest Wi-Fi",)
+    assert match_wifi("NORMAL_BURGER", "11:22:33:44:55:66", set()).labels == (
+        "Restaurant",
     )
     assert match_wifi("HOTEL_ROOMS_GUEST", "11:22:33:44:55:66", set()).catalog_class == (
         "Hospitality"
@@ -654,14 +702,38 @@ def test_european_vehicle_wifi_ssids():
         "Toyota in-car Wi-Fi",
     )
     assert match_wifi("MOVISTAR_0CE6", "86:aa:9c:2c:0c:ef", set()).labels == (
-        "Home router",
+        "Movistar",
     )
+
+
+@pytest.mark.parametrize(("ssid", "family", "catalog_class"), (
+    ("Share_DACIA_HotSpot_0438", "Dacia in-car Wi-Fi", "Vehicle"),
+    ("CGHotsport-8372", "CHIGEE motorcycle display", "Vehicle"),
+    ("Family car", "Generic vehicle", "Vehicle"),
+    ("FAMILY CAR", "Generic vehicle", "Vehicle"),
+    ("iPhone", "iPhone", "Phone"),
+    ("OPPO", "OPPO smartphone", "Phone"),
+    ("Z Fold7", "Samsung smartphone", "Phone"),
+    ("HONOR MAGI 8", "HONOR smartphone", "Phone"),
+))
+def test_requested_vehicle_and_phone_ssid_families(ssid, family, catalog_class):
+    hit = match_wifi(ssid, "11:22:33:44:55:66", set())
+
+    assert hit.labels == (family,)
+    assert hit.catalog_class == catalog_class
+
+
+def test_generic_car_rule_requires_a_standalone_final_word():
+    assert not match_wifi("Oscar", "11:22:33:44:55:66", set()).present
 
 
 def test_home_router_class_is_searchable():
     rows = matching_families(catalog_class="Home router")
     ids = {family.id for family in rows}
-    assert ids == {"home-router-isp"}
+    assert "home-router-masmovil" in ids
+    assert "home-router-movistar" in ids
+    assert "home-router-digi" in ids
+    assert len(ids) == 19
     assert "tesla" not in ids
 
 

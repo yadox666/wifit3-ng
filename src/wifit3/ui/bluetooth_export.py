@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import csv
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from wifit3.bluetooth.assigned_numbers import manufacturer_label, service_label
+from wifit3.bluetooth.assigned_numbers import (
+    manufacturer_label,
+    service_label,
+    service_name,
+)
 from wifit3.bluetooth.classification import device_classification
+from wifit3.bluetooth.gatt_metadata import display_model_label
 from wifit3.models import BluetoothDevice
 from wifit3.persist.config import Config
 from wifit3.persist.private_files import (
@@ -15,7 +21,27 @@ from wifit3.persist.private_files import (
     open_private_text_write,
     write_private_text,
 )
-from wifit3.bluetooth.usb_hci import HciCaptureRecord
+from wifit3.ui.bluetooth_detail import displayed_service_uuids
+from wifit3.ui.catalog_format import catalog_class_cell, catalog_family_cell
+from wifit3.ui.location_format import format_position
+
+# Column keys shown in the Bluetooth scanner table (order preserved).
+BLUETOOTH_SCAN_TABLE_COLUMNS: tuple[str, ...] = (
+    "name",
+    "model",
+    "catalog_class",
+    "catalog_family",
+    "category",
+    "manufacturer",
+    "rssi",
+    "advertisements",
+    "interval",
+    "first_seen",
+    "last_seen",
+    "services",
+    "identifier",
+    "location",
+)
 
 
 def _iso_time(timestamp: float) -> str:
@@ -28,11 +54,29 @@ def _safe_cell(value: object) -> object:
     return value
 
 
-def _record(device: BluetoothDevice) -> dict:
+def _relative_seen(timestamp: float, now: float) -> str:
+    age = max(0.0, now - timestamp)
+    return "now" if age < 1 else f"{int(age)}s ago"
+
+
+def _record(device: BluetoothDevice, *, now: float | None = None) -> dict:
+    observed_at = time.time() if now is None else now
+    service_uuids = displayed_service_uuids(device)
+    service_names = [service_name(uuid) for uuid in service_uuids]
     all_services = sorted(set(device.service_uuids) | set(device.service_data_uuids))
     classification = device_classification(device)
     return {
         "name": device.name,
+        "model": display_model_label(device),
+        "catalog_family": catalog_family_cell(device).plain,
+        "category": f"{device.radio_label} {classification.detail}",
+        "rssi": device.rssi,
+        "interval": (
+            f"{device.advertisement_interval * 1000:.0f} ms"
+            if device.advertisement_interval is not None else ""
+        ),
+        "services": "; ".join(dict.fromkeys(service_names)),
+        "location": format_position(device.positions),
         "identifier": device.identifier,
         "ble_mac": device.ble_mac,
         "radio": device.radio_label,
@@ -54,7 +98,7 @@ def _record(device: BluetoothDevice) -> dict:
         "protocol_confidence": device.protocol_confidence,
         "decode_state": device.decode_state,
         "catalog": list(device.catalog_labels),
-        "catalog_class": device.catalog_class,
+        "catalog_class": catalog_class_cell(device).plain,
         "catalog_live": device.catalog_live,
         "catalog_attention": device.catalog_attention,
         "catalog_sentence": device.catalog_sentence,
@@ -83,8 +127,10 @@ def _record(device: BluetoothDevice) -> dict:
             round(device.advertisement_interval * 1000)
             if device.advertisement_interval is not None else None
         ),
-        "first_seen": _iso_time(device.first_seen),
-        "last_seen": _iso_time(device.last_seen),
+        "first_seen": _relative_seen(device.first_seen, observed_at),
+        "last_seen": _relative_seen(device.last_seen, observed_at),
+        "first_seen_at": _iso_time(device.first_seen),
+        "last_seen_at": _iso_time(device.last_seen),
         "manufacturer_data_bytes": device.manufacturer_data_bytes,
         "service_data_bytes": device.service_data_bytes,
         "payload_fingerprint": device.payload_fingerprint,
@@ -170,11 +216,10 @@ def export_bluetooth_bundle(
     return csv_path, json_path, jsonl_path
 
 
-
-
 def _record_fields() -> tuple[str, ...]:
     return (
-        "name", "identifier", "radio", "discovery_source", "address_type",
+        *BLUETOOTH_SCAN_TABLE_COLUMNS,
+        "ble_mac", "radio", "discovery_source", "address_type",
         "baseline_status", "profile_changed", "manufacturer", "probable_type",
         "exact_type", "classification_source", "classification_confidence",
         "classification_ambiguous", "protocol_category", "protocol_type",
@@ -186,7 +231,7 @@ def _record_fields() -> tuple[str, ...]:
         "signal_samples", "signal_trend", "class_of_device", "appearance",
         "page_scan_repetition_mode", "clock_offset",
         "tx_power_dbm",
-        "advertisements", "latest_interval_ms", "first_seen", "last_seen",
+        "advertisements", "latest_interval_ms", "first_seen_at", "last_seen_at",
         "manufacturer_data_bytes", "service_data_bytes", "payload_fingerprint",
         "profile_fingerprint", "advertised_services", "service_uuids",
         "service_data_uuids", "related_identifiers", "correlation_confidence",

@@ -9,7 +9,7 @@ def test_format_position_globe_is_icon_only():
     positions = [
         SignalPosition(51.502, -0.143, None, 12.0, 10, "gps", -48),
     ]
-    assert format_position_globe(positions) == "🌐"
+    assert format_position_globe(positions) == "♁"
     assert format_position_globe(()) == "·"
 
 

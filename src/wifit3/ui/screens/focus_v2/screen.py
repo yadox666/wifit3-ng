@@ -51,13 +51,20 @@ from wifit3.campaigns.deauth import DeauthCampaign
 from wifit3.campaigns.pbc import WpsPbcCapture
 from wifit3.campaigns.probe import probe_ap
 from wifit3.campaigns.enterprise_probe import EnterpriseProbe, EnterpriseProbeResult
-from wifit3.campaigns.eap_lab_config import EapLabLaunchConfig, methods_for_ap
+from wifit3.campaigns.eap_lab_config import (
+    EapLabLaunchConfig,
+    EnterpriseProbeConfig,
+    methods_for_ap,
+    resolve_lab_radio,
+)
 from wifit3.campaigns.peap_honeypot import PeapHoneypotCampaign
-from wifit3.ui.screens.eap_lab_modal import EapLabModal
+from wifit3.ui.screens.eap_lab_modal import EapLabModal, EnterpriseProbeModal
+from wifit3.ui.eap_lab_runtime import attach_eap_lab_campaign, poll_eap_lab_campaign
 from .campaign_controls import CampaignControls
 from wifit3.campaigns.wps.registrar import PinResult
 from wifit3.crack.handshake import handshake_uncrackable_label
-from wifit3.models import AccessPoint, Client, EnterpriseProbeRun, IdSource
+from wifit3.dot11.enterprise import EAP_TYPE_NAMES
+from wifit3.models import AccessPoint, Client, EnterpriseProbeEvent, EnterpriseProbeRun, IdSource
 from wifit3.safety import deauth_limits
 from wifit3.persist.config import Config
 from wifit3.persist.common import bssid_to_dashed, safe_ssid
@@ -89,7 +96,7 @@ from .clients_list import ClientsList, ClientWidget, FingerprintModal
 from .packet_dashboard import PacketDashboard
 from .log_band import LogBand
 from .router_endpoint import RouterEndpoint
-from .enterprise_panel import EnterprisePanel
+from .enterprise_panel import EnterpriseLabChoice, EnterprisePanel, assessment_markdown
 from . import art
 
 if TYPE_CHECKING:
@@ -216,6 +223,7 @@ class FocusViewV2(Screen):
     #topbar { height: %(top)d; }
     #actions { width: auto; height: 100%%; }
     #topbar Button { height: 3; width: auto; min-width: 0; margin: 0 1 0 0; }
+    #btn-enterprise { background: $success; color: $text; text-style: bold; }
     /* No background override on .attack-btn */
     #status { width: 1fr; height: 3; content-align: center middle; text-align: center; }
     #rspacer { width: 0; height: 1; }
@@ -324,7 +332,12 @@ class FocusViewV2(Screen):
                 yield Button("‹ Scanner", id="back")
                 # The full attack set is composed once (hidden); refresh_buttons shows the ones that fit the target.
                 for bid, label in _ATTACK_BUTTONS:
-                    btn = Button(label, id=bid, classes="attack-btn")
+                    btn = Button(
+                        label,
+                        id=bid,
+                        classes="attack-btn",
+                        variant="success" if bid == "btn-enterprise" else "default",
+                    )
                     btn.display = False
                     yield btn
             status = self._status()
@@ -650,6 +663,7 @@ class FocusViewV2(Screen):
         enterprise = self.query_one("#btn-enterprise", Button)
         enterprise.display = is_enterprise_ap(ap)
         enterprise.disabled = False
+        enterprise.variant = "success"
         enterprise.tooltip = _BUTTON_TIPS["Enterprise"]
         self._refresh_chop_button(ap, active, probing)
         self._refresh_wps_info_button(ap)
@@ -1362,25 +1376,32 @@ class FocusViewV2(Screen):
         ap = self._target_ap
         if ap is None or not is_enterprise_ap(ap):
             return
+        array = self.app.array
+        preferred = getattr(array, "preferred", None) if array is not None else None
         self.app.push_screen(
             EnterprisePanel(
                 self._enterprise_systems(ap),
                 probing=self._is_enterprise_probing(),
+                members=list(getattr(array, "members", None) or []),
+                preferred_name=getattr(preferred, "name", "") or "",
+                target_channel=ap.channel,
             ),
             self._on_enterprise_panel_action,
         )
 
-    def _on_enterprise_panel_action(self, action: str | None) -> None:
-        if action == "probe":
-            self._request_enterprise_probe()
-        elif action == "cancel_probe":
+    def _on_enterprise_panel_action(self, choice: EnterpriseLabChoice | None) -> None:
+        if choice is None:
+            return
+        if choice.action == "probe":
+            self._request_enterprise_probe(choice)
+        elif choice.action == "cancel_probe":
             self._cancel_enterprise_probe()
-        elif action == "save_report":
-            self._save_enterprise_report()
-        elif action == "eap_lab":
-            self._request_eap_lab_honeypot()
+        elif choice.action == "save_report":
+            self._save_enterprise_markdown()
+        elif choice.action == "eap_lab":
+            self._request_eap_lab_honeypot(choice)
 
-    def _request_eap_lab_honeypot(self) -> None:
+    def _request_eap_lab_honeypot(self, choice: EnterpriseLabChoice | None = None) -> None:
         ap = self._target_ap
         if ap is None or not is_enterprise_ap(ap):
             return
@@ -1390,11 +1411,15 @@ class FocusViewV2(Screen):
         if self._any_campaign_active():
             self.notify("Another active operation owns the radio", severity="warning")
             return
+        radio = choice or EnterpriseLabChoice(action="eap_lab", lab_channel=ap.channel)
         self.app.push_screen(
             EapLabModal(
                 ap.ssid or "<hidden>",
                 ap.channel,
                 default_methods=methods_for_ap(ap),
+                iface_name=radio.iface_name,
+                lab_channel=radio.lab_channel,
+                record_pcap=radio.record_pcap,
             ),
             self._start_eap_lab_honeypot,
         )
@@ -1413,7 +1438,7 @@ class FocusViewV2(Screen):
             return
         if campaign.iface is None:
             self.notify(
-                f"No spoofable interface can host channel {ap.channel}",
+                f"No spoofable interface can host channel {campaign.channel}",
                 severity="error",
             )
             return
@@ -1421,103 +1446,45 @@ class FocusViewV2(Screen):
             self.notify("The radio is busy with another campaign", severity="warning")
             return
         self._eap_lab_campaign = campaign
-        self._eap_lab_event_index = 0
-        self._write_log(treelog.header("PEAP EAP lab honeypot"))
+        attach_eap_lab_campaign(self.app, campaign)
+        self._log(treelog.header("PEAP EAP lab honeypot"))
         self.notify(
-            f"EAP lab active on {ap.ssid} · CH {ap.channel} · twin {campaign.bssid_text}",
+            f"EAP lab SSID {campaign.ssid} · {campaign.iface.name} · "
+            f"CH {campaign.channel} · twin {campaign.bssid_text}",
             title="EAP lab",
         )
 
     def _poll_eap_lab_campaign(self) -> None:
-        campaign = self._eap_lab_campaign
-        if campaign is None:
-            return
-        events = campaign.stats.events
-        for message in events[self._eap_lab_event_index:]:
-            self._write_log(treelog.branch(escape(message)))
-        self._eap_lab_event_index = len(events)
-        ap = self._target_ap
-        while campaign.pending_captures and ap is not None:
-            capture = campaign.pending_captures.pop(0)
-            try:
-                saved = self.app.vault.save_mschapv2(
-                    ap,
-                    capture,
-                    lab_bssid=campaign.bssid_text,
-                )
-            except Exception as exc:
-                logger.exception("Could not save MS-CHAPv2 capture")
-                self.notify(str(exc), title="Vault save failed", severity="error")
-                break
-            if saved is not None:
-                self._write_log(treelog.branch(
-                    f"MS-CHAPv2 saved to Vault · {escape(capture.username)} · "
-                    f"{escape(saved.mschapv2.path.name)} + "
-                    f"{escape(saved.netntlmv2.path.name)} (Hashcat 5500/5600)"
-                ))
-        if not campaign.done:
-            return
-        result = {
-            "captured": "[bold green]MS-CHAPv2 CAPTURED[/bold green] · saved to Vault",
-            "misconfigured": "[bold yellow]CLIENT MISCONFIGURATION[/bold yellow] · see Vault report",
-            "timeout": "[dim]TIMEOUT[/dim] · no MS-CHAPv2 response",
-            "stopped": "[dim]STOPPED[/dim]",
-            "no-interface": "[red]FAILED[/red] · no compatible interface",
-        }.get(campaign.result, escape(campaign.result))
-        self._write_log(treelog.leaf(result))
-        if ap is not None and campaign.client_assessments:
-            try:
-                saved = self.app.vault.save_eap_lab_report(
-                    ap,
-                    lab_bssid=campaign.bssid_text,
-                    launch=campaign.launch,
-                    clients=campaign.client_assessments,
-                    campaign_result=campaign.result,
-                )
-            except Exception as exc:
-                logger.exception("Could not save EAP lab assessment report")
-                self.notify(str(exc), title="Vault save failed", severity="error")
-                saved = None
-            if saved is not None:
-                self._write_log(treelog.branch(
-                    f"EAP lab assessment saved to Vault · {escape(saved.path.name)}"
-                ))
-        severity = (
-            "warning"
-            if campaign.result in ("misconfigured", "timeout", "stopped")
-            else "information"
-        )
-        self.notify(
-            "MS-CHAPv2 hash saved to Vault"
-            if campaign.result == "captured"
-            else f"EAP lab finished: {campaign.result}",
-            title="EAP lab",
-            severity=severity,
-        )
-        self._eap_lab_campaign = None
+        if self._eap_lab_campaign is None:
+            self._eap_lab_campaign = getattr(self.app, "eap_lab_campaign", None)
+        poll_eap_lab_campaign(self.app, self._log, listener="focus")
+        if getattr(self.app, "eap_lab_campaign", None) is None:
+            self._eap_lab_campaign = None
 
     async def stop_eap_lab_honeypot(self) -> None:
-        campaign = self._eap_lab_campaign
+        campaign = self._eap_lab_campaign or getattr(self.app, "eap_lab_campaign", None)
         if campaign is not None and not campaign.done:
             await campaign.stop()
 
-    def _save_enterprise_report(self) -> None:
+    def _save_enterprise_markdown(self) -> None:
+        from wifit3.persist.save import save_enterprise_markdown
+
         ap = self._target_ap
         if ap is None or not is_enterprise_ap(ap):
             return
+        systems = self._enterprise_systems(ap)
         try:
-            result = self.app.vault.save_enterprise_report(ap)
+            path = save_enterprise_markdown(ap, assessment_markdown(systems))
         except Exception as exc:
-            logger.exception("Could not save Enterprise report")
+            logger.exception("Could not save Enterprise Markdown report")
             self.notify(str(exc), title="Enterprise report failed", severity="error")
             return
-        if result is None:
-            self.notify("No Enterprise evidence to save", severity="warning")
-            return
-        self.notify(
-            f"Saved {result.path.name}",
-            title="Enterprise report added to Vault",
+        self._log(treelog.branch(f"Enterprise report → {escape(str(path))}"))
+        self.app.notify(
+            str(path),
+            title="Enterprise report saved",
             severity="information",
+            persist=True,
         )
 
     def _cancel_enterprise_probe(self) -> None:
@@ -1546,7 +1513,7 @@ class FocusViewV2(Screen):
         systems.sort(key=lambda ap: (ap is not target, ap.bssid))
         return tuple(systems) or (target,)
 
-    def _request_enterprise_probe(self) -> None:
+    def _request_enterprise_probe(self, choice: EnterpriseLabChoice | None = None) -> None:
         ap = self._target_ap
         if ap is None or not is_enterprise_ap(ap):
             return
@@ -1556,24 +1523,46 @@ class FocusViewV2(Screen):
         if self._any_campaign_active():
             self.notify("Another active operation owns the radio", severity="warning")
             return
-        self._confirm_active(
-            "Enterprise outer-EAP probe",
-            (
-                "Associates an anonymous temporary client, enumerates EAP methods and "
-                "negotiates outer TLS. It stops before inner authentication and sends no secret."
-            ),
+        self._enterprise_radio = choice or EnterpriseLabChoice(
+            action="probe",
+            lab_channel=ap.channel,
+        )
+        self.app.push_screen(
+            EnterpriseProbeModal(ap.ssid or "<hidden>"),
             self._start_enterprise_probe,
         )
 
-    def _start_enterprise_probe(self) -> None:
+    def _start_enterprise_probe(self, config=None) -> None:
+        if config is None or not isinstance(config, EnterpriseProbeConfig):
+            return
         ap = self._target_ap
         if ap is None or self._is_enterprise_probing():
             return
-        self._enterprise_probe_task = asyncio.create_task(self._run_enterprise_probe(ap))
+        radio = getattr(self, "_enterprise_radio", None)
+        if isinstance(radio, EnterpriseLabChoice):
+            config = replace(
+                config,
+                iface_name=radio.iface_name,
+                lab_channel=radio.lab_channel,
+                record_pcap=radio.record_pcap,
+            )
+        self._enterprise_probe_task = asyncio.create_task(
+            self._run_enterprise_probe(ap, config)
+        )
         self.refresh_buttons()
         self._sync_bindings()
 
-    async def _run_enterprise_probe(self, ap: AccessPoint) -> None:
+    async def _run_enterprise_probe(
+        self,
+        ap: AccessPoint,
+        config: EnterpriseProbeConfig | tuple[str, ...] | None = None,
+    ) -> None:
+        if isinstance(config, tuple):
+            probe_config = EnterpriseProbeConfig(lab_identities=config)
+        elif isinstance(config, EnterpriseProbeConfig):
+            probe_config = config
+        else:
+            probe_config = EnterpriseProbeConfig()
         array = self.app.array
         if array is None:
             self.notify("No active interface", severity="error")
@@ -1581,9 +1570,20 @@ class FocusViewV2(Screen):
             self.refresh_buttons()
             self._sync_bindings()
             return
-        iface = array.select_iface(ap.channel)
+        members = list(getattr(array, "members", None) or [])
+        iface, channel = resolve_lab_radio(
+            members,
+            iface_name=probe_config.iface_name,
+            lab_channel=probe_config.lab_channel,
+            target_channel=ap.channel,
+        )
         if iface is None:
-            self.notify(f"No interface can probe channel {ap.channel}", severity="error")
+            iface = array.select_iface(channel or ap.channel)
+        if iface is None:
+            self.notify(
+                f"No interface can probe channel {channel or ap.channel}",
+                severity="error",
+            )
             self._enterprise_probe_task = None
             self.refresh_buttons()
             self._sync_bindings()
@@ -1591,8 +1591,9 @@ class FocusViewV2(Screen):
         label = escape(ap.ssid or ap.bssid)
         self._log(treelog.header(
             f"[bold]Enterprise probe[/bold] on [cyan]{label}[/cyan] "
-            f"[dim](CH {ap.channel})[/dim]"
+            f"[dim]({escape(getattr(iface, 'name', 'card'))} · CH {channel})[/dim]"
         ))
+        probe_started = time.time()
         probe: EnterpriseProbe | None = None
         try:
             async with array.claim(iface):
@@ -1600,17 +1601,66 @@ class FocusViewV2(Screen):
                     iface,
                     ap,
                     tx_observer=array.record_injected_eapol,
+                    on_event=lambda event: self._log_enterprise_probe_progress(
+                        event,
+                        probe_started,
+                    ),
+                    lab_identities=probe_config.lab_identities,
+                    record_pcap=probe_config.record_pcap,
+                    channel=channel,
                 )
                 result = await probe.run()
-            self._record_enterprise_probe_result(ap, result)
+            report_path = self._record_enterprise_probe_result(ap, result)
             marker = treelog.leaf_ok if result.ok else treelog.leaf_fail
             self._log(marker(escape(result.detail)))
+            if result.compatibility_notes:
+                for note in result.compatibility_notes[:6]:
+                    self._log(f"[dim]• {escape(note)}[/dim]")
+            if result.mschap_challenge_path:
+                self._log(
+                    f"[dim]MS-CHAPv2 challenge → {escape(result.mschap_challenge_path)}[/dim]"
+                )
+            if result.pcap_path:
+                self._log(f"[dim]probe pcap → {escape(result.pcap_path)}[/dim]")
+            if report_path:
+                self._log(f"[dim]Enterprise report → {escape(report_path)}[/dim]")
+            if result.dump_path:
+                self._log(f"[dim]Probe dump → {escape(result.dump_path)}[/dim]")
+            correlation = getattr(result, "lab_correlation", None)
+            if isinstance(correlation, dict) and (
+                correlation.get("diagnosis") or correlation.get("requests")
+            ):
+                if correlation.get("diagnosis"):
+                    self._log(
+                        f"[dim]RADIUS lab → {escape(str(correlation['diagnosis']))}[/dim]"
+                    )
+                for item in list(correlation.get("requests") or [])[-4:]:
+                    if not isinstance(item, dict):
+                        continue
+                    user = escape(str(item.get("user_name") or "?"))
+                    outcome = escape(str(item.get("outcome") or "?"))
+                    req_ssid = escape(str(item.get("ssid") or ""))
+                    self._log(
+                        f"[dim]RADIUS {item.get('radius_id')} {user} "
+                        f"{req_ssid} → {outcome}[/dim]"
+                    )
+                log_path = correlation.get("log_path")
+                if isinstance(log_path, str):
+                    self._log(f"[dim]Contrast with {escape(log_path)}[/dim]")
             self.notify(
                 result.detail,
                 title=f"Enterprise probe: {result.status}",
                 severity="information" if result.ok else "warning",
-                timeout=8,
+                timeout=12,
             )
+            if report_path:
+                self.app.notify(
+                    Path(report_path).name,
+                    title="Enterprise report saved",
+                    severity="information",
+                    persist=True,
+                    timeout=12,
+                )
         except asyncio.CancelledError:
             result = (
                 probe.cancelled_result()
@@ -1634,16 +1684,56 @@ class FocusViewV2(Screen):
             except Exception:
                 pass
 
+    def _log_enterprise_probe_progress(
+        self,
+        event: EnterpriseProbeEvent,
+        started_at: float,
+    ) -> None:
+        if event.phase == "retransmission":
+            return
+        elapsed = max(0.0, event.timestamp - started_at)
+        timing = f"[dim]+{elapsed:.1f}s[/dim] "
+        detail = escape(event.detail)
+        if event.phase in {"preflight", "association", "survey"}:
+            prefix = "[bold cyan]Lab[/bold cyan] " if event.phase == "survey" else ""
+            self._log(treelog.branch(f"{timing}{prefix}{detail}"))
+            return
+        if event.phase == "tls":
+            self._log(treelog.leaf(f"{timing}[dim]TLS · {detail}[/dim]"))
+            return
+        if event.phase == "eap":
+            suffix = ""
+            if event.eap_type is not None:
+                name = EAP_TYPE_NAMES.get(event.eap_type, f"type {event.eap_type}")
+                suffix = f" [dim]({escape(name)}"
+                if event.eap_identifier is not None:
+                    suffix += f" id={event.eap_identifier}"
+                suffix += ")[/dim]"
+            if event.direction == "tx":
+                arrow = "[cyan]→[/cyan]"
+            elif event.direction == "rx":
+                arrow = "[green]←[/green]"
+            else:
+                arrow = "[dim]•[/dim]"
+            self._log(treelog.leaf(f"{timing}{arrow} {detail}{suffix}"))
+            return
+        self._log(treelog.leaf(f"{timing}{detail}"))
+
     def _record_enterprise_probe_result(
         self,
         ap: AccessPoint,
         result: EnterpriseProbeResult,
-    ) -> None:
+    ) -> str | None:
         profile = ap.enterprise
         profile.probe_attempts += 1
         profile.probe_last_status = result.status
         profile.probe_last_detail = result.detail
         profile.probe_last_seen = time.time()
+        profile.probe_last_compatibility_notes = list(result.compatibility_notes[:16])
+        profile.probe_last_mschap_challenge_path = result.mschap_challenge_path
+        profile.probe_last_pcap_path = result.pcap_path
+        profile.probe_last_dump_path = result.dump_path
+        profile.client_eap_types.update(result.inner_eap_types)
         profile.probe_history.append(EnterpriseProbeRun(
             started_at=result.started_at,
             ended_at=result.ended_at,
@@ -1675,14 +1765,20 @@ class FocusViewV2(Screen):
                 session.source = "active_probe"
                 session.outcome = "probe_complete" if result.ok else "probe_partial"
                 break
+        report_path: str | None = None
+        try:
+            saved = self.app.vault.save_enterprise_report(ap)
+            if saved is not None:
+                report_path = str(saved.path)
+                result.report_path = report_path
+                profile.probe_last_report_path = report_path
+        except Exception:
+            logger.warning("Could not save Enterprise report snapshot", exc_info=True)
         try:
             store.remember(ap, force=True)
         except Exception:
             logger.warning("Could not persist Enterprise probe result", exc_info=True)
-        try:
-            self.app.vault.save_enterprise_report(ap)
-        except Exception:
-            logger.warning("Could not save Enterprise report snapshot", exc_info=True)
+        return report_path
 
     def action_wps_info(self) -> None:
         if self._is_wps_probing():

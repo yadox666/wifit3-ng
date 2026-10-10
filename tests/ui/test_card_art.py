@@ -44,6 +44,20 @@ def test_derive_product_name_ar9271_by_oui():
     assert AR9271V2Driver.derive_product_name("") is None
 
 
+def test_refine_keeps_a_specific_ar9271_product():
+    """WiFiStation and the other named AR9271 sticks are not an AWUS036NHA."""
+    driver = AR9271V2Driver.__new__(AR9271V2Driver)
+    driver.product_name = "WiFiStation EXT"
+    driver.mac_address = "00:15:6d:7c:f1:90"
+    driver._refine_product_name()
+    assert driver.product_name == "WiFiStation EXT"
+
+    driver.product_name = AMBIGUOUS_AR9271
+    driver.mac_address = "00:c0:ca:aa:bb:cc"
+    driver._refine_product_name()
+    assert driver.product_name == ALFA.AWUS036NHA
+
+
 # --- art_path_for: product -> chipset -> generic ----------------------------
 
 def test_art_path_for_product_hit():

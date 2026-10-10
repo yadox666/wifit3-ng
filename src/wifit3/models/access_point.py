@@ -34,6 +34,7 @@ class CaptureType(StrEnum):
     ENTERPRISE = "ENTERPRISE"
     MSCHAPV2 = "MSCHAPV2"
     NETNTLMV2 = "NETNTLMV2"
+    CAPTIVE_PASSWORD = "CAPTIVE_PASSWORD"
 
 
 @dataclass
@@ -46,6 +47,8 @@ class PersistedCapture:
     value: Optional[str] = None     # WEP key (hex) / WPS PSK; None for HS/PMKID
     ssid: Optional[str] = None      # parsed from the filename, for display (VAULT)
     pin: Optional[str] = None       # WPS PIN (WPS_PIN captures only)
+    username: Optional[str] = None  # captive portal / EAP lab inner login
+    portal_name: Optional[str] = None
     record_count: int = 1           # hashcat-22000 records in the file; 0 for raw .pcap
 
 

@@ -39,8 +39,11 @@ def test_offline_client_detail_groups_focus_and_tail():
         "extra_note": "saved",
     }
     text = offline_client_detail_markup(record)
-    assert "02:11:22:33:44:55" in text
-    assert "Associated AP:" in text or "Radio:" in text
+    assert "[bold]02:11:22:33:44:55[/bold]" not in text
+    assert "MAC Type:" in text
+    assert "Associated AP:" in text
+    assert "LabNet" in text
+    assert "aa:bb:cc:dd:ee:ff" in text
     assert "Associated access points" in text
     assert "LabNet" in text
     assert "Scan sessions" in text

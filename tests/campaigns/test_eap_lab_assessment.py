@@ -10,9 +10,9 @@ from wifit3.dot11.eap import EAP_TYPE_PEAP, EAP_TYPE_TLS, EAP_TYPE_TTLS
 def test_order_eap_methods_weak_first():
     methods = (EAP_TYPE_PEAP, EAP_TYPE_TTLS, EAP_TYPE_TLS)
     assert order_eap_methods(methods, weak_outer_first=True) == (
-        EAP_TYPE_TLS,
         EAP_TYPE_TTLS,
         EAP_TYPE_PEAP,
+        EAP_TYPE_TLS,
     )
 
 

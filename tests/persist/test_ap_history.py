@@ -3,7 +3,7 @@ import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
-from wifit3.models import AccessPoint, IdKey, IdSource
+from wifit3.models import AccessPoint, Client, IdKey, IdSource
 from wifit3.persist.ap_history import ApHistoryStore, SCHEMA_VERSION
 from wifit3.persist.scan_sessions import new_scan_session
 
@@ -250,6 +250,21 @@ def test_malformed_legacy_json_is_ignored(tmp_path):
         malformed, malformed, malformed, tmp_path / "captures",
     ) == 0
     assert store.count() == 0
+
+
+def test_unassociated_client_sighting_appears_offline(tmp_path):
+    store = ApHistoryStore(tmp_path / "history.sqlite3")
+    session = new_scan_session({"wifi"}, mode="wifi")
+    store.start_scan_session(session)
+    client = Client(mac="18:7f:88:11:22:33")
+    store.remember_client_fingerprint(client, force=True)
+    store.end_scan_session(session.id)
+
+    records = store.offline_clients()
+    assert len(records) == 1
+    assert records[0]["client_mac"] == client.mac
+    assert records[0]["access_point_count"] == 0
+    assert records[0]["session_name"] == session.name
 
 
 def test_shared_store_serializes_writes_from_rx_threads(tmp_path):

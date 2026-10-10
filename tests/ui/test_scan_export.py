@@ -7,7 +7,11 @@ from wifit3.dot11.ie import GENERIC_RSN_IE
 from wifit3.dot11.probe import wpa2_beacon
 from wifit3.persist.config import Config
 from wifit3.persist.rsn_profiles import load_scan_rsn_profiles
-from wifit3.ui.scan_export import export_scan_snapshot
+from wifit3.ui.scan_export import (
+    AP_SCAN_TABLE_COLUMNS,
+    CLIENT_SCAN_TABLE_COLUMNS,
+    export_scan_snapshot,
+)
 
 
 def test_scan_export_writes_json_and_csv(tmp_path, monkeypatch):
@@ -45,16 +49,26 @@ def test_scan_export_writes_json_and_csv(tmp_path, monkeypatch):
     assert report["access_points"][0]["country"] == "US"
     assert report["access_points"][0]["rsn_ie_hex"] == GENERIC_RSN_IE.hex()
     assert report["access_points"][0]["capabilities"]["phy_modes"] == ["802.11ax"]
+    assert report["access_points"][0]["ssid"] == "Test Network"
+    assert report["access_points"][0]["signal"] == -42
+    assert report["access_points"][0]["clients"] == 1
     assert report["clients"][0]["connected_ssid"] == "Test Network"
     assert report["clients"][0]["probe_requests"] == ["Coffee", "Home"]
     assert report["clients"][0]["probe_observations"]["Coffee"]["channel"] == 6
     assert report["clients"][0]["probe_observations"]["Coffee"]["count"] == 3
+    assert report["clients"][0]["client"] == client.mac
+    assert report["clients"][0]["probes"] == "Coffee, Home"
 
     with csv_path.open(encoding="utf-8", newline="") as stream:
         rows = list(csv.DictReader(stream))
     assert [row["type"] for row in rows] == ["access_point", "client"]
-    assert rows[0]["name"] == "Test Network"
-    assert rows[1]["activity"] == "12"
+    assert set(rows[0]) == {"type", *AP_SCAN_TABLE_COLUMNS, *CLIENT_SCAN_TABLE_COLUMNS}
+    for column in AP_SCAN_TABLE_COLUMNS:
+        assert column in rows[0]
+    for column in CLIENT_SCAN_TABLE_COLUMNS:
+        assert column in rows[1]
+    assert rows[0]["ssid"] == "Test Network"
+    assert rows[1]["packets"] == "12"
     assert stat.S_IMODE(json_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(csv_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(json_path.parent.stat().st_mode) == 0o700

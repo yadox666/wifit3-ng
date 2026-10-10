@@ -447,10 +447,17 @@ def _enterprise_profile_rows(profile, ap=None) -> list[str]:
     return rows
 
 
-def client_advertised_details(client) -> str:
+def client_advertised_details(
+    client,
+    *,
+    include_identity_heading: bool = True,
+    associated_ap_ssid: str | None = None,
+) -> str:
     from wifit3.models import AdvertisedCapabilities
-    rows = [f"[bold]{escape(client.mac)}[/bold]"]
     from wifit3.id import vendor_for_mac
+    rows: list[str] = []
+    if include_identity_heading:
+        rows.append(f"[bold]{escape(client.mac)}[/bold]")
     vendor = vendor_for_mac(client.mac)
     if vendor:
         rows.append(f"[dim]Manufacturer:[/dim] {escape(vendor)}")
@@ -461,7 +468,21 @@ def client_advertised_details(client) -> str:
     rows.append(f"[dim]MAC Type:[/dim] {'locally administered / possibly randomized' if local else 'globally administered'}")
     bssid = getattr(client, "bssid", None)
     if bssid:
-        rows.append(f"[dim]Associated AP:[/dim] {escape(bssid)}")
+        ssid = (associated_ap_ssid or "").strip()
+        if ssid and ssid != "<hidden>":
+            rows.append(
+                f"[dim]Associated AP:[/dim] [bold]{escape(ssid)}[/bold] · "
+                f"{escape(bssid)}",
+            )
+        else:
+            label = "‹hidden›" if ssid == "<hidden>" or not ssid else ""
+            if label:
+                rows.append(
+                    f"[dim]Associated AP:[/dim] [bold]{label}[/bold] · "
+                    f"{escape(bssid)}",
+                )
+            else:
+                rows.append(f"[dim]Associated AP:[/dim] {escape(bssid)}")
     caps = getattr(client, "capabilities", AdvertisedCapabilities())
     radio = _radio_summary(caps)
     if radio:

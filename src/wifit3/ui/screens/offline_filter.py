@@ -16,6 +16,7 @@ from wifit3.id import vendor_for_mac
 from wifit3.observe.product_catalog import family_classes
 from wifit3.bluetooth.gatt_metadata import gatt_identity_search_text
 from wifit3.ui.catalog_format import catalog_record_class, catalog_search_text
+from wifit3.ui.offline_client_probes import offline_client_probes_sort_value
 from wifit3.ui.encryption_format import EncryptionType
 from wifit3.ui.screens.filter import EncryptionFilter, text_matches
 from wifit3.ui.target_filter import (
@@ -151,9 +152,14 @@ def _matches_ap(record: dict[str, Any], filters: OfflineFilters) -> bool:
         for item in (record.get("clients") or [])
         if isinstance(item, dict)
     )
+    from wifit3.persist.ap_history import access_point_from_offline_record
+
+    ap = access_point_from_offline_record(record)
+    identity = (ap.identity.summary or "").strip()
     searchable = " ".join(filter(None, (
         record.get("ssid"),
         bssid,
+        identity,
         vendor_for_mac(bssid),
         record.get("encryption"),
         record.get("country_code"),
@@ -184,6 +190,7 @@ def _matches_client(record: dict[str, Any], filters: OfflineFilters) -> bool:
     searchable = " ".join(filter(None, (
         mac,
         vendor_for_mac(mac),
+        offline_client_probes_sort_value(record),
         aps,
         _session_blob(record),
     )))

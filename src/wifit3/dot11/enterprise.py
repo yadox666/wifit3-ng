@@ -38,6 +38,8 @@ class TlsMetadata:
     supported_groups: set[int] = field(default_factory=set)
     signature_algorithms: set[int] = field(default_factory=set)
     certificates: list[EnterpriseCertificate] = field(default_factory=list)
+    certificate_requested: bool = False
+    certificate_authorities: list[str] = field(default_factory=list)
 
 
 def eap_tls_fragment(data: bytes) -> tuple[bool, bool, int | None, bytes]:
@@ -89,7 +91,34 @@ def _parse_handshakes(data: bytes, metadata: TlsMetadata) -> None:
             _parse_server_hello(body, metadata)
         elif message_type == 11:
             _parse_certificate_message(body, metadata)
+        elif message_type == 13:
+            _parse_certificate_request(body, metadata)
         offset = end
+
+
+def _parse_certificate_request(body: bytes, metadata: TlsMetadata) -> None:
+    metadata.certificate_requested = True
+    if not body:
+        return
+    cursor = 1 + body[0]
+    if cursor + 2 > len(body):
+        return
+    sig_len = int.from_bytes(body[cursor: cursor + 2], "big")
+    cursor += 2 + sig_len
+    if cursor + 2 > len(body):
+        return
+    ca_len = int.from_bytes(body[cursor: cursor + 2], "big")
+    cursor += 2
+    end = min(len(body), cursor + ca_len)
+    while cursor + 2 <= end:
+        dn_len = int.from_bytes(body[cursor: cursor + 2], "big")
+        dn_end = cursor + 2 + dn_len
+        if dn_end > end or dn_len == 0:
+            break
+        name = _name(body[cursor + 2: dn_end])
+        if name:
+            metadata.certificate_authorities.append(name)
+        cursor = dn_end
 
 
 def _parse_client_hello(body: bytes, metadata: TlsMetadata) -> None:

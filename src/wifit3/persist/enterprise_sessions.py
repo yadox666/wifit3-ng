@@ -313,6 +313,11 @@ def _profile_to_dict(profile: EnterpriseProfile) -> dict:
         "probe_last_status": profile.probe_last_status,
         "probe_last_detail": profile.probe_last_detail,
         "probe_last_seen": profile.probe_last_seen,
+        "probe_last_compatibility_notes": list(profile.probe_last_compatibility_notes[:16]),
+        "probe_last_mschap_challenge_path": profile.probe_last_mschap_challenge_path,
+        "probe_last_pcap_path": profile.probe_last_pcap_path,
+        "probe_last_report_path": profile.probe_last_report_path,
+        "probe_last_dump_path": profile.probe_last_dump_path,
         "probe_history": [
             _probe_run_to_dict(run)
             for run in profile.probe_history[-_MAX_PROBE_RUNS:]
@@ -372,6 +377,13 @@ def _profile_from_dict(raw: object) -> EnterpriseProfile | None:
             probe_last_status=_optional_str(raw.get("probe_last_status")),
             probe_last_detail=_optional_str(raw.get("probe_last_detail")),
             probe_last_seen=_optional_float(raw.get("probe_last_seen")),
+            probe_last_compatibility_notes=_str_list(raw.get("probe_last_compatibility_notes")),
+            probe_last_mschap_challenge_path=_optional_str(
+                raw.get("probe_last_mschap_challenge_path"),
+            ),
+            probe_last_pcap_path=_optional_str(raw.get("probe_last_pcap_path")),
+            probe_last_report_path=_optional_str(raw.get("probe_last_report_path")),
+            probe_last_dump_path=_optional_str(raw.get("probe_last_dump_path")),
             first_seen=_optional_float(raw.get("first_seen")),
             last_seen=_optional_float(raw.get("last_seen")),
         )
@@ -536,6 +548,12 @@ def _str_set(value: object) -> set[str]:
     if not isinstance(value, (list, tuple)):
         return set()
     return {str(item) for item in value if isinstance(item, str)}
+
+
+def _str_list(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value if isinstance(item, str)][:16]
 
 
 def _optional_float(value: object) -> float | None:

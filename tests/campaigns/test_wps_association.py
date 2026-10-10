@@ -83,6 +83,26 @@ async def test_falls_back_to_assoc_when_no_auth_resp():
     assert _subtypes(iface) == [0x0B, 0x00]
 
 
+async def test_require_auth_skips_assoc_without_auth_resp():
+    iface = _RespIface(answer_auth=False, answer_assoc=True)
+    a = Association(
+        iface, _BSSID, "Net", 1, our_mac=_US,
+        auth_timeout=0.05, assoc_timeout=0.05, require_auth=True,
+    )
+    a.start()
+    assert await a.associate(attempts=2) is False
+    assert 0x00 not in _subtypes(iface)
+    assert a.fail_reason == "no Auth resp"
+
+
+async def test_require_auth_probes_then_auths_then_assoc():
+    iface = _RespIface()
+    a = Association(iface, _BSSID, "Net", 1, our_mac=_US, require_auth=True)
+    a.start()
+    assert await a.associate(attempts=1) is True
+    assert _subtypes(iface) == [0x04, 0x0B, 0x00]
+
+
 def _deauth(reason: int = 6) -> bytes:
     # mgmt/deauth (0xC0); addr1=us, addr2/3=AP; reason (@24:26).
     return (b"\xc0\x00\x00\x00" + _US + _BSSID_B + _BSSID_B + b"\x00\x00"
@@ -121,6 +141,8 @@ def test_rx_cb_decodes_deauth_and_disassoc_reason():
     a.associated = True
     a._rx_cb(WlanFrameParser.parse_80211_frame(_deauth(6), -40))
     assert not a.associated
+    assert a._kicked is True
+    assert a._auth_ok is False
     assert "deauth" in (a.fail_reason or "")
     assert "class2-from-nonauth" in (a.fail_reason or "")
 
@@ -134,17 +156,59 @@ def test_rx_cb_decodes_deauth_and_disassoc_reason():
 def test_assoc_req_rates_and_ht_caps_per_band():
     from wifit3.dot11.auth_assoc import assoc_req
     f_24 = assoc_req(_BSSID_B, _US, "Net", channel=6)
-    # 2.4 GHz has DSSS basic rate 0x82 (1 Mbps) and extended rates tag 50
-    assert b"\x82" in f_24
+    # STA rates clear the BSS-basic bit; 2.4 GHz still has 1 Mbps and tag 50
+    assert b"\x02" in f_24
+    assert b"\x82" not in f_24
     assert b"\x32\x04" in f_24       # Tag 50, len 4
     assert b"\x2d\x1a" in f_24       # Tag 45 (HT Caps), len 26
 
     f_5g = assoc_req(_BSSID_B, _US, "Net", channel=36)
-    # 5 GHz has OFDM basic rate 0x8C (6 Mbps), no tag 50, and HT caps
-    assert b"\x8c" in f_5g
-    assert b"\x82" not in f_5g
+    # 5 GHz has 6 Mbps without the basic bit, no tag 50, and HT caps
+    assert b"\x0c" in f_5g
+    assert b"\x8c" not in f_5g
     assert b"\x32" not in f_5g       # No Tag 50 on 5 GHz
     assert b"\x2d\x1a" in f_5g       # Tag 45 (HT Caps), len 26
+
+
+def test_assoc_req_includes_ds_and_optional_wmm():
+    from wifit3.dot11.auth_assoc import WMM_INFO_IE, assoc_req
+    f = assoc_req(_BSSID_B, _US, "Net", channel=1, wmm=True)
+    assert b"\x03\x01\x01" in f
+    assert WMM_INFO_IE in f
+
+
+def test_assoc_req_omits_ht_for_tkip_only_rsn():
+    from wifit3.dot11.auth_assoc import assoc_req
+    tkip = bytes.fromhex("30140100000fac020100000fac020100000fac010000")
+    f = assoc_req(_BSSID_B, _US, "Net", trailer_ies=tkip, channel=1)
+    assert b"\x2d\x1a" not in f
+    assert tkip in f
+
+
+def test_assoc_req_includes_erp_capability_bits():
+    from wifit3.dot11.auth_assoc import assoc_req
+    rsn_trailer = b"\x30\x14\x01\x00\x00\x0f\xac\x04\x01\x00\x00\x0f\xac\x04\x01\x00\x00\x0f\xac\x02\x00\x00"
+    f = assoc_req(_BSSID_B, _US, "Net", trailer_ies=rsn_trailer, channel=1)
+    cap = struct.unpack("<H", f[24:26])[0]
+    assert cap & 0x0011 == 0x0011          # ESS + Privacy
+    assert cap & 0x0020                    # Short Preamble
+    assert cap & 0x0400                    # Short Slot
+
+    echoed = assoc_req(
+        _BSSID_B, _US, "Net", trailer_ies=rsn_trailer, channel=1,
+        capability_flags={"ESS", "Privacy", "Short Preamble", "Short Slot"},
+    )
+    assert struct.unpack("<H", echoed[24:26])[0] == 0x0431
+
+
+def test_assoc_reject_is_kept_when_deauth_follows():
+    a = Association(_RespIface(), _BSSID, "Net", 1, our_mac=_US)
+    a._active = True
+    a._rx_cb(WlanFrameParser.parse_80211_frame(_assoc_resp(10), -40))
+    assert "caps-unsupported" in (a.fail_reason or "")
+    a._rx_cb(WlanFrameParser.parse_80211_frame(_deauth(9), -40))
+    assert "caps-unsupported" in (a.fail_reason or "")
+    assert a._kicked is True
 
 
 def test_assoc_req_dynamic_privacy():

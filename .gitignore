@@ -24,6 +24,8 @@ dist/
 
 # Project specifics
 captures/
+# Generated local EAP lab TLS material (never commit keys/certs)
+/eap_lab/
 targets.json
 hidden_ssids.json
 target_events*.jsonl

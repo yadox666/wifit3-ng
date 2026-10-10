@@ -139,7 +139,7 @@ async def test_scanner_switches_between_ap_and_client_tables():
         assert "Probe Honeypot" not in _footer_descriptions(scanner)
         assert table.row_count == 1
         assert _plain(table.get_cell(ap.bssid, "last_seen")) == "now"
-        assert _plain(table.get_cell(ap.bssid, "location")) == "🌐"
+        assert _plain(table.get_cell(ap.bssid, "location")) == "♁"
         assert scanner._table_map_urls[ap.bssid].startswith(
             "https://www.google.com/maps/place/"
         )
@@ -172,7 +172,7 @@ async def test_scanner_switches_between_ap_and_client_tables():
             "CoffeeShop  ·  Home  ·  Old Office [connect_hist]"
         )
         assert _plain(table.get_cell(connected.mac, "last_seen")) == "now"
-        assert _plain(table.get_cell(connected.mac, "location")) == "🌐"
+        assert _plain(table.get_cell(connected.mac, "location")) == "♁"
         assert scanner._table_map_urls[connected.mac].startswith(
             "https://www.google.com/maps/place/"
         )

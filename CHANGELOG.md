@@ -6,6 +6,54 @@ build compared with the original
 
 ## Unreleased
 
+### Added
+
+- **Enterprise lab radio selection** on the assessment panel: pick a spoof-capable
+  adapter and channel (2.4 / 5 GHz labels) for both **EAP AP test** and **EAP
+  clients test**; when several cards are present, dual-band **ALFA AWUS1900**
+  (`0bda:8813`) is preferred over 2.4-only adapters for 5 GHz targets.
+- **EAP AP test** flow: outer-EAP probe with a follow-up modal for optional lab
+  identities, PCAP recording, and a live timeline in Focus (association, method
+  discovery, outer TLS). Probe dumps, MS-CHAPv2 challenge files, and compatibility
+  notes merge into the Enterprise profile when present.
+- **Save Report** on the Enterprise panel writes the on-screen assessment as
+  `*_enterprise_assessment.md` under the configured captures directory (plain
+  Markdown, not a Vault JSON snapshot).
+- Shared **`eap_lab_runtime`**: an active **EAP clients test** logs MS-CHAPv2
+  Vault saves, inner-PAP credentials, and completion toasts from **AP Focus** and
+  the **Wi-Fi scanner** while you navigate away.
+- Vault **`save_captive_password`** indexing for EAP-lab inner PAP captures
+  (`Source: eap_lab_inner_pap`) alongside existing MS-CHAPv2 / NetNTLMv2 lines.
+- TLS **CertificateRequest** parsing during Enterprise analysis (client cert
+  requested, optional CA names) and extended MS-CHAPv2 challenge handling in the
+  active outer probe.
+
+### Changed
+
+- Enterprise panel actions are labeled **EAP AP test**, **EAP clients test**, and
+  **Cancel AP test** (replacing older “outer probe” / “PEAP honeypot” copy). The
+  honeypot launch dialog is narrower, uses short labels with full descriptions in
+  tooltips, and keeps assessment toggles on one line where possible.
+- Completed outer probes still auto-save sanitized `*_enterprise_report.json`
+  snapshots to Vault; **Save Report** is the explicit Markdown export only.
+- **RTL8814AU** USB IDs now report the retail product name **ALFA AWUS1900** in
+  the UI; **AR9271** refinement no longer overwrites a specific product string
+  (for example WiFiStation EXT) with a generic AWUS036NHA label when the device
+  name is already distinct.
+- The **Enterprise** attack button in AP Focus uses the success variant for
+  quicker recognition on Enterprise targets.
+
+### Fixed
+
+- Enterprise lab channel lists and defaults now follow the **selected card's**
+  band capabilities (fixes 5 GHz lab channels when a dual-band AWUS1900 is
+  connected alongside a 2.4-only adapter).
+- **`beacon_clone_enterprise(..., ssid=)`** and lab DHCP offer/ACK framing synced
+  with the honeypot campaign so **EAP clients test** can advertise
+  `EAP-TEST-LAB` without crashing on import.
+- Association stack (`campaigns` + `dot11` **auth_assoc**) synced for Enterprise
+  probe strict Open-Auth sequencing and HT/WMM Assoc on picky APs.
+
 ## 0.3.19 - 2026-10-07
 
 ### Fixed

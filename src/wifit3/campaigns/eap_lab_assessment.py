@@ -58,10 +58,14 @@ def client_pseudonym(lab_bssid: str, client_mac: str) -> str:
     return digest[:16]
 
 
+# TTLS can carry PAP; PEAP is the usual password tunnel; EAP-TLS is strongest.
+_WEAK_OUTER_RANK = {21: 0, 25: 1, 13: 2}
+
+
 def order_eap_methods(methods: tuple[int, ...], *, weak_outer_first: bool) -> tuple[int, ...]:
     if not weak_outer_first or len(methods) < 2:
         return methods
-    return tuple(reversed(methods))
+    return tuple(sorted(methods, key=lambda method: _WEAK_OUTER_RANK.get(method, 50)))
 
 
 def is_empty_nt_response(nt_response: bytes) -> bool:

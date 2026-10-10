@@ -16,6 +16,7 @@ from wifit3.dot11.ie import (
     force_psk_akm,
     iter_information_elements,
     rates_ie,
+    ssid_ie,
 )
 from wifit3.dot11.eapol import data_header, eapol_key, LLC_SNAP_EAPOL
 from wifit3.dot11.mac import mac_header
@@ -23,6 +24,7 @@ from wifit3.dot11.mac import mac_header
 _CAP_ESS_PRIVACY = 0x0011
 _CAP_ESS = 0x0001
 _BEACON_HEAD = 36               # 24B MAC header + 12B fixed (timestamp, interval, capability)
+_ELEMID_SSID = 0x00
 _ELEMID_DS = 0x03
 _ELEMID_RSN = 0x30
 _ELEMID_HT_OP = 0x3D           # 61 HT Operation (primary channel + secondary-channel offset)
@@ -110,10 +112,13 @@ def _rewrite_beacon_tags(
     rewrite_rsn,
     generic_rsn: bytes,
     narrow_to_20mhz: bool,
+    ssid: str | None = None,
 ) -> bytes:
     kept = bytearray()
     for tag_id, _body, elem in iter_information_elements(tags):
-        if tag_id == _ELEMID_RSN:
+        if tag_id == _ELEMID_SSID and ssid is not None:
+            kept += ssid_ie(ssid)
+        elif tag_id == _ELEMID_RSN:
             kept += rewrite_rsn(elem) or generic_rsn
         elif tag_id == _ELEMID_DS:
             kept += ds_param_ie(decoy_channel)
@@ -140,6 +145,7 @@ def _beacon_clone(
     rewrite_rsn,
     generic_rsn: bytes,
     narrow_to_20mhz: bool = True,
+    ssid: str | None = None,
 ) -> bytes:
     if len(real_beacon) < _BEACON_HEAD:
         raise ValueError(f"beacon too short to rewrite: {len(real_beacon)} bytes")
@@ -154,6 +160,7 @@ def _beacon_clone(
         rewrite_rsn=rewrite_rsn,
         generic_rsn=generic_rsn,
         narrow_to_20mhz=narrow_to_20mhz,
+        ssid=ssid,
     )
     return bytes(head) + tags
 
@@ -183,6 +190,7 @@ def beacon_clone_enterprise(
     *,
     pmf_capable: bool = False,
     narrow_to_20mhz: bool = False,
+    ssid: str | None = None,
 ) -> bytes:
     """Rewrite the target beacon for an 802.1X lab twin (SAE/RSNXE stripped, EAP AKM)."""
     def _rewrite_rsn(elem: bytes) -> Optional[bytes]:
@@ -195,6 +203,7 @@ def beacon_clone_enterprise(
         rewrite_rsn=_rewrite_rsn,
         generic_rsn=GENERIC_ENTERPRISE_RSN_IE,
         narrow_to_20mhz=narrow_to_20mhz,
+        ssid=ssid,
     )
 
 

@@ -8,6 +8,8 @@ from rich.text import Text
 
 from wifit3.models.location import SignalPosition
 
+GPS_POSITION_ICON = "\u2641"  # Monochrome Earth symbol; dims unlike emoji.
+
 
 def latest_position(
     positions: Iterable[SignalPosition],
@@ -42,11 +44,11 @@ def format_position(positions: Iterable[SignalPosition]) -> str:
 
 
 def format_position_globe(positions: Iterable[SignalPosition]) -> str:
-    """Compact GPS column: globe only (accuracy is shown in the Maps link query)."""
+    """Compact GPS column: monochrome position indicator only."""
     position = latest_position(positions)
     if position is None:
         return "·"
-    return "🌐"
+    return GPS_POSITION_ICON
 
 
 def _maps_zoom_for_accuracy(latitude: float, accuracy_m: float) -> int:

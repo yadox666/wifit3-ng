@@ -20,6 +20,17 @@ def _row_keys(table: DataTable, prefix: str) -> list[str]:
     ]
 
 
+def _inject_offline_records(
+    offline: OfflineDatabaseView,
+    kind: str,
+    records: list[dict],
+) -> None:
+    """Tests set rows directly; clear async load so ``_render_table`` runs."""
+    offline._loading_kinds.discard(kind)
+    offline._records[kind] = records
+    offline._loaded_kinds.add(kind)
+
+
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
 async def test_offline_columns_sort_and_full_gps_map_link(monkeypatch):
@@ -34,7 +45,7 @@ async def test_offline_columns_sort_and_full_gps_map_link(monkeypatch):
         await pilot.pause(0)
         offline = pilot.app.screen
         assert isinstance(offline, OfflineDatabaseView)
-        offline._records["aps"] = [
+        _inject_offline_records(offline, "aps", [
             {
                 "bssid": "00:11:22:33:44:55",
                 "ssid": "Zulu",
@@ -77,13 +88,14 @@ async def test_offline_columns_sort_and_full_gps_map_link(monkeypatch):
                 "clients": [],
                 "positions": [],
             },
-        ]
+        ])
         offline._render_table("aps")
         table = offline.query_one("#offline-aps", DataTable)
 
         assert [key.value for key in table.columns] == [
             "ssid",
             "bssid",
+            "manufacturer",
             "channel",
             "encryption",
             "clients",
@@ -97,11 +109,11 @@ async def test_offline_columns_sort_and_full_gps_map_link(monkeypatch):
         row = table.get_row("aps:00:11:22:33:44:55")
         assert str(row[0]) == "Zulu"
         assert str(row[1]) == "00:11:22:33:44:55"
-        assert str(row[2]) == "11"
-        assert str(row[3]) == "WPA2"
-        assert row[5].plain == "Surveillance"
-        assert "Flock Safety Cameras" in row[6].plain
-        assert row[-2].plain.endswith("🌐")
+        assert str(row[3]) == "11"
+        assert str(row[4]) == "WPA2"
+        assert row[6].plain == "Surveillance"
+        assert "Flock Safety Cameras" in row[7].plain
+        assert row[-2].plain == "♁"
         assert str(row[-1]) == "·"
 
         assert offline._open_maps_from_table("aps:00:11:22:33:44:55")
@@ -161,6 +173,38 @@ async def test_offline_bluetooth_splits_main_and_secondary_tables():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
+async def test_offline_clients_splits_main_and_secondary_tables():
+    app = WifiteApp()
+    async with app.run_test() as pilot:
+        pilot.app.screen.action_offline()
+        await pilot.pause(0)
+        offline = pilot.app.screen
+        assert isinstance(offline, OfflineDatabaseView)
+        _inject_offline_records(offline, "clients", [
+            {
+                "client_mac": "00:11:22:33:44:55",
+                "access_point_count": 1,
+                "access_points": [{"bssid": "aa:bb:cc:dd:ee:ff", "ssid": "Lab"}],
+                "last_seen": 2,
+            },
+            {
+                "client_mac": "02:11:22:33:44:01",
+                "last_seen": 1,
+            },
+        ])
+        offline._active = "clients"
+        offline.set_class(True, "-clients-active")
+        offline._render_client_tables()
+        main = offline.query_one("#offline-clients", DataTable)
+        secondary = offline.query_one("#offline-clients-secondary", DataTable)
+        assert _row_keys(main, "clients:") == ["clients:00:11:22:33:44:55"]
+        assert _row_keys(secondary, "clients-secondary:") == [
+            "clients-secondary:02:11:22:33:44:01",
+        ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
 async def test_offline_ap_row_shows_target_group(tmp_path):
     app = WifiteApp()
     app.target_store = TargetStore(tmp_path / "targets.sqlite3")
@@ -176,7 +220,7 @@ async def test_offline_ap_row_shows_target_group(tmp_path):
         await pilot.pause(0)
         offline = pilot.app.screen
         assert isinstance(offline, OfflineDatabaseView)
-        offline._records["aps"] = [
+        _inject_offline_records(offline, "aps", [
             {
                 "bssid": "00:11:22:33:44:55",
                 "ssid": "Zulu",
@@ -185,7 +229,7 @@ async def test_offline_ap_row_shows_target_group(tmp_path):
                 "last_seen": 1,
                 "clients": [],
             },
-        ]
+        ])
         offline._render_table("aps")
         table = offline.query_one("#offline-aps", DataTable)
         row = table.get_row("aps:00:11:22:33:44:55")
@@ -204,7 +248,7 @@ async def test_offline_bssid_column_shrinks_after_expand_collapse():
         await pilot.pause(0)
         offline = pilot.app.screen
         assert isinstance(offline, OfflineDatabaseView)
-        offline._records["aps"] = [
+        _inject_offline_records(offline, "aps", [
             {
                 "bssid": "00:11:22:33:44:55",
                 "ssid": "WideRow",
@@ -217,7 +261,7 @@ async def test_offline_bssid_column_shrinks_after_expand_collapse():
                     "nested": {"payload": "y" * 120},
                 },
             },
-        ]
+        ])
         identity = "00:11:22:33:44:55"
         offline._detail_focus = ("aps", identity)
         offline._render_table("aps", selected_identity=identity)

@@ -26,7 +26,7 @@ import usb.util
 
 from wifit3.chips.rx_reader import RxReaderThread
 from wifit3.chips.driver import DeviceID, Driver, FakeMacSupport, ProgressCallback
-from wifit3.chips.products import ALFA, TPLink
+from wifit3.chips.products import ALFA, AMBIGUOUS_AR9271, TPLink
 from wifit3.errors import BringUpError
 from wifit3.dot11.parser import WlanFrameParser
 
@@ -68,6 +68,10 @@ class AR9271V2Driver(Driver):
     SUPPORTED_CHANNELS: ClassVar[List[int]] = list(range(1, 15))   # 2.4 GHz only, no 5 GHz radio
     CONFLICTING_LINUX_MODULES: ClassVar[List[str]] = ["ath9k_htc"]   # modprobe blacklist hint
     LINUX_REPLUG_AFTER_MODPROBE: ClassVar[bool] = True   # replug, not the fragile FW-download self-cold
+    # Experimental Linux fast path: after setup unloads/blacklists ath9k_htc,
+    # detach and probe-claim the live interface. connect() can warm-adopt the
+    # already-running mainline firmware; any failure retains the replug path.
+    LINUX_SOFT_RECLAIM: ClassVar[bool] = True
     FAKE_MAC: ClassVar[FakeMacSupport] = FakeMacSupport.SPOOFABLE
 
     def __init__(self, dev: Device):
@@ -99,8 +103,13 @@ class AR9271V2Driver(Driver):
         return ALFA.AWUS036NHA
 
     def _refine_product_name(self) -> None:
-        """Narrow the combined SUPPORTED_IDS label to one make once the EEPROM MAC is read; a
-        MAC-less state leaves the combined label."""
+        """Narrow the shared 0cf3:9271 label once the EEPROM MAC is read.
+
+        A specific retail name (WiFiStation, DWA-126, …) stays. Only the combined
+        AWUS036NHA / TL-WN722N label is split, and a missing MAC leaves it combined.
+        """
+        if self.product_name not in (None, "", AMBIGUOUS_AR9271):
+            return
         refined = self.derive_product_name(self.mac_address)
         if refined:
             self.product_name = refined

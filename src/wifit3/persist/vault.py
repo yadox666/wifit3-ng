@@ -58,6 +58,7 @@ class Vault:
         CaptureType.WPS_PBC: "WPS PBC",
         CaptureType.WPA_PSK: "WPA PSK",
         CaptureType.ENTERPRISE: "Enterprise report",
+        CaptureType.CAPTIVE_PASSWORD: "Captive password",
     }
 
     _PSK_TYPES = (CaptureType.WPS_PIN, CaptureType.WPS_PBC, CaptureType.WPA_PSK)
@@ -248,6 +249,49 @@ class Vault:
             self._index.setdefault(capture_index_key(stored_bssid, ap.ssid), []).insert(
                 0, PersistedCapture(type=CaptureType.WPA_PSK, timestamp=int(time.time()),
                                     path=str(result.path), bssid=stored_bssid, value=psk, ssid=ap.ssid))
+        return result
+
+    def save_captive_password(
+        self,
+        ap: "AccessPoint",
+        password: str,
+        *,
+        portal_name: str | None = None,
+        username: str | None = None,
+        source: str = "captive_portal",
+        lab_bssid: str | None = None,
+        allow_empty_password: bool = False,
+    ) -> Optional[SaveResult]:
+        result = save.save_captive_password(
+            ap,
+            password,
+            portal_name=portal_name,
+            username=username,
+            source=source,
+            lab_bssid=lab_bssid,
+            allow_empty_password=allow_empty_password,
+        )
+        if result is None:
+            return None
+        already = any(
+            capture.path == str(result.path)
+            and capture.type == CaptureType.CAPTIVE_PASSWORD
+            for capture in self._index.get(ap.bssid, [])
+        )
+        if result.was_new or not already:
+            self._index.setdefault(ap.bssid, []).insert(
+                0,
+                PersistedCapture(
+                    type=CaptureType.CAPTIVE_PASSWORD,
+                    timestamp=int(time.time()),
+                    path=str(result.path),
+                    bssid=ap.bssid,
+                    value=password,
+                    ssid=ap.ssid,
+                    username=(username or None),
+                    portal_name=(portal_name or None),
+                ),
+            )
         return result
 
     def save_mschapv2(

@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict, dataclass
 from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from platformdirs import user_data_dir
 
@@ -1192,10 +1192,100 @@ class ApHistoryStore:
         return int(connection.execute("SELECT COUNT(*) FROM access_points").fetchone()[0])
 
     @_locked
+    def client_count(self) -> int:
+        connection = self._connection
+        if connection is None:
+            return 0
+        row = connection.execute(
+            """
+            WITH client_ids AS (
+                SELECT DISTINCT client_mac FROM client_associations
+                UNION
+                SELECT DISTINCT client_mac FROM client_session_sightings
+            )
+            SELECT COUNT(*) FROM client_ids
+            """,
+        ).fetchone()
+        return int(row[0])
+
+    @_locked
     def offline_access_points(self) -> list[dict[str, Any]]:
         connection = self._connection
         if connection is None:
             return []
+        identity_by_bssid = _group_sqlite_rows(
+            connection.execute(
+                """
+                SELECT bssid, field, source, value, first_seen, last_seen
+                FROM identity_evidence
+                ORDER BY bssid, field, source
+                """,
+            ),
+            "bssid",
+            lambda row: {
+                "field": row["field"],
+                "source": row["source"],
+                "value": row["value"],
+                "first_seen": row["first_seen"],
+                "last_seen": row["last_seen"],
+            },
+        )
+        relationships_by_bssid = _group_sqlite_rows(
+            connection.execute(
+                """
+                SELECT bssid, related_bssid, kind, first_seen, last_seen
+                FROM ap_relationships
+                ORDER BY bssid, kind, related_bssid
+                """,
+            ),
+            "bssid",
+            lambda row: {
+                "related_bssid": row["related_bssid"],
+                "kind": row["kind"],
+                "first_seen": row["first_seen"],
+                "last_seen": row["last_seen"],
+            },
+        )
+        clients_by_bssid = _group_sqlite_rows(
+            connection.execute(
+                """
+                SELECT bssid, client_mac, first_seen, last_seen
+                FROM client_associations
+                ORDER BY bssid, last_seen DESC, client_mac
+                """,
+            ),
+            "bssid",
+            lambda row: {
+                "client_mac": row["client_mac"],
+                "first_seen": row["first_seen"],
+                "last_seen": row["last_seen"],
+            },
+        )
+        sessions_by_bssid = _group_sqlite_rows(
+            connection.execute(
+                """
+                SELECT sighting.bssid, session.session_id, session.name,
+                       session.started_at, session.ended_at, session.mode,
+                       sighting.first_seen, sighting.last_seen,
+                       sighting.sighting_count
+                FROM ap_session_sightings AS sighting
+                JOIN scan_sessions AS session
+                  ON session.session_id = sighting.session_id
+                ORDER BY sighting.bssid, sighting.last_seen DESC
+                """,
+            ),
+            "bssid",
+            lambda row: {
+                "session_id": row["session_id"],
+                "name": row["name"],
+                "started_at": row["started_at"],
+                "ended_at": row["ended_at"],
+                "mode": row["mode"],
+                "first_seen": row["first_seen"],
+                "last_seen": row["last_seen"],
+                "sighting_count": row["sighting_count"],
+            },
+        )
         records: list[dict[str, Any]] = []
         for row in connection.execute(
             "SELECT * FROM access_points ORDER BY last_seen DESC, bssid",
@@ -1207,55 +1297,16 @@ class ApHistoryStore:
                 "enterprise_json", "network_json",
             ):
                 record[field.removesuffix("_json")] = _json_value(record.pop(field))
-            record["identity_evidence"] = [
-                dict(item) for item in connection.execute(
-                    """
-                    SELECT field, source, value, first_seen, last_seen
-                    FROM identity_evidence
-                    WHERE bssid = ?
-                    ORDER BY field, source
-                    """,
-                    (bssid,),
-                )
-            ]
-            record["relationships"] = [
-                dict(item) for item in connection.execute(
-                    """
-                    SELECT related_bssid, kind, first_seen, last_seen
-                    FROM ap_relationships
-                    WHERE bssid = ?
-                    ORDER BY kind, related_bssid
-                    """,
-                    (bssid,),
-                )
-            ]
-            record["clients"] = [
-                dict(item) for item in connection.execute(
-                    """
-                    SELECT client_mac, first_seen, last_seen
-                    FROM client_associations
-                    WHERE bssid = ?
-                    ORDER BY last_seen DESC, client_mac
-                    """,
-                    (bssid,),
-                )
-            ]
-            record["scan_sessions"] = [
-                dict(item) for item in connection.execute(
-                    """
-                    SELECT session.session_id, session.name, session.started_at,
-                           session.ended_at, session.mode,
-                           sighting.first_seen, sighting.last_seen,
-                           sighting.sighting_count
-                    FROM ap_session_sightings AS sighting
-                    JOIN scan_sessions AS session
-                      ON session.session_id = sighting.session_id
-                    WHERE sighting.bssid = ?
-                    ORDER BY sighting.last_seen DESC
-                    """,
-                    (bssid,),
-                )
-            ]
+            record["identity_evidence"] = list(
+                identity_by_bssid.get(bssid.casefold(), []),
+            )
+            record["relationships"] = list(
+                relationships_by_bssid.get(bssid.casefold(), []),
+            )
+            record["clients"] = list(clients_by_bssid.get(bssid.casefold(), []))
+            record["scan_sessions"] = list(
+                sessions_by_bssid.get(bssid.casefold(), []),
+            )
             record["session_name"] = (
                 record["scan_sessions"][0]["name"]
                 if record["scan_sessions"] else "Legacy"
@@ -1269,59 +1320,104 @@ class ApHistoryStore:
         connection = self._connection
         if connection is None:
             return []
+        access_points_by_client = _group_sqlite_rows(
+            connection.execute(
+                """
+                SELECT association.client_mac, association.bssid, ap.ssid,
+                       ap.channel, ap.encryption, association.first_seen,
+                       association.last_seen
+                FROM client_associations AS association
+                JOIN access_points AS ap ON ap.bssid = association.bssid
+                ORDER BY association.client_mac, association.last_seen DESC,
+                         association.bssid
+                """,
+            ),
+            "client_mac",
+            lambda row: {
+                "bssid": row["bssid"],
+                "ssid": row["ssid"],
+                "channel": row["channel"],
+                "encryption": row["encryption"],
+                "first_seen": row["first_seen"],
+                "last_seen": row["last_seen"],
+            },
+        )
+        sessions_by_client = _group_sqlite_rows(
+            connection.execute(
+                """
+                SELECT sighting.client_mac, session.session_id, session.name,
+                       session.started_at, session.ended_at, session.mode,
+                       MIN(sighting.first_seen) AS first_seen,
+                       MAX(sighting.last_seen) AS last_seen,
+                       SUM(sighting.sighting_count) AS sighting_count
+                FROM client_session_sightings AS sighting
+                JOIN scan_sessions AS session
+                  ON session.session_id = sighting.session_id
+                GROUP BY sighting.client_mac, session.session_id
+                ORDER BY sighting.client_mac, last_seen DESC
+                """,
+            ),
+            "client_mac",
+            lambda row: {
+                "session_id": row["session_id"],
+                "name": row["name"],
+                "started_at": row["started_at"],
+                "ended_at": row["ended_at"],
+                "mode": row["mode"],
+                "first_seen": row["first_seen"],
+                "last_seen": row["last_seen"],
+                "sighting_count": row["sighting_count"],
+            },
+        )
         records: list[dict[str, Any]] = []
         clients = connection.execute(
             """
             WITH client_ids AS (
                 SELECT DISTINCT client_mac FROM client_associations
+                UNION
+                SELECT DISTINCT client_mac FROM client_session_sightings
+            ),
+            assoc AS (
+                SELECT client_mac,
+                       MIN(first_seen) AS first_seen,
+                       MAX(last_seen) AS last_seen,
+                       COUNT(*) AS access_point_count
+                FROM client_associations
+                GROUP BY client_mac
+            ),
+            sightings AS (
+                SELECT client_mac,
+                       MIN(first_seen) AS first_seen,
+                       MAX(last_seen) AS last_seen
+                FROM client_session_sightings
+                GROUP BY client_mac
             )
             SELECT ids.client_mac,
-                   (SELECT MIN(first_seen) FROM client_associations
-                    WHERE client_mac = ids.client_mac) AS first_seen,
-                   COALESCE(
-                       (SELECT MAX(last_seen) FROM client_associations
-                        WHERE client_mac = ids.client_mac),
-                       0
+                   CASE
+                       WHEN assoc.first_seen IS NULL THEN sightings.first_seen
+                       WHEN sightings.first_seen IS NULL THEN assoc.first_seen
+                       ELSE MIN(assoc.first_seen, sightings.first_seen)
+                   END AS first_seen,
+                   MAX(
+                       COALESCE(assoc.last_seen, 0),
+                       COALESCE(sightings.last_seen, 0)
                    ) AS last_seen,
-                   (SELECT COUNT(*) FROM client_associations
-                    WHERE client_mac = ids.client_mac) AS access_point_count
+                   COALESCE(assoc.access_point_count, 0) AS access_point_count
             FROM client_ids AS ids
+            LEFT JOIN assoc ON assoc.client_mac = ids.client_mac
+            LEFT JOIN sightings ON sightings.client_mac = ids.client_mac
             ORDER BY last_seen DESC, ids.client_mac
             """
         )
         for client in clients:
             record = dict(client)
-            record["access_points"] = [
-                dict(item) for item in connection.execute(
-                    """
-                    SELECT association.bssid, ap.ssid, ap.channel, ap.encryption,
-                           association.first_seen, association.last_seen
-                    FROM client_associations AS association
-                    JOIN access_points AS ap ON ap.bssid = association.bssid
-                    WHERE association.client_mac = ?
-                    ORDER BY association.last_seen DESC, association.bssid
-                    """,
-                    (client["client_mac"],),
-                )
-            ]
-            record["scan_sessions"] = [
-                dict(item) for item in connection.execute(
-                    """
-                    SELECT session.session_id, session.name, session.started_at,
-                           session.ended_at, session.mode,
-                           MIN(sighting.first_seen) AS first_seen,
-                           MAX(sighting.last_seen) AS last_seen,
-                           SUM(sighting.sighting_count) AS sighting_count
-                    FROM client_session_sightings AS sighting
-                    JOIN scan_sessions AS session
-                      ON session.session_id = sighting.session_id
-                    WHERE sighting.client_mac = ?
-                    GROUP BY session.session_id
-                    ORDER BY last_seen DESC
-                    """,
-                    (client["client_mac"],),
-                )
-            ]
+            client_mac = str(record["client_mac"])
+            record["access_points"] = list(
+                access_points_by_client.get(client_mac.casefold(), []),
+            )
+            record["scan_sessions"] = list(
+                sessions_by_client.get(client_mac.casefold(), []),
+            )
             record["session_name"] = (
                 record["scan_sessions"][0]["name"]
                 if record["scan_sessions"] else "Legacy"
@@ -1674,6 +1770,18 @@ def _read_json(path: Path) -> dict[str, Any]:
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _group_sqlite_rows(
+    rows: Iterable[sqlite3.Row],
+    key_column: str,
+    item_factory,
+) -> dict[str, list[Any]]:
+    grouped: dict[str, list[Any]] = {}
+    for row in rows:
+        key = str(row[key_column]).casefold()
+        grouped.setdefault(key, []).append(item_factory(row))
+    return grouped
 
 
 def _json_object(value: object) -> dict[str, Any]:

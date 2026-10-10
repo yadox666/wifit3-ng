@@ -185,6 +185,11 @@
           "kind": "name_regex",
           "text": "(?i)^.*\\biPhone\\b.*$",
           "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\biPhone\\b.*$",
+          "radio": "wifi"
         }
       ]
     },
@@ -198,6 +203,50 @@
           "kind": "name_regex",
           "text": "(?i)^OPPO(?:\\s+(?:Find|Reno|A[0-9]|F[0-9]|K[0-9]|R[0-9]|CPH[0-9]).*)?$",
           "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^OPPO(?:\\s+(?:Find|Reno|A[0-9]|F[0-9]|K[0-9]|R[0-9]|CPH[0-9]).*)?$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "samsung-phone",
+      "label": "Samsung smartphone",
+      "class": "Phone",
+      "notes": "Samsung Galaxy phone hotspot or an explicit Galaxy Z Fold model name.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Galaxy\\s+.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*S23\\+.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bS23\\s+Ultra\\b.*$",
+          "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Z\\s*Fold\\s*[0-9]+.*$"
+        }
+      ]
+    },
+    {
+      "id": "honor-phone",
+      "label": "HONOR smartphone",
+      "class": "Phone",
+      "notes": "HONOR Magic-series smartphone name, including observed MAGI spelling.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^HONOR\\s+MAGI(?:C)?\\s*[0-9].*$"
         }
       ]
     },
@@ -1101,431 +1150,283 @@
       ]
     },
     {
-      "id": "home-router-isp",
-      "label": "Home router",
+      "id": "home-router-digi",
+      "label": "DIGI",
       "class": "Home router",
-      "attention": "ISP CPE Wi-Fi (DIGI, Movistar, Orange Livebox, Vodafone Smartbox, Jazztel, O2, MásMóvil, Yoigo, Pepephone, MiFibra, REDWIFI, WLAN_/MIWIFI_ prefixes, Sagemcom, …).",
-      "notes": "Brand-specific SSID regex on Wi-Fi only. Not My * or a bare WiFi token.",
+      "notes": "DIGI home-router default SSIDs.",
       "rules": [
-        {
-          "kind": "name_regex",
-          "text": "(?i)^DIGIFIBRA[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^DIGI-[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bDigi WiFi\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^DIGIFIBRA-PLUS[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^MOVISTAR[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Livebox[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bLivebox\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Orange-[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^ORANGE-[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^WIFI6-ORANGE[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Vodafone[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Smartbox[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^VF-[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bVodafone Station\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Jazztel[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^O2[-_]Wi[Ff]i[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bO2 Wireless\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Masmovil[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bMásMóvil\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Yoigo[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Pepephone[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^WLAN_[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^MiFibra[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Sagemcom[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bSagemcom\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^MIWIFI_[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^MiWiFi_[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^REDWIFI[\\w_]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Lowi[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Sercomm[\\w_]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bSercomm\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^TP[-_]Link_[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^TP[-_]Link-[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^TP[-_]Link[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^TP[-_]Link.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Tenda_[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Iberdrola[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Calima[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Ohana_[\\w-]+$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^ZTEG[\\w-]*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^ZTE_[\\w-]+$",
-          "radio": "wifi"
-        }
+        {"kind": "name_regex", "text": "(?i)^DIGIFIBRA[\\w-]*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^DIGI-[\\w-]+$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*\\bDigi WiFi\\b.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^DIGIFIBRA-PLUS[\\w-]*$", "radio": "wifi"}
       ]
     },
     {
-      "id": "hospitality-venue-wifi",
-      "label": "Hospitality venue",
-      "class": "Hospitality",
-      "attention": "Guest or venue Wi-Fi for hotels, apartments, restaurants, cafés (English and Spanish SSID naming). Clue only — many personal SSIDs reuse these words.",
-      "notes": "Wi-Fi SSID substring rules. Not ISP CPE rows (Movistar, Livebox, …).",
+      "id": "home-router-movistar",
+      "label": "Movistar",
+      "class": "Home router",
+      "notes": "Movistar home-router default SSIDs.",
       "rules": [
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*HOTEL.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*APARTMENT.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*APARTAMENTO.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*APARTAMENTOS.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*APARTAHOTEL.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*APARTHOTEL.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*RESTAURANTE.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*RESTAURANT.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*CAFETERIA.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*CHILLOUT.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*CHILL-OUT.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*CHILL_OUT.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*CHILL OUT.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*HOSTAL.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*HOSTEL.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*MOTEL.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*HOSPEDAJE.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*ALOJAMIENTO.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*PENSION.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*PENSIÓN.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*HOSTERIA.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*HOSTERÍA.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*RESORT.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*GUESTHOUSE.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*GUEST-HOUSE.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*GUEST HOUSE.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*BISTRO.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*BURGER.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*ROOMS.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*HABITACIONES.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*HABITACION.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*COMEDOR.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*TERRAZA.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*GLAMPING.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*LODGE.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^(?!My\\s)(?!^Cafe$).*\\b(CAFE|CAFÉ)\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bGuest WiFi\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bGuest WLAN\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bWiFi Guest\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*_INN$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*INN_.*$",
-          "radio": "wifi"
-        }
+        {"kind": "name_regex", "text": "(?i)^MOVISTAR[\\w-]*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-orange",
+      "label": "Orange",
+      "class": "Home router",
+      "notes": "Orange home-router default SSIDs, including Livebox.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^Livebox[\\w-]*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*\\bLivebox\\b.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^Orange-[\\w-]+$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^ORANGE-[\\w-]+$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^WIFI6-ORANGE[\\w-]*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-vodafone",
+      "label": "Vodafone",
+      "class": "Home router",
+      "notes": "Vodafone home-router default SSIDs, including Smartbox and Vodafone Station.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^Vodafone[\\w-]*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^Smartbox[\\w-]*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^VF-[\\w-]+$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*\\bVodafone Station\\b.*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-jazztel",
+      "label": "Jazztel",
+      "class": "Home router",
+      "notes": "Jazztel home-router default SSIDs.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^Jazztel[\\w-]*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-o2",
+      "label": "O2",
+      "class": "Home router",
+      "notes": "O2 home-router default SSIDs.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^O2[-_]Wi[Ff]i[\\w-]*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*\\bO2 Wireless\\b.*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-masmovil",
+      "label": "MasMovil",
+      "class": "Home router",
+      "attention": "MIWIFI_* is associated in Spain with ZTE routers supplied by the MásMóvil group; treat this as an SSID-based hypothesis.",
+      "notes": "MásMóvil home-router default SSIDs. MIWIFI_* is assigned here rather than to the router manufacturer.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^Masmovil[\\w-]*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*\\bMásMóvil\\b.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^MIWIFI_[\\w-]+$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-yoigo",
+      "label": "Yoigo",
+      "class": "Home router",
+      "notes": "Yoigo home-router default SSIDs.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^Yoigo[\\w-]*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-pepephone",
+      "label": "Pepephone",
+      "class": "Home router",
+      "notes": "Pepephone home-router default SSIDs.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^Pepephone[\\w-]*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-mifibra",
+      "label": "MiFibra",
+      "class": "Home router",
+      "notes": "MiFibra home-router default SSIDs.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^MiFibra[\\w-]+$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-lowi",
+      "label": "Lowi",
+      "class": "Home router",
+      "notes": "Lowi home-router default SSIDs.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^Lowi[\\w-]*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-iberdrola",
+      "label": "Iberdrola",
+      "class": "Home router",
+      "notes": "Iberdrola connectivity equipment SSIDs.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^Iberdrola[\\w-]*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-calima",
+      "label": "Calima",
+      "class": "Home router",
+      "notes": "Calima home-router default SSIDs.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^Calima[\\w-]*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-sagemcom",
+      "label": "Sagemcom",
+      "class": "Home router",
+      "notes": "Router-vendor SSIDs that identify Sagemcom, not a specific ISP.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^Sagemcom[\\w-]*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*\\bSagemcom\\b.*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-sercomm",
+      "label": "Sercomm",
+      "class": "Home router",
+      "notes": "Router-vendor SSIDs that identify Sercomm, not a specific ISP.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^Sercomm[\\w_]*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*\\bSercomm\\b.*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-tp-link",
+      "label": "TP-Link",
+      "class": "Home router",
+      "notes": "TP-Link home-router default SSIDs.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^TP[-_]Link_[\\w-]+$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^TP[-_]Link-[\\w-]+$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^TP[-_]Link[\\w-]+$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^TP[-_]Link.*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-tenda",
+      "label": "Tenda",
+      "class": "Home router",
+      "notes": "Tenda home-router default SSIDs.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^Tenda_[\\w-]+$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-zte",
+      "label": "ZTE",
+      "class": "Home router",
+      "notes": "Router-vendor SSIDs that identify ZTE, not a specific ISP.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^ZTEG[\\w-]*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^ZTE_[\\w-]+$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "home-router-isp",
+      "label": "Generic ISP router",
+      "class": "Home router",
+      "attention": "The WLAN_* and REDWIFI* prefixes are not specific enough to attribute an operator.",
+      "notes": "Generic ISP-style default SSIDs retained as Home router without a company attribution.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^WLAN_[\\w-]+$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^REDWIFI[\\w_]*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "hospitality-hotel-lodging",
+      "label": "Hotel / lodging",
+      "class": "Hospitality",
+      "attention": "Hotel or lodging SSID clue only; names can be user-defined.",
+      "notes": "Hotels, hostels, motels, resorts and other short-stay accommodation.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^.*HOTEL.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*APARTAHOTEL.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*APARTHOTEL.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*HOSTAL.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*HOSTEL.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*MOTEL.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*HOSPEDAJE.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*ALOJAMIENTO.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*PENSI(O|Ó)N.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*HOSTER(I|Í)A.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*RESORT.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*GUEST[- ]?HOUSE.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*ROOMS.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*HABITACI(O|Ó)N(ES)?.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*GLAMPING.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*LODGE.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*(_INN$|INN_).*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "hospitality-apartment",
+      "label": "Apartment",
+      "class": "Hospitality",
+      "attention": "Apartment or holiday-rental SSID clue only; names can be user-defined.",
+      "notes": "Apartments and apartment complexes.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^.*APARTMENT.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*APARTAMENTO(S)?.*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "hospitality-restaurant",
+      "label": "Restaurant",
+      "class": "Hospitality",
+      "attention": "Restaurant or dining-venue SSID clue only; names can be user-defined.",
+      "notes": "Restaurants, bistros and dining venues.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^.*RESTAURANT(E)?.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*BISTRO.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*BURGER.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*COMEDOR.*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "hospitality-cafe-lounge",
+      "label": "Café / lounge",
+      "class": "Hospitality",
+      "attention": "Café, terrace or lounge SSID clue only; names can be user-defined.",
+      "notes": "Cafés, cafeterias, terraces and lounge-style venues.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^.*CAFETERIA.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*CHILL[-_ ]?OUT.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*TERRAZA.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^(?!My\\s)(?!^Cafe$).*\\b(CAFE|CAFÉ)\\b.*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "hospitality-workspace",
+      "label": "Workspace / coworking",
+      "class": "Hospitality",
+      "attention": "Workspace or coworking SSID clue only; names can be user-defined.",
+      "notes": "Coworking spaces, shared workspaces and business centres.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^.*CO[-_ ]?WORK(ING)?.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*WORK[-_ ]?SPACE.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*BUSINESS[-_ ]?CENT(ER|RE).*$", "radio": "wifi"}
+      ]
+    },
+    {
+      "id": "hospitality-guest-wifi",
+      "label": "Guest Wi-Fi",
+      "class": "Hospitality",
+      "attention": "Generic guest-network wording does not identify the venue type.",
+      "notes": "Guest Wi-Fi whose venue type cannot be inferred from the SSID.",
+      "rules": [
+        {"kind": "name_regex", "text": "(?i)^.*\\bGuest WiFi\\b.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*\\bGuest WLAN\\b.*$", "radio": "wifi"},
+        {"kind": "name_regex", "text": "(?i)^.*\\bWiFi Guest\\b.*$", "radio": "wifi"}
       ]
     },
     {
@@ -2017,21 +1918,6 @@
         },
         {
           "kind": "name_regex",
-          "text": "(?i)^Galaxy\\ .*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Galaxy\\ S.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^Galaxy\\ A.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
           "text": "(?i)^Infinix\\ .*$",
           "radio": "wifi"
         },
@@ -2048,26 +1934,6 @@
         {
           "kind": "name_regex",
           "text": "(?i)^A17\\ de.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bS23\\+\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*S23\\+.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bS23\\s+Ultra\\b.*$",
-          "radio": "wifi"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*S23\\s+Ultra.*$",
           "radio": "wifi"
         }
       ]
@@ -2198,6 +2064,20 @@
         {
           "kind": "name_regex",
           "text": "(?i)^.*Car\\s+Play.*$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-chigee-display",
+      "label": "CHIGEE motorcycle display",
+      "class": "Vehicle",
+      "attention": "CHIGEE motorcycle display Wi-Fi used for Wireless CarPlay or Android Auto.",
+      "notes": "CHIGEE documents CGHotsport-XXX as the automatic Wi-Fi link used for CarPlay mirroring.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^CGHotsport-[\\w-]+$",
           "radio": "wifi"
         }
       ]
@@ -2416,6 +2296,19 @@
       ]
     },
     {
+      "id": "vehicle-dacia",
+      "label": "Dacia in-car Wi-Fi",
+      "class": "Vehicle",
+      "attention": "Dacia Share infotainment hotspot SSID.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Share_DACIA_HotSpot_[\\w-]+$",
+          "radio": "wifi"
+        }
+      ]
+    },
+    {
       "id": "vehicle-mazda",
       "label": "Mazda in-car Wi-Fi",
       "class": "Vehicle",
@@ -2469,6 +2362,19 @@
           "kind": "name_regex",
           "text": "(?i)^BYD.*$",
           "radio": "wifi"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-generic-car",
+      "label": "Generic vehicle",
+      "class": "Vehicle",
+      "attention": "The advertised name ends in the standalone word “car”; manufacturer is unknown.",
+      "notes": "Generic fallback only. Brand-specific vehicle families remain more informative.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bcar$"
         }
       ]
     },
@@ -2897,7 +2803,7 @@
       "id": "gopro",
       "label": "GoPro",
       "class": "Cameras",
-      "notes": "GoPro cameras identified by advertised name, standardized GATT manufacturer, or assigned service FEA6.",
+      "notes": "GoPro cameras identified by advertised name or standardized GATT manufacturer.",
       "rules": [
         {
           "kind": "name_regex",

@@ -16,6 +16,9 @@ from wifit3.campaigns.eap_lab_assessment import EapLabClientRecord
 from wifit3.campaigns.eap_lab_config import EapLabLaunchConfig
 from wifit3.models import AccessPoint
 from wifit3.persist.common import (
+    CAPTIVE_PASSWORD_RE,
+    CAPTIVE_PORTAL_RE,
+    CAPTIVE_USERNAME_RE,
     LEGACY_CAPTURE_RE,
     WEP_KEY_HEX_RE,
     WPS_PIN_RE,
@@ -42,6 +45,80 @@ class SaveResult:
     """Outcome of a save_*; was_new is False when a dedupe hit returned an existing path."""
     path: Path
     was_new: bool
+
+
+def _enterprise_last_probe_summary(profile) -> dict | None:
+    if profile.probe_attempts <= 0:
+        return None
+    run = profile.probe_history[-1] if profile.probe_history else None
+    summary: dict = {
+        "status": profile.probe_last_status,
+        "detail": profile.probe_last_detail,
+        "seen_at": profile.probe_last_seen,
+        "compatibility_notes": list(profile.probe_last_compatibility_notes[:16]),
+        "mschap_challenge_path": profile.probe_last_mschap_challenge_path,
+        "pcap_path": profile.probe_last_pcap_path,
+        "dump_path": profile.probe_last_dump_path,
+        "report_path": profile.probe_last_report_path,
+    }
+    if run is not None:
+        summary.update({
+            "started_at": run.started_at,
+            "ended_at": run.ended_at,
+            "eap_method": run.eap_method,
+            "association_ok": run.association_ok,
+            "timeline_tail": [asdict(event) for event in run.events[-24:]],
+        })
+    return summary
+
+
+def save_enterprise_probe_dump(
+    ap: AccessPoint,
+    result,
+    *,
+    tls_error: str | None = None,
+    lab_correlation: dict | None = None,
+) -> SaveResult | None:
+    """Structured diagnostic dump for the latest active Enterprise probe run."""
+    captures_dir = Path(Config.captures_dir)
+    ensure_private_directory(captures_dir)
+    path = _fresh_path(
+        captures_dir,
+        ap.ssid,
+        ap.bssid,
+        "_enterprise_probe_dump.json",
+    )
+    payload = {
+        "schema_version": 1,
+        "kind": "enterprise_probe_dump",
+        "generated_at": int(time.time()),
+        "network": {"ssid": ap.ssid, "bssid": ap.bssid},
+        "result": {
+            "ok": result.ok,
+            "status": result.status,
+            "detail": result.detail,
+            "association_ok": result.association_ok,
+            "eap_method": result.eap_method,
+            "server_methods": sorted(result.server_methods),
+            "inner_eap_types": sorted(result.inner_eap_types),
+            "compatibility_notes": list(result.compatibility_notes[:16]),
+            "mschap_challenge_hex": result.mschap_challenge_hex,
+            "mschap_challenge_path": result.mschap_challenge_path,
+            "pcap_path": result.pcap_path,
+            "report_path": result.report_path,
+            "tls_error": tls_error,
+            "started_at": result.started_at,
+            "ended_at": result.ended_at,
+        },
+        "timeline": [asdict(event) for event in result.events[-64:]],
+        "lab_correlation": lab_correlation,
+        "privacy": {
+            "credentials": False,
+            "packet_payloads": False,
+        },
+    }
+    write_private_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return SaveResult(path=path, was_new=True)
 
 
 def save_enterprise_report(ap: AccessPoint) -> SaveResult | None:
@@ -71,6 +148,7 @@ def save_enterprise_report(ap: AccessPoint) -> SaveResult | None:
             "pmf_required": ap.pmf_required,
         },
         "enterprise": enterprise_profile_payload(ap.enterprise),
+        "last_probe": _enterprise_last_probe_summary(ap.enterprise),
         "findings": [asdict(finding) for finding in enterprise_findings(ap)],
         "privacy": {
             "raw_client_identifiers": False,
@@ -82,6 +160,637 @@ def save_enterprise_report(ap: AccessPoint) -> SaveResult | None:
     write_private_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return SaveResult(path=path, was_new=True)
 
+
+def save_enterprise_markdown(ap: AccessPoint, markdown: str) -> Path:
+    """Write the on-screen Enterprise assessment as Markdown. Not a Vault artifact."""
+    captures_dir = Path(Config.captures_dir)
+    ensure_private_directory(captures_dir)
+    path = _fresh_path(
+        captures_dir,
+        ap.ssid,
+        ap.bssid,
+        "_enterprise_assessment.md",
+    )
+    write_private_text(path, markdown if markdown.endswith("\n") else markdown + "\n")
+    return path
+
+
+def save_eap_lab_report(
+    ap: AccessPoint,
+    *,
+    lab_bssid: str,
+    launch: EapLabLaunchConfig,
+    clients: tuple[EapLabClientRecord, ...],
+    campaign_result: str,
+    pcap_path: str | None = None,
+) -> SaveResult | None:
+    """Save sanitized EAP lab client misconfiguration assessment to Vault."""
+    captures_dir = Path(Config.captures_dir)
+    ensure_private_directory(captures_dir)
+    path = _fresh_path(
+        captures_dir,
+        ap.ssid,
+        ap.bssid,
+        "_eap_lab_report.json",
+    )
+    payload = {
+        "schema_version": 1,
+        "report_type": "eap_lab_client_assessment",
+        "generated_at": int(time.time()),
+        "campaign_result": campaign_result,
+        "network": {
+            "ssid": ap.ssid,
+            "bssid": ap.bssid,
+            "channel": ap.channel,
+            "encryption": ap.encryption,
+        },
+        "lab_bssid": lab_bssid,
+        "launch": {
+            "timeout": launch.timeout,
+            "eviction": launch.eviction,
+            "security_assessment": launch.security_assessment,
+            "weak_outer_first": launch.weak_outer_first,
+            "probe_inner_pap": launch.probe_inner_pap,
+            "probe_empty_mschap": launch.probe_empty_mschap,
+            "lab_dhcp": launch.lab_dhcp,
+            "request_client_cert": launch.request_client_cert,
+            "eap_methods": list(launch.eap_methods),
+            "lab_identities": list(launch.lab_identities),
+            "distinct_ssid": launch.distinct_ssid,
+            "lab_ssid": launch.lab_ssid,
+            "record_pcap": launch.record_pcap,
+            "iface_name": launch.iface_name,
+            "lab_channel": launch.lab_channel,
+        },
+        "pcap_path": pcap_path,
+        "clients": [
+            record.to_report_dict(lab_bssid=lab_bssid)
+            for record in clients
+        ],
+        "privacy": {
+            "client_macs": "pseudonymized",
+            "identities": "username only when misconfiguration captured",
+            "passwords": False,
+            "packet_payloads": False,
+        },
+    }
+    if ap.enterprise is not None:
+        payload["enterprise"] = enterprise_profile_payload(ap.enterprise)
+    write_private_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return SaveResult(path=path, was_new=True)
+
+
+def _fresh_path(captures_dir: Path, ssid: str | None, bssid: str, suffix: str) -> Path:
+    """Build captures_dir/<safe_ssid>_<bssid-dashed>_<epoch><suffix>, bumping to
+    the smallest free epoch. Distinct content saved in the same second would
+    otherwise collide. Dedupe only catches identical content, so structurally
+    different artifacts (new ANonce / rotated PSK) need their own files."""
+    base = f"{safe_ssid(ssid)}_{bssid_path_token(bssid)}"
+    epoch = int(time.time())
+    while True:
+        candidate = captures_dir / f"{base}_{epoch}{suffix}"
+        if not candidate.exists():
+            return candidate
+        epoch += 1
+
+
+def _existing(captures_dir: Path, bssid: str, suffix: str) -> list[Path]:
+    """Files in ``captures_dir`` whose name carries this BSSID + ``_<suffix>``
+    (kind + extension, e.g. ``_handshake.hc22000``).
+
+    A blank BSSID matches SSID-scoped passphrase files (every AP of that name).
+    """
+    if not captures_dir.is_dir():
+        return []
+    token = bssid_path_token(bssid)
+    out: list[Path] = []
+    for path in captures_dir.iterdir():
+        if not path.is_file() or not path.name.lower().endswith(suffix):
+            continue
+        match = LEGACY_CAPTURE_RE.match(path.name)
+        if match and match.group("bssid").lower() == token:
+            out.append(path)
+    return out
+
+
+def _file_ssid(path: Path) -> str | None:
+    """Exact SSID stored on the ``SSID:`` line of a credential text file."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if not line.startswith("SSID:"):
+            continue
+        value = line.removeprefix("SSID:")
+        if value.startswith(" "):
+            value = value[1:]
+        return value or None
+    return None
+
+
+# ----- Handshake / PMKID ----------------------------------------------------
+
+def _pcap_records_for(ap: AccessPoint, client_mac: str) -> list[tuple[bytes, float]]:
+    """Beacon (once, if available) + every EAPOL frame for the client, each
+    paired with its capture timestamp for the pcap. The beacon has no
+    per-frame time, so it's placed first and stamped with the earliest EAPOL
+    timestamp (or the AP's last-seen beacon time when there's none)."""
+    hs = ap.handshakes.get(client_mac)
+    if hs is None:
+        return []
+    eapol = [(f.raw, f.timestamp) for f in hs.messages]
+    records: list[tuple[bytes, float]] = []
+    if hs.beacon_frame:
+        beacon_ts = min((ts for _, ts in eapol if ts > 0), default=ap.last_seen)
+        records.append((hs.beacon_frame, beacon_ts))
+    records.extend(eapol)
+    return records
+
+
+def _read_anonces(path: Path) -> set[str]:
+    out: set[str] = set()
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        entry = parse_hc22000(line)
+        if entry and entry.kind == "02" and entry.anonce:
+            out.add(entry.anonce)
+    return out
+
+
+def _read_pmkids(path: Path) -> set[str]:
+    out: set[str] = set()
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        entry = parse_hc22000(line)
+        if entry and entry.kind == "01" and entry.pmkid_or_mic:
+            out.add(entry.pmkid_or_mic)
+    return out
+
+
+class HcFiles:
+    """Manages .hc22000 capture files on disk for a single AP."""
+
+    def __init__(self, captures_dir: Path, ssid: str | None, bssid: str) -> None:
+        self.captures_dir = captures_dir
+        self.ssid = ssid or ""
+        self.bssid = bssid
+        self.agg_path = captures_dir / f"{safe_ssid(self.ssid)}_{bssid_to_dashed(bssid)}.hc22000"
+
+    def find_existing_anonce(self, anonce: str) -> Path | None:
+        """Find if ANonce already exists in either the aggregate file or any split file."""
+        if self.agg_path.exists() and anonce in _read_anonces(self.agg_path):
+            return self.agg_path
+        for p in _existing(self.captures_dir, self.bssid, "_handshake.hc22000"):
+            if anonce in _read_anonces(p):
+                return p
+        return None
+
+    def find_existing_pmkid(self, pmkid: str) -> Path | None:
+        """Find if PMKID already exists in either the aggregate file or any split file."""
+        if self.agg_path.exists() and pmkid in _read_pmkids(self.agg_path):
+            return self.agg_path
+        for p in _existing(self.captures_dir, self.bssid, "_pmkid.hc22000"):
+            if pmkid in _read_pmkids(p):
+                return p
+        return None
+
+    def write_handshake(self, lines: list[str]) -> Path:
+        """Persist handshake lines to the AP's .hc22000 file."""
+        ensure_private_directory(self.captures_dir)
+        if self.agg_path.exists():
+            existing_anonces = _read_anonces(self.agg_path)
+            new_lines = []
+            for ln in lines:
+                entry = parse_hc22000(ln)
+                if entry and entry.anonce and entry.anonce not in existing_anonces:
+                    new_lines.append(ln)
+                    existing_anonces.add(entry.anonce)
+            if new_lines:
+                with open_private_text_append(self.agg_path) as f:
+                    f.write("\n".join(new_lines) + "\n")
+        else:
+            write_private_text(self.agg_path, "\n".join(lines) + "\n")
+        return self.agg_path
+
+    def write_pmkid(self, line: str) -> Path:
+        """Persist PMKID line to the AP's .hc22000 file."""
+        ensure_private_directory(self.captures_dir)
+        if self.agg_path.exists():
+            existing_pmkids = _read_pmkids(self.agg_path)
+            entry = parse_hc22000(line)
+            if entry and entry.pmkid_or_mic and entry.pmkid_or_mic not in existing_pmkids:
+                with open_private_text_append(self.agg_path) as f:
+                    f.write(line + "\n")
+        else:
+            write_private_text(self.agg_path, line + "\n")
+        return self.agg_path
+
+    def consolidate(self, legacy_paths: list[Path]) -> tuple[int, int]:
+        """Merge legacy paths into self.agg_path and unlink legacy files."""
+        seen_anonces: set[str] = set()
+        seen_pmkids: set[str] = set()
+        merged_lines: list[str] = []
+
+        if self.agg_path.exists():
+            try:
+                for ln in self.agg_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    e = parse_hc22000(ln)
+                    if e:
+                        if e.kind == "01" and e.pmkid_or_mic:
+                            seen_pmkids.add(e.pmkid_or_mic)
+                        elif e.kind == "02" and e.anonce:
+                            seen_anonces.add(e.anonce)
+                    merged_lines.append(ln)
+            except OSError:
+                pass
+
+        files_to_delete: list[Path] = []
+        for lf in legacy_paths:
+            try:
+                text = lf.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+
+            for ln in text.splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                e = parse_hc22000(ln)
+                if e:
+                    if e.kind == "01" and e.pmkid_or_mic:
+                        if e.pmkid_or_mic in seen_pmkids:
+                            continue
+                        seen_pmkids.add(e.pmkid_or_mic)
+                    elif e.kind == "02" and e.anonce:
+                        if e.anonce in seen_anonces:
+                            continue
+                        seen_anonces.add(e.anonce)
+                merged_lines.append(ln)
+
+            files_to_delete.append(lf)
+
+        deleted = 0
+        if merged_lines:
+            write_private_text(self.agg_path, "\n".join(merged_lines) + "\n")
+            for lf in files_to_delete:
+                if lf.resolve() != self.agg_path.resolve():
+                    try:
+                        lf.unlink()
+                        deleted += 1
+                    except OSError:
+                        pass
+            return 1, deleted
+        return 0, 0
+
+
+def save_handshake(ap: AccessPoint, client_mac: str) -> Optional[SaveResult]:
+    """Save (unless deduped) 4-way handshake for ap.handshakes[client_mac]"""
+    if not ap.ssid:
+        return None
+    hs = ap.handshakes.get(client_mac)
+    if hs is None:
+        return None
+    lines = eapol_hashlines(ap.ssid, hs)
+    if not lines:
+        return None
+
+    new_anonces = set()
+    for ln in lines:
+        entry = parse_hc22000(ln)
+        if entry and entry.anonce:
+            new_anonces.add(entry.anonce)
+
+    if not new_anonces:
+        return None
+
+    hc = HcFiles(Path(Config.captures_dir), ap.ssid, ap.bssid)
+
+    existing_path = None
+    all_seen = True
+    for anonce in new_anonces:
+        p = hc.find_existing_anonce(anonce)
+        if p is None:
+            all_seen = False
+            break
+        existing_path = p
+
+    if all_seen and existing_path:
+        return SaveResult(path=existing_path, was_new=False)
+
+    target_path = hc.write_handshake(lines)
+
+    if Config.save_pcap:
+        pcap_path = _fresh_path(hc.captures_dir, ap.ssid, ap.bssid, "_handshake.pcap")
+        write_pcap(pcap_path, _pcap_records_for(ap, client_mac))
+
+    return SaveResult(path=target_path, was_new=True)
+
+
+def save_pmkid(ap: AccessPoint, client_mac: str) -> Optional[SaveResult]:
+    """Save (unless deduped) PMKID for ap.handshakes[client_mac]"""
+    if not ap.ssid:
+        return None
+    hs = ap.handshakes.get(client_mac)
+    if hs is None:
+        return None
+    line = pmkid_hashline(ap.ssid, hs)
+    if not line:
+        return None
+    entry = parse_hc22000(line)
+    if not entry or not entry.pmkid_or_mic:
+        return None
+
+    hc = HcFiles(Path(Config.captures_dir), ap.ssid, ap.bssid)
+
+    existing_path = hc.find_existing_pmkid(entry.pmkid_or_mic)
+    if existing_path:
+        return SaveResult(path=existing_path, was_new=False)
+
+    target_path = hc.write_pmkid(line)
+    return SaveResult(path=target_path, was_new=True)
+
+
+def consolidate_hc_files(captures_dir: Path) -> tuple[int, int]:
+    """Merge legacy timestamped .hc22000 files into 1 .hc22000 file per AP.
+
+    Returns (migrated_target_count, deleted_legacy_count).
+    """
+    if not captures_dir.is_dir():
+        return 0, 0
+
+    groups: dict[tuple[str, str], list[Path]] = defaultdict(list)
+    for p in captures_dir.iterdir():
+        if not p.is_file():
+            continue
+        m = LEGACY_CAPTURE_RE.match(p.name)
+        if m and m.group("ext") == "hc22000" and m.group("kind") in ("handshake", "pmkid"):
+            groups[(m.group("ssid"), bssid_to_colon(m.group("bssid")))].append(p)
+
+    migrated_total = 0
+    deleted_total = 0
+    for (ssid, bssid), legacy_paths in groups.items():
+        hc = HcFiles(captures_dir, ssid, bssid)
+        migrated, deleted = hc.consolidate(legacy_paths)
+        migrated_total += migrated
+        deleted_total += deleted
+
+    return migrated_total, deleted_total
+
+
+# ----- WEP key --------------------------------------------------------------
+
+def save_wep_key(ap: AccessPoint, key: bytes) -> Optional[SaveResult]:
+    """Persist a recovered WEP key. Dedupes by exact key value for this BSSID."""
+    captures_dir = Path(Config.captures_dir)
+    if not key:
+        return None
+    key_hex = key.hex()
+    for p in _existing(captures_dir, ap.bssid, "_wep_key.txt"):
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        m = WEP_KEY_HEX_RE.search(text)
+        if m and m.group(1).lower() == key_hex:
+            return SaveResult(path=p, was_new=False)
+
+    ensure_private_directory(captures_dir)
+    path = _fresh_path(captures_dir, ap.ssid, ap.bssid, "_wep_key.txt")
+    lines = [
+        f"SSID:  {ap.ssid or '<hidden>'}",
+        f"BSSID: {ap.bssid}",
+        f"WEP key (hex):   {key_hex}",
+    ]
+    if all(0x20 <= b < 0x7F for b in key):
+        lines.append(f'WEP key (ASCII): "{key.decode("ascii")}"')
+    write_private_text(path, "\n".join(lines) + "\n")
+    return SaveResult(path=path, was_new=True)
+
+
+# ----- WPS PIN / PBC --------------------------------------------------------
+
+def save_wps_pin(ap: AccessPoint, pin: str, psk: str) -> Optional[SaveResult]:
+    """Persist a WPS-PIN credential. Dedupes by (PIN, PSK) for this BSSID."""
+    captures_dir = Path(Config.captures_dir)
+    if not pin or not psk:
+        return None
+    for p in _existing(captures_dir, ap.bssid, "_wps_pin.txt"):
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        psk_match = WPS_PSK_RE.search(text)
+        pin_match = WPS_PIN_RE.search(text)
+        if (psk_match and psk_match.group(1).strip() == psk
+                and pin_match and pin_match.group(1).strip() == pin):
+            return SaveResult(path=p, was_new=False)
+
+    ensure_private_directory(captures_dir)
+    path = _fresh_path(captures_dir, ap.ssid, ap.bssid, "_wps_pin.txt")
+    body = (
+        f"SSID: {ap.ssid or ''}\n"
+        f"BSSID: {ap.bssid}\n"
+        f"PSK: {psk}\n"
+        f"PIN: {pin}\n"
+    )
+    write_private_text(path, body)
+    return SaveResult(path=path, was_new=True)
+
+
+def save_wps_pbc(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
+    """Persist a WPS-PBC credential. Dedupes by PSK for this BSSID."""
+    captures_dir = Path(Config.captures_dir)
+    if not psk:
+        return None
+    for p in _existing(captures_dir, ap.bssid, "_wps_pbc.txt"):
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        m = WPS_PSK_RE.search(text)
+        if m and m.group(1).strip() == psk:
+            return SaveResult(path=p, was_new=False)
+
+    ensure_private_directory(captures_dir)
+    path = _fresh_path(captures_dir, ap.ssid, ap.bssid, "_wps_pbc.txt")
+    body = (
+        f"SSID: {ap.ssid or ''}\n"
+        f"BSSID: {ap.bssid}\n"
+        f"PSK: {psk}\n"
+    )
+    write_private_text(path, body)
+    return SaveResult(path=path, was_new=True)
+
+
+@dataclass(frozen=True)
+class EapLabSaveResult:
+    mschapv2: SaveResult
+    netntlmv2: SaveResult
+
+
+def save_mschapv2_challenge_artifact(
+    ap: AccessPoint,
+    username: str,
+    challenge_hex: str,
+) -> SaveResult | None:
+    """Persist a PEAP/TTLS MS-CHAPv2 server challenge as a Hashcat 5500 file."""
+    user = username.replace("\n", "").replace(":", "").strip() or "lab-probe@eap-lab.local"
+    try:
+        line = hashcat5500_challenge_line(user, challenge_hex)
+    except ValueError:
+        return None
+    captures_dir = Path(Config.captures_dir)
+    ensure_private_directory(captures_dir)
+    return _write_or_reuse(
+        captures_dir,
+        ap.ssid,
+        ap.bssid,
+        "_mschapv2.mschapv2",
+        line,
+    )
+
+
+def save_mschapv2(
+    ap: AccessPoint,
+    capture: MsChapV2Capture,
+    *,
+    lab_bssid: str | None = None,
+) -> Optional[EapLabSaveResult]:
+    """Persist a complete honeypot MS-CHAPv2 capture (Hashcat 5500 + 5600)."""
+    if not is_complete_mschapv2_capture(capture):
+        return None
+    captures_dir = Path(Config.captures_dir)
+    ensure_private_directory(captures_dir)
+    bssid = lab_bssid or ap.bssid
+    mschap_line = hashcat5500_line(capture)
+    ntlm_line = hashcat5600_line(capture)
+    mschap_path = _write_or_reuse(
+        captures_dir,
+        ap.ssid,
+        bssid,
+        "_mschapv2.mschapv2",
+        mschap_line,
+    )
+    ntlm_path = _write_or_reuse(
+        captures_dir,
+        ap.ssid,
+        bssid,
+        "_netntlmv2.netntlmv2",
+        ntlm_line,
+    )
+    if mschap_path is None or ntlm_path is None:
+        return None
+    return EapLabSaveResult(
+        mschapv2=mschap_path,
+        netntlmv2=ntlm_path,
+    )
+
+
+def _write_or_reuse(
+    captures_dir: Path,
+    ssid: str | None,
+    bssid: str,
+    suffix: str,
+    line: str,
+) -> SaveResult | None:
+    for path in _existing(captures_dir, bssid, suffix):
+        try:
+            existing = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if existing == line.strip():
+            return SaveResult(path=path, was_new=False)
+    target = _fresh_path(captures_dir, ssid, bssid, suffix)
+    write_private_text(target, line + "\n")
+    return SaveResult(path=target, was_new=True)
+
+
+def save_captive_password(
+    ap: AccessPoint,
+    password: str,
+    *,
+    portal_name: str | None = None,
+    username: str | None = None,
+    source: str = "captive_portal",
+    lab_bssid: str | None = None,
+    allow_empty_password: bool = False,
+) -> Optional[SaveResult]:
+    """Persist a lab captive-portal login under captures/ for Vault review."""
+    captures_dir = Path(Config.captures_dir)
+    if not password and not allow_empty_password:
+        return None
+    portal = (portal_name or ap.ssid or "").strip()
+    user = (username or "").strip()
+    file_bssid = lab_bssid or ap.bssid
+    for path in _existing(captures_dir, file_bssid, "_captive_password.txt"):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        pw_match = CAPTIVE_PASSWORD_RE.search(text)
+        user_match = CAPTIVE_USERNAME_RE.search(text)
+        portal_match = CAPTIVE_PORTAL_RE.search(text)
+        stored_pw = pw_match.group(1) if pw_match else ""
+        if stored_pw != password:
+            continue
+        existing_user = (user_match.group(1).strip() if user_match else "")
+        existing_portal = (portal_match.group(1).strip() if portal_match else "")
+        if existing_user == user and existing_portal == portal:
+            return SaveResult(path=path, was_new=False)
+
+    ensure_private_directory(captures_dir)
+    path = _fresh_path(captures_dir, ap.ssid, file_bssid, "_captive_password.txt")
+    lines = [
+        f"SSID: {ap.ssid or ''}",
+        f"BSSID: {file_bssid}",
+        f"Portal: {portal}",
+        f"Source: {source}",
+    ]
+    if lab_bssid and lab_bssid.casefold() != ap.bssid.casefold():
+        lines.append(f"Target-BSSID: {ap.bssid}")
+    if user:
+        lines.append(f"Username: {user}")
+    lines.append(f"Password: {password}")
+    write_private_text(path, "\n".join(lines) + "\n")
+    return SaveResult(path=path, was_new=True)
+
+
+def save_wpa_psk(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
+    """Persist a manually supplied WPA passphrase without exposing it in a filename.
+
+    A blank BSSID stores the passphrase for every access point of this SSID.
+    """
+    captures_dir = Path(Config.captures_dir)
+    if not psk:
+        return None
+    scoped = not (ap.bssid or "").strip()
+    for path in _existing(captures_dir, ap.bssid, "_wpa_psk.txt"):
+        if scoped and _file_ssid(path) != (ap.ssid or None):
+            continue
+        try:
+            match = WPS_PSK_RE.search(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        if match and match.group(1).strip() == psk:
+            return SaveResult(path=path, was_new=False)
+    ensure_private_directory(captures_dir)
+    path = _fresh_path(captures_dir, ap.ssid, ap.bssid, "_wpa_psk.txt")
+    bssid_line = "BSSID:\n" if scoped else f"BSSID: {ap.bssid}\n"
+    write_private_text(
+        path,
+        f"SSID: {ap.ssid or ''}\n{bssid_line}PSK: {psk}\n",
+    )
+    return SaveResult(path=path, was_new=True)
 
 def save_eap_lab_report(
     ap: AccessPoint,

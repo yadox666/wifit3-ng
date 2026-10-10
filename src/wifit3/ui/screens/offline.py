@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 
 from rich.markup import escape
 from rich.text import Text
-from textual import events, on
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.binding import ActiveBinding, Binding
 from wifit3.ui.binding_display import active_bindings_for_focus
@@ -26,9 +26,13 @@ from wifit3.ui.location_format import (
     best_position,
     google_maps_search_url,
     latest_position,
+    location_globe_cell,
 )
 from wifit3.ui.notification_center import WifiteHeader
 
+from wifit3.id import vendor_for_mac
+from wifit3.id.common import is_locally_administered_mac
+from wifit3.persist.ap_history import access_point_from_offline_record
 from wifit3.targeting import TargetCandidate, is_target_entry, offline_record_candidate
 from wifit3.ui.screens.clear_history import ClearHistoryModal, HistoryClearSelection
 from wifit3.ui.catalog_format import (
@@ -38,6 +42,12 @@ from wifit3.ui.catalog_format import (
 )
 from wifit3.ui.data_table_columns import offline_column_caps, reclamp_offline_table
 from wifit3.ui.mac_format import mac_address_text
+from wifit3.ui.offline_client_panels import partition_offline_wifi_clients
+from wifit3.ui.offline_client_probes import (
+    enrich_offline_wifi_client_probes,
+    offline_client_probes_cell,
+    offline_client_probes_sort_value,
+)
 from wifit3.ui.offline_bluetooth_panels import offline_bluetooth_use_secondary_panel
 from wifit3.ui.offline_bluetooth_table import (
     OFFLINE_BLUETOOTH_COLUMNS,
@@ -62,7 +72,9 @@ _OFFLINE_TAB_LABELS = {
 
 _COLUMNS = {
     "aps": (
-        ("ssid", "SSID"), ("bssid", "BSSID"), ("channel", "CH"),
+        ("ssid", "SSID"), ("bssid", "BSSID"),
+        ("manufacturer", "MANUFACTURER"),
+        ("channel", "CH"),
         ("encryption", "SECURITY"), ("clients", "CLIENTS"),
         ("catalog_class", "CLASS"), ("catalog_family", "FAMILY"),
         ("session", "SESSION"), ("last_seen", "LAST SEEN"), ("location", "GPS"),
@@ -70,9 +82,11 @@ _COLUMNS = {
     ),
     "clients": (
         ("client_mac", "CLIENT"),
+        ("manufacturer", "MANUFACTURER"),
+        ("probes", "PROBES"),
         ("access_point_count", "APS"),
         ("last_ssid", "LAST SSID"), ("last_bssid", "LAST BSSID"),
-        ("channel", "CH"), ("session", "SESSION"),
+        ("channel", "CH"),
         ("last_seen", "LAST SEEN"), ("location", "GPS"),
         ("target", "TARGET"),
     ),
@@ -105,7 +119,10 @@ class _OfflineDataTable(DataTable):
         )
 
     def _offline_kind(self) -> str:
-        return (self.id or "offline-aps").removeprefix("offline-")
+        kind = (self.id or "offline-aps").removeprefix("offline-")
+        if kind in {"bluetooth-secondary", "clients-secondary"}:
+            return kind.removesuffix("-secondary")
+        return kind
 
     def _reclamp_capped_columns(self) -> None:
         reclamp_offline_table(self, self._offline_kind())
@@ -139,7 +156,6 @@ class OfflineDatabaseView(Screen):
 
     BINDINGS = [
         Binding("escape", "back", "Back"),
-        Binding("r", "reload", "Reload"),
         Binding("c", "clear_db", "Clear-DB"),
         Binding("n", "targets_editor", "Targets"),
         Binding("f", "focus_filter", "Filter"),
@@ -162,12 +178,40 @@ class OfflineDatabaseView(Screen):
         border-title-color: $accent;
         border-title-style: bold;
     }
+    OfflineDatabaseView #offline-clients-stack {
+        height: 3fr;
+        display: none;
+    }
     OfflineDatabaseView #offline-bluetooth-stack {
         height: 3fr;
         display: none;
     }
+    OfflineDatabaseView.-clients-active #offline-aps,
+    OfflineDatabaseView.-clients-active #offline-bluetooth-stack {
+        display: none;
+    }
+    OfflineDatabaseView.-clients-active #offline-clients-stack {
+        display: block;
+    }
+    OfflineDatabaseView.-clients-active #offline-detail-scroll {
+        height: 1fr;
+        min-height: 8;
+    }
+    OfflineDatabaseView #offline-clients {
+        height: 2fr;
+        min-height: 6;
+    }
+    OfflineDatabaseView #offline-clients-secondary-separator {
+        height: 1;
+        background: $primary-darken-1;
+        margin: 0 1;
+    }
+    OfflineDatabaseView #offline-clients-secondary {
+        height: 1fr;
+        min-height: 5;
+    }
     OfflineDatabaseView.-bt-active #offline-aps,
-    OfflineDatabaseView.-bt-active #offline-clients {
+    OfflineDatabaseView.-bt-active #offline-clients-stack {
         display: none;
     }
     OfflineDatabaseView.-bt-active #offline-bluetooth-stack {
@@ -219,6 +263,9 @@ class OfflineDatabaseView(Screen):
         }
         self._table_map_urls: dict[str, str] = {}
         self._block_next_row_select = False
+        self._loaded_kinds: set[str] = set()
+        self._loading_kinds: set[str] = set()
+        self._reload_generation = 0
 
     def compose(self) -> ComposeResult:
         yield WifiteHeader(show_clock=False)
@@ -233,9 +280,16 @@ class OfflineDatabaseView(Screen):
             yield _OfflineDataTable(
                 id="offline-aps", cursor_type="row", zebra_stripes=True,
             )
-            yield _OfflineDataTable(
-                id="offline-clients", cursor_type="row", zebra_stripes=True,
-            )
+            with Vertical(id="offline-clients-stack"):
+                yield _OfflineDataTable(
+                    id="offline-clients", cursor_type="row", zebra_stripes=True,
+                )
+                yield Static("", id="offline-clients-secondary-separator")
+                yield _OfflineDataTable(
+                    id="offline-clients-secondary",
+                    cursor_type="row",
+                    zebra_stripes=True,
+                )
             with Vertical(id="offline-bluetooth-stack"):
                 yield _OfflineDataTable(
                     id="offline-bluetooth", cursor_type="row", zebra_stripes=True,
@@ -255,13 +309,18 @@ class OfflineDatabaseView(Screen):
     def on_mount(self) -> None:
         self._configure_tables()
         self.query_one(OfflineFilterBar).set_kind(self._active)
-        self.reload()
+        self._refresh_unloaded_tab_labels()
+        self._start_load(kinds=(self._active,), render_all=False)
 
     def on_screen_resume(self) -> None:
         bar = self.query_one(OfflineFilterBar)
         bar.refresh_target_options()
         bar.refresh_catalog_class_options()
-        self.reload()
+        self._loaded_kinds.clear()
+        for kind in self._records:
+            self._records[kind] = []
+        self._refresh_unloaded_tab_labels()
+        self._start_load(kinds=(self._active,), render_all=False)
 
     @property
     def active_bindings(self) -> dict[str, ActiveBinding]:
@@ -281,36 +340,169 @@ class OfflineDatabaseView(Screen):
                 self._update_column_headers(kind, table=table)
             self._sync_kind_visibility(kind)
         self.set_class(self._active == "bluetooth", "-bt-active")
+        self.set_class(self._active == "clients", "-clients-active")
 
     def reload(self) -> None:
-        self._records["aps"] = self.app.ap_history_store.offline_access_points()
-        self._records["clients"] = self.app.ap_history_store.offline_clients()
-        self._records["bluetooth"] = (
-            self.app.bluetooth_history_store.offline_devices()
+        self._loaded_kinds.clear()
+        self._start_load(
+            kinds=("aps", "clients", "bluetooth"),
+            render_all=True,
         )
-        position_kinds = {
+
+    def _store_tab_totals(self) -> dict[str, int]:
+        return {
+            "aps": self.app.ap_history_store.count(),
+            "clients": self.app.ap_history_store.client_count(),
+            "bluetooth": self.app.bluetooth_history_store.count(),
+        }
+
+    def _refresh_unloaded_tab_labels(self) -> None:
+        totals = self._store_tab_totals()
+        for kind, total in totals.items():
+            if kind in self._loaded_kinds:
+                continue
+            self._update_tab_label(kind, total, total)
+
+    def _start_load(
+        self,
+        *,
+        kinds: tuple[str, ...],
+        render_all: bool,
+        notify_when_done: str | None = None,
+    ) -> None:
+        self._reload_generation += 1
+        token = self._reload_generation
+        self._loading_kinds.update(kinds)
+        for kind in kinds:
+            if kind == self._active or render_all:
+                self._show_loading_table(kind)
+        if render_all:
+            self._detail_focus = None
+        self._load_offline_worker(token, kinds, render_all, notify_when_done)
+
+    @work(thread=True, exclusive=True, group="offline-db", exit_on_error=False)
+    def _load_offline_worker(
+        self,
+        token: int,
+        kinds: tuple[str, ...],
+        render_all: bool,
+        notify_when_done: str | None,
+    ) -> None:
+        payloads: dict[str, list[dict[str, Any]]] = {}
+        entity_kinds = {
             "aps": "wifi_ap",
             "clients": "wifi_client",
             "bluetooth": "bluetooth",
         }
-        for kind, entity_kind in position_kinds.items():
-            positions = self.app.location_store.positions_for_kind(entity_kind)
-            for record in self._records[kind]:
+        for kind in kinds:
+            if kind == "aps":
+                records = self.app.ap_history_store.offline_access_points()
+            elif kind == "clients":
+                records = self.app.ap_history_store.offline_clients()
+            else:
+                records = self.app.bluetooth_history_store.offline_devices()
+            positions = self.app.location_store.positions_for_kind(
+                entity_kinds[kind],
+            )
+            hidden_store = getattr(self.app, "hidden_ssid_store", None)
+            for record in records:
                 identity = self._identity(kind, record).casefold()
                 record["positions"] = [
                     asdict(position) for position in positions.get(identity, [])
                 ]
-        self._detail_focus = None
-        for kind in self._records:
-            if kind == "bluetooth":
-                self._render_bluetooth_tables()
-            else:
-                self._render_table(kind)
-        self._sync_detail_panel()
+                if kind == "clients":
+                    probe_ssids: Iterable[str] = ()
+                    if hidden_store is not None:
+                        probe_ssids = (
+                            probe.ssid
+                            for probe in hidden_store.probes_for_client(
+                                str(record.get("client_mac") or ""),
+                            )
+                        )
+                    enrich_offline_wifi_client_probes(
+                        record,
+                        hidden_probe_ssids=probe_ssids,
+                    )
+            payloads[kind] = records
+        self.app.call_from_thread(
+            self._apply_offline_load,
+            token,
+            payloads,
+            render_all,
+            notify_when_done,
+        )
 
-    def action_reload(self) -> None:
-        self.reload()
-        self.notify("Offline history reloaded", title="Database")
+    def _apply_offline_load(
+        self,
+        token: int,
+        payloads: dict[str, list[dict[str, Any]]],
+        render_all: bool,
+        notify_when_done: str | None,
+    ) -> None:
+        if token != self._reload_generation:
+            return
+        for kind, records in payloads.items():
+            self._records[kind] = records
+            self._loaded_kinds.add(kind)
+            self._loading_kinds.discard(kind)
+        self._refresh_unloaded_tab_labels()
+        if render_all:
+            for kind in self._records:
+                if kind == "bluetooth":
+                    self._render_bluetooth_tables()
+                elif kind == "clients":
+                    self._render_client_tables()
+                else:
+                    self._render_table(kind)
+        else:
+            for kind in payloads:
+                if kind != self._active:
+                    continue
+                if kind == "bluetooth":
+                    self._render_bluetooth_tables()
+                elif kind == "clients":
+                    self._render_client_tables()
+                else:
+                    self._render_table(kind)
+        self._sync_detail_panel()
+        if notify_when_done:
+            self.notify(notify_when_done, title="Database")
+
+    def _show_loading_table(self, kind: str) -> None:
+        if kind == "clients":
+            for table_id in ("offline-clients", "offline-clients-secondary"):
+                table = self.query_one(f"#{table_id}", DataTable)
+                table.clear()
+                cells = [
+                    Text("Loading history…", style="italic dim"),
+                    Text("Reading saved records from the database", style="dim"),
+                ]
+                cells.extend(
+                    "" for _ in range(len(_COLUMNS["clients"]) - len(cells))
+                )
+                table.add_row(*cells, key=f"loading:{kind}")
+            return
+        if kind == "bluetooth":
+            for table_id in ("offline-bluetooth", "offline-bluetooth-secondary"):
+                table = self.query_one(f"#{table_id}", DataTable)
+                table.clear()
+                cells = [
+                    Text("Loading history…", style="italic dim"),
+                    Text("Reading saved records from the database", style="dim"),
+                ]
+                cells.extend(
+                    "" for _ in range(len(_COLUMNS["bluetooth"]) - len(cells))
+                )
+                table.add_row(*cells, key=f"loading:{kind}")
+            return
+        table = self._table(kind)
+        table.clear()
+        cells = [
+            Text("Loading history…", style="italic dim"),
+            Text("Reading saved records from the database", style="dim"),
+        ]
+        cells.extend("" for _ in range(len(_COLUMNS[kind]) - len(cells)))
+        table.add_row(*cells, key=f"loading:{kind}")
 
     def action_targets_editor(self) -> None:
         candidate = self._selected_target_candidate()
@@ -451,11 +643,13 @@ class OfflineDatabaseView(Screen):
         self._apply_detail_from_row(kind, str(event.row_key.value))
 
     def _apply_detail_from_row(self, kind: str, row_key: str) -> None:
-        if row_key.startswith("empty"):
+        if row_key.startswith("empty") or row_key.startswith("loading"):
             return
         identity: str | None = None
         if row_key.startswith(f"{kind}:"):
             identity = row_key.removeprefix(f"{kind}:")
+        elif kind == "clients" and row_key.startswith("clients-secondary:"):
+            identity = row_key.removeprefix("clients-secondary:")
         elif kind == "bluetooth" and row_key.startswith("bluetooth-secondary:"):
             identity = row_key.removeprefix("bluetooth-secondary:")
         if identity is None:
@@ -475,11 +669,19 @@ class OfflineDatabaseView(Screen):
         self._detail_focus = None
         self.query_one(OfflineFilterBar).set_kind(kind)
         self.set_class(kind == "bluetooth", "-bt-active")
+        self.set_class(kind == "clients", "-clients-active")
         for table_kind in self._records:
             self._sync_kind_visibility(table_kind, active=table_kind == kind)
+        if kind not in self._loaded_kinds:
+            self._start_load(kinds=(kind,), render_all=False)
+            self._table(kind).focus()
+            return
         if kind == "bluetooth":
             self._render_bluetooth_tables()
             self._table("bluetooth").focus()
+        elif kind == "clients":
+            self._render_client_tables()
+            self._table("clients").focus()
         else:
             self._render_table(kind)
             self._table(kind).focus()
@@ -491,6 +693,8 @@ class OfflineDatabaseView(Screen):
         self._detail_focus = None
         if self._active == "bluetooth":
             self._render_bluetooth_tables()
+        elif self._active == "clients":
+            self._render_client_tables()
         else:
             self._render_table(self._active)
 
@@ -524,6 +728,11 @@ class OfflineDatabaseView(Screen):
                 self.query_one("#offline-bluetooth", DataTable),
                 self.query_one("#offline-bluetooth-secondary", DataTable),
             ]
+        if kind == "clients":
+            return [
+                self.query_one("#offline-clients", DataTable),
+                self.query_one("#offline-clients-secondary", DataTable),
+            ]
         return [self._table(kind)]
 
     def _sync_kind_visibility(self, kind: str, *, active: bool | None = None) -> None:
@@ -537,17 +746,195 @@ class OfflineDatabaseView(Screen):
                 "#offline-bluetooth-secondary-separator", Static,
             )
             separator.display = False
+        elif kind == "clients":
+            stack = self.query_one("#offline-clients-stack")
+            stack.display = is_active
+            for table in self._tables_for_kind("clients"):
+                table.display = is_active
+            separator = self.query_one(
+                "#offline-clients-secondary-separator", Static,
+            )
+            separator.display = False
         else:
             self._table(kind).display = is_active
 
     def _table_bluetooth_secondary(self) -> DataTable:
         return self.query_one("#offline-bluetooth-secondary", DataTable)
 
+    def _table_clients_secondary(self) -> DataTable:
+        return self.query_one("#offline-clients-secondary", DataTable)
+
+    def _client_row_key(self, identity: str, *, secondary: bool) -> str:
+        prefix = "clients-secondary" if secondary else "clients"
+        return f"{prefix}:{identity}"
+
     def _bluetooth_row_key(self, identity: str, *, secondary: bool) -> str:
         prefix = "bluetooth-secondary" if secondary else "bluetooth"
         return f"{prefix}:{identity}"
 
+    def _render_client_tables(self, *, selected_identity: str | None = None) -> None:
+        if "clients" in self._loading_kinds:
+            self._show_loading_table("clients")
+            return
+        main_table = self._table("clients")
+        secondary_table = self._table_clients_secondary()
+        main_table.clear()
+        secondary_table.clear()
+        self._table_map_urls = {
+            key: value
+            for key, value in self._table_map_urls.items()
+            if not key.startswith("clients:")
+            and not key.startswith("clients-secondary:")
+        }
+        all_records = self._records["clients"]
+        records = [
+            record for record in all_records
+            if record_matches(
+                "clients", record, self._filters, target_store=self.app.target_store,
+            )
+        ]
+        sort_key, reverse = self._sort["clients"]
+        records.sort(
+            key=lambda record: self._record_sort_value("clients", record, sort_key),
+            reverse=reverse,
+        )
+        main_records, secondary_records = partition_offline_wifi_clients(
+            records,
+            all_records=all_records,
+        )
+        main_shown = self._fill_offline_client_table(
+            main_table, main_records, secondary=False,
+        )
+        secondary_shown = self._fill_offline_client_table(
+            secondary_table, secondary_records, secondary=True,
+        )
+        separator = self.query_one(
+            "#offline-clients-secondary-separator", Static,
+        )
+        secondary_table.display = self._active == "clients" and bool(secondary_shown)
+        separator.display = secondary_table.display
+        main_table.border_title = (
+            f"Identified clients · rows {len(main_shown)}"
+            if main_shown
+            else ""
+        )
+        secondary_table.border_title = (
+            f"Private / randomized MAC · rows {len(secondary_shown)}"
+            if secondary_shown
+            else ""
+        )
+        self._update_tab_label(
+            "clients",
+            len(all_records),
+            len(records),
+            main_count=len(main_shown),
+            secondary_count=len(secondary_shown),
+        )
+        for table in (main_table, secondary_table):
+            self._update_column_headers("clients", table=table)
+            if isinstance(table, _OfflineDataTable):
+                table._reclamp_capped_columns()
+        self._client_empty_state(main_table, main_records, records, all_records)
+        self._client_empty_state(
+            secondary_table,
+            secondary_records,
+            records,
+            all_records,
+            secondary=True,
+        )
+        focus_table = main_table
+        if selected_identity is not None:
+            for table in (main_table, secondary_table):
+                row_key = self._client_row_key(
+                    selected_identity,
+                    secondary=table is secondary_table,
+                )
+                try:
+                    table.move_cursor(row=table.get_row_index(row_key))
+                    focus_table = table
+                    break
+                except Exception:
+                    continue
+        if self._active == "clients":
+            identity = selected_identity or self._selected_identity(focus_table, "clients")
+            if identity is not None:
+                self._detail_focus = ("clients", identity)
+            self._sync_detail_panel()
+
+    def _client_empty_state(
+        self,
+        table: DataTable,
+        panel_records: list[dict[str, Any]],
+        filtered: list[dict[str, Any]],
+        all_records: list[dict[str, Any]],
+        *,
+        secondary: bool = False,
+    ) -> None:
+        if panel_records:
+            return
+        if not all_records:
+            if secondary:
+                return
+            cells = [
+                Text("No saved records", style="italic dim"),
+                Text("Start a scan later to populate this view", style="dim"),
+            ]
+            cells.extend("" for _ in range(len(_COLUMNS["clients"]) - len(cells)))
+            table.add_row(*cells, key="empty:clients")
+            return
+        if not filtered:
+            if secondary:
+                return
+            cells = [
+                Text("No matches", style="italic dim"),
+                Text("Relax the search or clear the filter text", style="dim"),
+            ]
+            cells.extend("" for _ in range(len(_COLUMNS["clients"]) - len(cells)))
+            table.add_row(*cells, key="empty-filter:clients")
+            return
+        if secondary and filtered:
+            cells = [
+                Text("No private MAC rows", style="italic dim"),
+                Text("Randomized clients linked by fingerprint stay above", style="dim"),
+            ]
+            cells.extend("" for _ in range(len(_COLUMNS["clients"]) - len(cells)))
+            table.add_row(*cells, key="empty-secondary:clients")
+
+    def _fill_offline_client_table(
+        self,
+        table: DataTable,
+        records: list[dict[str, Any]],
+        *,
+        secondary: bool,
+    ) -> list[dict[str, Any]]:
+        shown: list[dict[str, Any]] = []
+        for record in records:
+            identity = self._identity("clients", record)
+            row_key = self._client_row_key(identity, secondary=secondary)
+            map_url = google_maps_search_url(self._signal_positions(record))
+            if map_url is not None:
+                self._table_map_urls[row_key] = map_url
+            matched_target = match_offline_record(
+                self.app.target_store, "clients", record,
+            )
+            table.add_row(
+                *self._target_tinted_row(
+                    self._row_values(
+                        "clients",
+                        record,
+                        matched_target,
+                    ),
+                    matched_target,
+                ),
+                key=row_key,
+            )
+            shown.append(record)
+        return shown
+
     def _render_bluetooth_tables(self, *, selected_identity: str | None = None) -> None:
+        if "bluetooth" in self._loading_kinds:
+            self._show_loading_table("bluetooth")
+            return
         main_table = self._table("bluetooth")
         secondary_table = self._table_bluetooth_secondary()
         main_table.clear()
@@ -698,7 +1085,6 @@ class OfflineDatabaseView(Screen):
                     self._row_values(
                         "bluetooth",
                         record,
-                        map_url is not None,
                         matched_target,
                     ),
                     matched_target,
@@ -718,6 +1104,12 @@ class OfflineDatabaseView(Screen):
     def _render_table(
         self, kind: str, *, selected_identity: str | None = None,
     ) -> None:
+        if kind == "clients":
+            self._render_client_tables(selected_identity=selected_identity)
+            return
+        if kind in self._loading_kinds:
+            self._show_loading_table(kind)
+            return
         table = self._table(kind)
         table.clear()
         self._table_map_urls = {
@@ -750,7 +1142,7 @@ class OfflineDatabaseView(Screen):
             table.add_row(
                 *self._target_tinted_row(
                     self._row_values(
-                        kind, record, map_url is not None, matched_target,
+                        kind, record, matched_target,
                     ),
                     matched_target,
                 ),
@@ -801,22 +1193,15 @@ class OfflineDatabaseView(Screen):
         self,
         kind: str,
         record: dict[str, Any],
-        has_map: bool,
         matched_target: Any = None,
     ) -> tuple[Any, ...]:
-        position = Text(
-            _record_position(
-                record,
-                prefer_best=kind == "aps",
-                with_globe=has_map,
-            ),
-            style="cyan",
-        )
+        position = location_globe_cell(self._signal_positions(record))
         target_cell = target_group_cell(matched_target)
         if kind == "aps":
             return (
                 Text(str(record.get("ssid") or "‹hidden›"), style="bold"),
                 mac_address_text(str(record.get("bssid") or "·")),
+                _ap_manufacturer_cell(record),
                 str(record.get("channel") or "·"),
                 str(record.get("encryption") or "Unknown"),
                 str(len(record.get("clients", []))),
@@ -831,11 +1216,12 @@ class OfflineDatabaseView(Screen):
             latest = self._latest_access_point(record)
             return (
                 mac_address_text(str(record.get("client_mac") or "·"), style="bold"),
+                _client_manufacturer_cell(record),
+                offline_client_probes_cell(record),
                 str(record.get("access_point_count", 0)),
                 str(latest.get("ssid") or "·"),
                 mac_address_text(str(latest.get("bssid") or "·")),
                 str(latest.get("channel") or "·"),
-                _session_label(record),
                 Text(_timestamp(record.get("last_seen")), style="dim"),
                 position,
                 target_cell,
@@ -861,6 +1247,8 @@ class OfflineDatabaseView(Screen):
         selected_identity = self._selected_identity(event.data_table, kind)
         if kind == "bluetooth":
             self._render_bluetooth_tables(selected_identity=selected_identity)
+        elif kind == "clients":
+            self._render_client_tables(selected_identity=selected_identity)
         else:
             self._render_table(kind, selected_identity=selected_identity)
 
@@ -938,6 +1326,13 @@ class OfflineDatabaseView(Screen):
             value = format_gatt_identity_line(gatt_identity_parts(record))
         elif key == "session":
             value = record.get("session_name")
+        elif key == "manufacturer":
+            if kind == "clients":
+                value = vendor_for_mac(str(record.get("client_mac") or "")) or ""
+            else:
+                value = _ap_manufacturer_cell(record).plain.removeprefix("~").strip()
+        elif key == "probes":
+            value = offline_client_probes_sort_value(record)
         elif key == "target":
             matched = match_offline_record(self.app.target_store, kind, record)
             value = matched.alias if matched is not None else ""
@@ -984,7 +1379,11 @@ class OfflineDatabaseView(Screen):
         secondary_count: int | None = None,
     ) -> None:
         tab_id, base = _OFFLINE_TAB_LABELS[kind]
-        if kind == "bluetooth" and main_count is not None and secondary_count is not None:
+        if (
+            kind in {"bluetooth", "clients"}
+            and main_count is not None
+            and secondary_count is not None
+        ):
             body = f"{main_count:,}+{secondary_count:,}"
             if kind == self._active and shown != total:
                 label = f"{base} ({body}/{total:,})"
@@ -1002,6 +1401,8 @@ class OfflineDatabaseView(Screen):
     def _kind_for_table(self, table: DataTable) -> str | None:
         if table.id in {"offline-bluetooth", "offline-bluetooth-secondary"}:
             return "bluetooth"
+        if table.id in {"offline-clients", "offline-clients-secondary"}:
+            return "clients"
         for kind in self._records:
             if table.id == f"offline-{kind}":
                 return kind
@@ -1027,8 +1428,7 @@ def _detail_title(kind: str, record: dict[str, Any]) -> str:
         label = str(record.get("ssid") or "‹hidden›")
         mac = str(record.get("bssid") or "")
     elif kind == "clients":
-        label = str(record.get("client_mac") or "")
-        mac = ""
+        return str(record.get("client_mac") or "")
     else:
         label = str(record.get("name") or "‹unknown›")
         mac = str(record.get("identifier") or "")
@@ -1087,6 +1487,39 @@ def _offline_target_cell(cell: Any) -> Any:
     return Text(str(cell), style=style)
 
 
+def _ap_manufacturer_cell(record: dict[str, Any]) -> Text:
+    bssid = str(record.get("bssid") or "")
+    ap = access_point_from_offline_record(record)
+    label = (ap.identity.summary or "").strip()
+    if not label:
+        label = vendor_for_mac(bssid) or ""
+    if is_locally_administered_mac(bssid):
+        cell = Text(no_wrap=True)
+        cell.append("~", style="yellow bold")
+        if label:
+            cell.append(" ")
+            cell.append(label)
+        return cell
+    if label:
+        return Text(label, no_wrap=True)
+    return Text("·", style="dim")
+
+
+def _client_manufacturer_cell(record: dict[str, Any]) -> Text:
+    mac = str(record.get("client_mac") or "")
+    vendor = vendor_for_mac(mac)
+    if is_locally_administered_mac(mac):
+        cell = Text(no_wrap=True)
+        cell.append("~", style="yellow bold")
+        if vendor:
+            cell.append(" ")
+            cell.append(vendor)
+        return cell
+    if vendor:
+        return Text(vendor, no_wrap=True)
+    return Text("·", style="dim")
+
+
 def _session_label(record: dict[str, Any]) -> Text:
     name = str(record.get("session_name") or "Legacy")
     count = int(record.get("session_count") or 0)
@@ -1130,25 +1563,6 @@ def _timestamp(value: Any) -> str:
         )
     except (OSError, OverflowError, TypeError, ValueError):
         return str(value)
-
-
-def _record_position(
-    record: dict[str, Any],
-    *,
-    prefer_best: bool = False,
-    with_globe: bool = False,
-) -> str:
-    positions = _signal_positions(record)
-    position = (
-        best_position(positions) if prefer_best else latest_position(positions)
-    )
-    if position is None:
-        return "·"
-    globe = "  🌐" if with_globe else ""
-    return (
-        f"{position.latitude:.5f}, {position.longitude:.5f} "
-        f"±{position.accuracy_m:.0f}m{globe}"
-    )
 
 
 def _signal_positions(record: dict[str, Any]) -> list[SignalPosition]:

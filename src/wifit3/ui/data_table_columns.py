@@ -22,6 +22,7 @@ def offline_column_caps() -> dict[str, dict[str, int]]:
             "target": target,
             "ssid": text,
             "bssid": mac,
+            "manufacturer": text,
             "catalog_class": OFFLINE_CLASS_COL_WIDTH,
             "catalog_family": text,
             "session": OFFLINE_SESSION_COL_WIDTH,
@@ -29,9 +30,10 @@ def offline_column_caps() -> dict[str, dict[str, int]]:
         "clients": {
             "target": target,
             "client_mac": mac,
+            "manufacturer": text,
+            "probes": text,
             "last_ssid": text,
             "last_bssid": mac,
-            "session": OFFLINE_SESSION_COL_WIDTH,
         },
         "bluetooth": {
             "target": target,

@@ -1460,6 +1460,54 @@ class BluetoothHistoryStore:
                 str(link["identifier_b"]).casefold(),
                 [],
             ).append(link)
+        captures_by_identifier: dict[str, list[dict]] = {}
+        for item in connection.execute(
+            """
+            SELECT identifier, capture_id, alias, started_at, ended_at, max_bytes,
+                   total_bytes, event_count, dropped
+            FROM event_captures
+            ORDER BY identifier, started_at DESC
+            """,
+        ):
+            key = str(item["identifier"]).casefold()
+            captures_by_identifier.setdefault(key, []).append(
+                {
+                    "capture_id": item["capture_id"],
+                    "alias": item["alias"],
+                    "started_at": item["started_at"],
+                    "ended_at": item["ended_at"],
+                    "max_bytes": item["max_bytes"],
+                    "total_bytes": item["total_bytes"],
+                    "event_count": item["event_count"],
+                    "dropped": item["dropped"],
+                },
+            )
+        sessions_by_identifier: dict[str, list[dict]] = {}
+        for item in connection.execute(
+            """
+            SELECT sighting.identifier, session.session_id, session.name,
+                   session.started_at, session.ended_at, session.mode,
+                   sighting.first_seen, sighting.last_seen,
+                   sighting.sighting_count
+            FROM device_session_sightings AS sighting
+            JOIN scan_sessions AS session
+              ON session.session_id = sighting.session_id
+            ORDER BY sighting.identifier, sighting.last_seen DESC
+            """,
+        ):
+            key = str(item["identifier"]).casefold()
+            sessions_by_identifier.setdefault(key, []).append(
+                {
+                    "session_id": item["session_id"],
+                    "name": item["name"],
+                    "started_at": item["started_at"],
+                    "ended_at": item["ended_at"],
+                    "mode": item["mode"],
+                    "first_seen": item["first_seen"],
+                    "last_seen": item["last_seen"],
+                    "sighting_count": item["sighting_count"],
+                },
+            )
         records: list[dict] = []
         for row in connection.execute(
             "SELECT * FROM devices ORDER BY last_seen DESC, identifier",
@@ -1497,34 +1545,13 @@ class BluetoothHistoryStore:
                         "live_strong": hit.live_strong,
                         "sentence": hit.sentence,
                     }
-            record["event_captures"] = [
-                dict(item) for item in connection.execute(
-                    """
-                    SELECT capture_id, alias, started_at, ended_at, max_bytes,
-                           total_bytes, event_count, dropped
-                    FROM event_captures
-                    WHERE identifier = ?
-                    ORDER BY started_at DESC
-                    """,
-                    (identifier,),
-                )
-            ]
-            record["scan_sessions"] = [
-                dict(item) for item in connection.execute(
-                    """
-                    SELECT session.session_id, session.name, session.started_at,
-                           session.ended_at, session.mode,
-                           sighting.first_seen, sighting.last_seen,
-                           sighting.sighting_count
-                    FROM device_session_sightings AS sighting
-                    JOIN scan_sessions AS session
-                      ON session.session_id = sighting.session_id
-                    WHERE sighting.identifier = ?
-                    ORDER BY sighting.last_seen DESC
-                    """,
-                    (identifier,),
-                )
-            ]
+            id_key = identifier.casefold()
+            record["event_captures"] = list(
+                captures_by_identifier.get(id_key, []),
+            )
+            record["scan_sessions"] = list(
+                sessions_by_identifier.get(id_key, []),
+            )
             record["session_name"] = (
                 record["scan_sessions"][0]["name"]
                 if record["scan_sessions"] else "Legacy"

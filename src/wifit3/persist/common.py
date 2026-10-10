@@ -16,7 +16,7 @@ LEGACY_CAPTURE_RE = re.compile(
     r"^(?P<ssid>.+)_"
     r"(?P<bssid>[0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5}|ess)_"
     r"(?P<epoch>\d+)_"
-    r"(?P<kind>enterprise_report|eap_lab_report|handshake|pmkid|mschapv2|netntlmv2|packet_capture|wep_key|wps_pin|wps_pbc|wpa_psk)"
+    r"(?P<kind>captive_password|enterprise_report|eap_lab_report|handshake|pmkid|mschapv2|netntlmv2|packet_capture|wep_key|wps_pin|wps_pbc|wpa_psk)"
     r"\.(?P<ext>json|pcap|hc22000|mschapv2|netntlmv2|txt)$"
 )
 
@@ -29,6 +29,9 @@ AGGREGATED_HC22000_RE = re.compile(
 WEP_KEY_HEX_RE = re.compile(r"WEP key \(hex\):\s*([0-9a-fA-F]+)")
 WPS_PSK_RE = re.compile(r"^PSK:\s*(.+)$", re.MULTILINE)
 WPS_PIN_RE = re.compile(r"^PIN:\s*(.+)$", re.MULTILINE)
+CAPTIVE_PORTAL_RE = re.compile(r"^Portal:\s*(.*)$", re.MULTILINE)
+CAPTIVE_USERNAME_RE = re.compile(r"^Username:\s*(.*)$", re.MULTILINE)
+CAPTIVE_PASSWORD_RE = re.compile(r"^Password:\s*(.*)$", re.MULTILINE)
 
 
 def safe_ssid(ssid: Optional[str]) -> str:

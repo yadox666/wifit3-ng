@@ -3,7 +3,7 @@
 
 **wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.19 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.19**. The full delta from upstream is in [CHANGELOG.md](CHANGELOG.md).
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.19**, with further Enterprise/EAP lab UI and lab-radio work under **[Unreleased](CHANGELOG.md#unreleased)** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
@@ -52,6 +52,13 @@ The sections below are the additions in this fork (0.3.4 through current). They 
 
 **0.3.19:** signature-pack refresh and release checks share the bundled,
 verified HTTPS/CA implementation, fixing `URLError` in frozen macOS builds.
+
+**Unreleased:** Enterprise panel refresh — **EAP AP test** and **EAP clients
+test** with spoof-capable **card and channel** pickers (2.4 / 5 GHz labels;
+prefers dual-band **ALFA AWUS1900** when several adapters are connected),
+compact honeypot launch modal (short labels, tooltips for full text), **Save
+Report** as Markdown under `captures/`, and shared EAP lab progress logging in
+Focus and the Wi-Fi scanner. Details in [CHANGELOG → Unreleased](CHANGELOG.md#unreleased).
 
 **0.3.18:** follow-up release used to exercise the repaired automatic updater
 from a frozen 0.3.17 executable.
@@ -295,6 +302,11 @@ with **Enterprise** or `E`.
 - The scanner's upper encryption filter includes **Enterprise**, selecting APs
   that advertise EAP/802.1X (including FT-EAP and Suite-B variants). Personal
   PSK/SAE-only networks are excluded; mixed PSK+EAP APs remain included.
+- Before **EAP AP test** or **EAP clients test**, choose a **spoof-capable
+  adapter** and **lab channel** on the panel. Channel options are labeled with
+  band (`N · 2.4 GHz` / `N · 5 GHz`) and respect each card's capabilities; when
+  several radios are available, **ALFA AWUS1900** (RTL8814AU, `0bda:8813`) is
+  preferred for dual-band work over 2.4-only adapters such as AR9271 sticks.
 - Shows each observed Enterprise system's methods, TLS evidence,
   certificates, sessions, findings, evidence coverage, and remaining unknowns.
 - Groups same-SSID Enterprise BSSIDs and systems sharing certificate
@@ -307,12 +319,15 @@ with **Enterprise** or `E`.
   versioned, atomic storage. Client MAC addresses are replaced by per-store
   HMAC pseudonyms; identities and credentials are never stored.
 
-#### Active outer-EAP probe
+#### Active outer-EAP probe (**EAP AP test**)
 
-- Requires the normal active-action confirmation and exclusive ownership of
-  the selected radio. It can be cancelled from the Enterprise panel.
+- Start from the Enterprise panel with **EAP AP test**. A follow-up modal can
+  supply optional lab outer identities and enable probe PCAP recording on the
+  card and channel chosen on the panel.
+- Requires exclusive ownership of the selected radio. Use **Cancel AP test** on
+  the panel while a probe is running.
 - Associates with a randomized temporary station and uses an anonymous outer
-  identity.
+  identity (unless lab identities were configured in the modal).
 - Uses legacy EAP NAK method negotiation to enumerate server-supported methods,
   then supports bounded outer TLS negotiation for EAP-TLS, EAP-TTLS, PEAP, and
   TEAP.
@@ -324,12 +339,15 @@ with **Enterprise** or `E`.
   existing passive profile, fills previously unknown fields, persists the
   result, and saves a report snapshot automatically.
 
-#### Enterprise reports in Vault
+#### Enterprise reports (Markdown and Vault)
 
-- **Save report to Vault** creates a timestamped, sanitized JSON assessment;
-  every completed, partial, failed, or cancelled active probe also creates a
-  snapshot automatically.
-- Vault indexes Enterprise reports with an `ENTERPRISE` tab and `✓ENT` badge,
+- **Save Report** on the Enterprise panel writes the on-screen assessment as
+  `*_enterprise_assessment.md` under the configured captures directory. It is
+  plain Markdown for notes and sharing; it is not indexed as a Vault JSON report.
+- Every completed, partial, failed, or cancelled **EAP AP test** still saves a
+  timestamped, sanitized `*_enterprise_report.json` snapshot to Vault
+  automatically.
+- Vault indexes Enterprise JSON reports with an `ENTERPRISE` tab and `✓ENT` badge,
   validates their schema, includes them in archive export, and presents them
   beside PCAP and authentication artifacts.
 - Reports contain AP security posture, bounded Enterprise metadata, probe
@@ -337,18 +355,22 @@ with **Enterprise** or `E`.
   not contain raw client identifiers, EAP identities, credentials, private
   keys, or packet payloads.
 
-#### Enterprise EAP lab honeypot (authorized testing only)
+#### Enterprise EAP lab honeypot (**EAP clients test**, authorized testing only)
 
 For explicit lab or engagement scenarios where inner MS-CHAPv2 capture is in
-scope, AP Focus → **Enterprise** → **Start PEAP EAP lab honeypot** runs a
-separate confirmed active campaign (not the passive/active outer-EAP probe
-above):
+scope, AP Focus → **Enterprise** → **EAP clients test** runs a separate
+active campaign (not the outer **EAP AP test** above). The card and channel
+selected on the Enterprise panel are passed into the launch modal.
 
-- Requires the normal active-action confirmation and a spoof-capable adapter.
-  The launch modal sets duration (5–60 minutes), optional **deauth + CSA + BTM**
-  eviction bursts toward the real AP (PMF-aware, on a fixed interval), and
-  whether **EAP-TLS** should request a client certificate.
-- Advertises a **locally administered twin BSSID** on the focused channel using a
+- Requires a spoof-capable adapter on a supported lab channel. The compact
+  launch modal sets duration (5–60 minutes), assessment toggles (short labels;
+  hover for full descriptions), optional **deauth + CSA + BTM** eviction bursts
+  toward the real AP (PMF-aware, on a fixed interval), distinct lab SSID when
+  needed, and whether **EAP-TLS** should request a client certificate.
+- While the lab runs, Focus and the **Wi-Fi scanner** both receive progress
+  lines, Vault save notices, and completion toasts through the shared EAP lab
+  runtime (you can leave Focus and still see scanner log updates).
+- Advertises a **locally administered twin BSSID** on the lab channel using a
   **cloned target beacon** when one has been observed (rates, capabilities,
   vendor IEs, HT/VHT, WMM, country, and similar tags preserved; RSN collapsed to
   a single 802.1X AKM matching the AP's ciphers and PMF posture; SAE/RSNXE
@@ -365,8 +387,11 @@ above):
   **weak outer EAP first**, inner **PAP** probe before MS-CHAPv2, empty MS-CHAPv2
   detection, **EAP-TLS Success** against the lab cert as a finding, and isolated
   **lab DHCP Offer/ACK** on `10.99.0.0/24`. Completing a run with client evidence
-  writes **`*_eap_lab_report.json`** to Vault (pseudonymized client IDs). Correlate
-  with the **probe honeypot** DHCP stages on the same SSID for additional context.
+  writes **`*_eap_lab_report.json`** to Vault (pseudonymized client IDs). Inner
+  **PAP** probes may also save `*_captive_password.txt` entries (Vault captive
+  password / lab source) when assessment captures a username and password against
+  the lab twin. Correlate with the **probe honeypot** DHCP stages on the same
+  SSID for additional context.
 - For EAP-TLS with client certificates requested, only the client certificate
   **SHA-256 fingerprint** is logged; private keys and certificate blobs are not
   stored.
@@ -666,7 +691,7 @@ latest session plus `+N`, and expanding the row shows every session. Session
 names are also searchable, making separate runs on the same day easy to distinguish.
 Press **Enter** on a row to
 expand every stored field (security, associations, captures, position clusters,
-and similar). **`r`** reloads from disk; **`c` · Clear-DB** opens the history
+and similar). **`c` · Clear-DB** opens the history
 deletion dialog (Wi-Fi and/or Bluetooth/BLE, with confirmation phrase
 `DELETE NOW!`); **Escape** returns to device selection. Every tab's column
 headers can be clicked or touched to sort and touched again to reverse.
@@ -851,7 +876,7 @@ refresh.
 | `oui.txt` | OS user-cache directory for `wifit3` | IEEE manufacturer database |
 | `signatures-stock.json` | OS user-data directory for `wifit3` | Bundled observer rules (DULT, Find Hub, Remote ID). Refresh replaces this file only |
 | `signatures-user.json` | Same user-data directory | Your observer rules. Stock refresh does not touch this file; export copies it under `captures/scan_exports/` |
-| `captures/` | Path set in Preferences, default `captures` | Handshakes (`.hc22000`), EAP lab MS-CHAPv2/NetNTLMv2 Hashcat lines, focused PCAP files, sanitized Enterprise reports, and other Vault artifacts |
+| `captures/` | Path set in Preferences, default `captures` | Handshakes (`.hc22000`), EAP lab MS-CHAPv2/NetNTLMv2 Hashcat lines, focused PCAP files, sanitized Enterprise JSON reports, optional `*_enterprise_assessment.md` Markdown exports, EAP-lab inner-PAP credential text files, and other Vault artifacts |
 | `captures/scan_exports/` | Under the capture directory | Wi-Fi CSV/JSON, Bluetooth CSV/JSON/JSONL snapshots, and direct-USB Bluetooth `.btsnoop` captures |
 
 Sensitive files are written with owner-only permissions (`0600`) and private

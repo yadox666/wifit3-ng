@@ -10,6 +10,7 @@ EAP_RESPONSE = 2
 EAP_SUCCESS = 3
 EAP_FAILURE = 4
 EAP_TYPE_IDENTITY = 1
+EAP_TYPE_MD5 = 4
 EAP_TYPE_GTC = 6
 EAP_TYPE_NAK = 3
 EAP_TYPE_PAP = 16
@@ -102,8 +103,13 @@ def eap_tls_request_frame(
     more: bool = False,
     start: bool = False,
     total_length: int | None = None,
+    version: int = 0,
 ) -> bytes:
-    flags = (0x20 if start else 0) | (0x40 if more else 0)
+    flags = (
+        (0x20 if start else 0)
+        | (0x40 if more else 0)
+        | (version & 0x1F)
+    )
     data = b""
     if total_length is not None:
         flags |= 0x80

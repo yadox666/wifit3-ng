@@ -55,6 +55,7 @@ class PcapWriter:
             SNAPLEN,
             LINKTYPE_IEEE802_11,
         ))
+        self._stream.flush()
 
     def _rotate(self) -> bool:
         if self._max_parts > 0 and len(self.paths) >= self._max_parts:

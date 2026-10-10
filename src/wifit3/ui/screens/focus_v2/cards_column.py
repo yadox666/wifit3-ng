@@ -65,10 +65,6 @@ class CardsColumn(Vertical):
     def flicker(self) -> None:
         self._slot(0).flicker()
 
-        if not self.query_one("#hackrf-endpoint", HackRfEndpoint).display:
-            return
-        self.query_one("#hackrf-endpoint", HackRfEndpoint).pulse()
-
     def update_bssid(self, bssid: str | None) -> None:
         self._slot(0).update_bssid(bssid)
 
@@ -84,9 +80,7 @@ class CardsColumn(Vertical):
         dual = len(members) >= 2
         slot1 = self._slot(1)
         slot1.display = dual
-        hackrf_visible = self.query_one("#hackrf-endpoint", HackRfEndpoint).display
-        wifi_w = 40 if dual else 20
-        self.styles.width = (20 + wifi_w) if hackrf_visible else wifi_w
+        self.styles.width = 40 if dual else 20
 
         ordered = _ordered_members(members, primary)
         if not dual:

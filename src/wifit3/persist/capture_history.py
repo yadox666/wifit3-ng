@@ -12,6 +12,9 @@ from typing import Dict, List
 from wifit3.models import CaptureType, PersistedCapture
 from wifit3.persist.common import (
     AGGREGATED_HC22000_RE,
+    CAPTIVE_PASSWORD_RE,
+    CAPTIVE_PORTAL_RE,
+    CAPTIVE_USERNAME_RE,
     LEGACY_CAPTURE_RE,
     WEP_KEY_HEX_RE,
     WPS_PIN_RE,
@@ -154,6 +157,27 @@ def _parse_file(path: Path, bssid: str) -> List[PersistedCapture]:
         return [PersistedCapture(type=CaptureType.WPA_PSK, timestamp=epoch, path=str(path),
                                  bssid=bssid, value=psk,
                                  ssid=_read_ssid(path) or ssid)]
+    if kind == "captive_password" and ext == "txt":
+        text = _read_text(path)
+        if text is None:
+            return []
+        pw_match = CAPTIVE_PASSWORD_RE.search(text)
+        if pw_match is None:
+            return []
+        user_match = CAPTIVE_USERNAME_RE.search(text)
+        portal_match = CAPTIVE_PORTAL_RE.search(text)
+        username = user_match.group(1).strip() if user_match else None
+        portal_name = portal_match.group(1).strip() if portal_match else None
+        return [PersistedCapture(
+            type=CaptureType.CAPTIVE_PASSWORD,
+            timestamp=epoch,
+            path=str(path),
+            bssid=bssid,
+            value=pw_match.group(1).strip(),
+            ssid=_read_ssid(path) or ssid,
+            username=username or None,
+            portal_name=portal_name or None,
+        )]
     if kind == "handshake" and ext in ("hc22000", "pcap"):
         count = _count_hashlines(path, "WPA*02*") if ext == "hc22000" else 0
         return [PersistedCapture(type=CaptureType.HS, timestamp=epoch, path=str(path),

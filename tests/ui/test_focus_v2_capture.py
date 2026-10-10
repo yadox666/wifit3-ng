@@ -1,5 +1,6 @@
 """Logic-only tests for FocusViewV2 state derivations."""
 
+import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -107,3 +108,12 @@ def test_fake_connect_offer_updates_network_database_without_pcap(tmp_path):
     assert payload["facts"]["connectivity"][0]["value"] == "internet_confirmed"
     assert campaign.metadata_recorded is True
     assert campaign.connectivity_recorded is True
+
+
+def test_eap_lab_honeypot_logs_through_focus_log():
+    start = inspect.getsource(FocusViewV2._start_eap_lab_honeypot)
+    poll = inspect.getsource(FocusViewV2._poll_eap_lab_campaign)
+    assert "_write_log" not in start + poll
+    assert "attach_eap_lab_campaign" in start
+    assert "poll_eap_lab_campaign" in poll
+    assert "listener=" in poll

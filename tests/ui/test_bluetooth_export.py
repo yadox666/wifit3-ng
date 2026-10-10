@@ -1,12 +1,11 @@
 import csv
 import json
 import stat
-import struct
 
 from wifit3.models import BluetoothDevice
 from wifit3.persist.config import Config
-from wifit3.bluetooth.usb_hci import HciCaptureRecord
 from wifit3.ui.bluetooth_export import (
+    BLUETOOTH_SCAN_TABLE_COLUMNS,
     export_bluetooth_bundle,
     export_bluetooth_snapshot,
 )
@@ -41,6 +40,10 @@ def test_bluetooth_export_writes_device_details(tmp_path, monkeypatch):
     assert rows[0]["manufacturer"] == "Apple, Inc. (004C)"
     assert rows[0]["signal_dbm"] == "-42"
     assert rows[0]["advertised_services"] == "Battery Service (180f)"
+    for column in BLUETOOTH_SCAN_TABLE_COLUMNS:
+        assert column in rows[0]
+    assert rows[0]["rssi"] == "-42"
+    assert rows[0]["services"] == "Battery Service"
 
 
 def test_bluetooth_export_escapes_spreadsheet_formula_names(tmp_path, monkeypatch):
@@ -103,10 +106,14 @@ def test_bluetooth_bundle_writes_private_json_and_jsonl(tmp_path, monkeypatch):
     assert record["exact_type"] == "Headphones"
     assert record["classification_source"] == "Appearance"
     assert record["appearance"] == "0x0943"
+    assert "Headphones" in record["category"]
+    assert record["category"].startswith("BLE ")
+    assert record["first_seen_at"]
+    assert record["last_seen_at"]
+    for column in BLUETOOTH_SCAN_TABLE_COLUMNS:
+        assert column in record
     assert json.loads(jsonl_path.read_text("utf-8"))["identifier"] == device.identifier
     if hasattr(stat, "S_IMODE"):
         assert stat.S_IMODE(csv_path.stat().st_mode) == 0o600
         assert stat.S_IMODE(json_path.stat().st_mode) == 0o600
         assert stat.S_IMODE(jsonl_path.stat().st_mode) == 0o600
-
-

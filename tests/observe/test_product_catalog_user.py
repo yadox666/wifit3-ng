@@ -99,10 +99,10 @@ def test_match_uses_user_family(user_catalog_path):
 
 
 def test_catalog_hit_for_family_id():
-    hit = catalog.catalog_hit_for_family_id("home-router-isp")
+    hit = catalog.catalog_hit_for_family_id("home-router-masmovil")
     assert hit.present
     assert hit.catalog_class == "Home router"
-    assert hit.labels == ("Home router",)
+    assert hit.labels == ("MasMovil",)
     assert not catalog.catalog_hit_for_family_id("not-a-real-id").present
 
 

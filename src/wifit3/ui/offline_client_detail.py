@@ -5,9 +5,9 @@ from typing import Any
 
 from rich.markup import escape
 
-from wifit3.id import vendor_for_mac
 from wifit3.persist.ap_history import client_from_offline_record
 from wifit3.ui.focus_model import client_advertised_details
+from wifit3.ui.offline_client_probes import offline_client_probed_ssids
 from wifit3.ui.offline_detail_common import (
     gps_section,
     history_section,
@@ -26,19 +26,35 @@ _RECORD_SKIP = frozenset({
     "positions",
     "session_name",
     "session_count",
+    "probed_ssids",
 })
+
+
+def _latest_associated_ap_ssid(record: dict[str, Any]) -> str | None:
+    access_points = record.get("access_points") or []
+    if not access_points:
+        return None
+    latest = max(
+        access_points,
+        key=lambda item: float(item.get("last_seen") or 0)
+        if isinstance(item, dict)
+        else 0.0,
+    )
+    if not isinstance(latest, dict):
+        return None
+    ssid = str(latest.get("ssid") or "").strip()
+    return ssid or None
 
 
 def offline_client_detail_markup(record: dict[str, Any]) -> str:
     client = client_from_offline_record(record)
-    mac = str(record.get("client_mac") or "")
-    vendor = vendor_for_mac(mac)
     lines: list[str] = [
-        f"[bold]{escape(mac)}[/bold]",
+        client_advertised_details(
+            client,
+            include_identity_heading=False,
+            associated_ap_ssid=_latest_associated_ap_ssid(record),
+        ),
     ]
-    if vendor:
-        lines.append(f"[dim]Manufacturer:[/dim] {escape(vendor)}")
-    lines.extend(["", client_advertised_details(client)])
 
     for block in (
         history_section(
@@ -46,6 +62,7 @@ def offline_client_detail_markup(record: dict[str, Any]) -> str:
             extras=[("Known APs", record.get("access_point_count"))],
         ),
         _access_points_section(record),
+        _probe_requests_section(record),
         scan_session_section(record),
         gps_section(record),
         _stored_section(record),
@@ -55,6 +72,19 @@ def offline_client_detail_markup(record: dict[str, Any]) -> str:
 
     body = "\n".join(lines)
     return body or "[dim]No extra fields stored for this record.[/dim]"
+
+
+def _probe_requests_section(record: dict[str, Any]) -> list[str]:
+    ssids = offline_client_probed_ssids(record)
+    if not ssids:
+        return []
+    rows = ["[bold cyan]Probe requests[/bold cyan]"]
+    preview = ", ".join(escape(ssid) for ssid in ssids[:24])
+    rows.append(f"  {preview}")
+    extra = len(ssids) - 24
+    if extra > 0:
+        rows.append(f"  [dim]+{extra} more SSIDs[/dim]")
+    return rows
 
 
 def _access_points_section(record: dict[str, Any]) -> list[str]:

@@ -66,7 +66,9 @@ class RTL8814AUDriver(Driver):
     @classmethod
     def from_usb_device(cls, dev: usb.core.Device,
                         id_entry: DeviceID) -> "RTL8814AUDriver":
-        return cls(dev)
+        drv = cls(dev)
+        drv.product_name = id_entry.product_name  # 0bda:8813 is the ALFA AWUS1900
+        return drv
 
     def __init__(self, dev: usb.core.Device):
         super().__init__()          # base owns the ACK tally (_ack_detect_on / _our_tx_macs / _ack_counts)

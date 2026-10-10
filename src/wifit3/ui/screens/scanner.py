@@ -31,6 +31,7 @@ from ..selectable_rich_log import SelectableRichLog
 from wifit3.campaigns import treelog
 from wifit3.campaigns.campaign import Campaign
 from wifit3.campaigns.open_probe_ap import OpenProbeApCampaign
+from wifit3.ui.eap_lab_runtime import poll_eap_lab_campaign
 from wifit3.campaigns.pbc import PbcWatcher, WpsPbcCapture
 from wifit3.campaigns.wps.registrar import PinResult
 from wifit3.dot11.ie import (
@@ -761,6 +762,7 @@ class ScannerView(Screen):
         if not self.app.array:
             return
         self._poll_open_probe_campaign()
+        self._poll_eap_lab_campaign()
         array = self.app.array
         self._maybe_lock_target(array)
         if self._paused:
@@ -2531,6 +2533,9 @@ class ScannerView(Screen):
             title="Probe honeypot",
         )
 
+    def _poll_eap_lab_campaign(self) -> None:
+        poll_eap_lab_campaign(self.app, self._write_log, listener="scanner")
+
     def _poll_open_probe_campaign(self) -> None:
         campaign = self._open_probe_campaign
         if campaign is None:
@@ -2887,6 +2892,7 @@ class ScannerView(Screen):
             json_path, csv_path = export_scan_snapshot(
                 array.get_access_points(include_eviltwin=False),
                 array.clients.values(),
+                vault=self.app.vault,
             )
         except OSError as exc:
             self.notify(str(exc), title="Export failed", severity="error")

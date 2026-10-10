@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
 
@@ -8,11 +10,69 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static
+from textual.widgets import Button, Checkbox, Label, Select, Static
 
+from wifit3.campaigns.eap_lab_config import (
+    channels_for_lab_iface,
+    default_lab_channel,
+    lab_host_ifaces,
+)
+from wifit3.chips.products import ALFA
 from wifit3.dot11.enterprise import EAP_TYPE_NAMES, TLS_EAP_TYPES
 from wifit3.models import AccessPoint
 from wifit3.wlan.enterprise_risk import enterprise_findings, tls_cipher_name
+
+_MARKUP_RE = re.compile(r"\[/?[^\]]+\]")
+
+
+@dataclass(frozen=True, slots=True)
+class EnterpriseLabChoice:
+    """Shared radio options for the outer probe and the PEAP honeypot."""
+
+    action: str
+    iface_name: str = ""
+    lab_channel: int | None = None
+    record_pcap: bool = True
+
+
+def assessment_markdown(systems: tuple[AccessPoint, ...]) -> str:
+    """Plain Markdown of the on-screen assessment. Markup only; no secrets added."""
+    body = "\n\n".join(
+        [_strip_markup(_infrastructure_summary(systems))]
+        + [_strip_markup(_system_summary(ap)) for ap in systems]
+    )
+    when = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"# Enterprise assessment\n\nSaved {when}\n\n{body}\n"
+
+
+def _strip_markup(text: str) -> str:
+    return _MARKUP_RE.sub("", text)
+
+
+def _card_label(iface) -> str:
+    return (
+        getattr(getattr(iface, "driver", None), "product_name", None)
+        or getattr(iface, "product_name", None)
+        or getattr(iface, "chipset", None)
+        or "card"
+    )
+
+
+def _is_awus1900(iface) -> bool:
+    """RTL8814AU retail AWUS1900. Dual-band; not the 2.4 GHz AR9271 AWUS036NHA."""
+    chipset = str(getattr(iface, "chipset", "") or "")
+    return _card_label(iface) == ALFA.AWUS1900 or "8814" in chipset
+
+
+def _initial_host_name(hosts, preferred_name: str) -> str:
+    """Pinned card wins. Otherwise the AWUS1900, the dual-band adapter on this bench."""
+    names = {member.name for member in hosts}
+    if preferred_name in names:
+        return preferred_name
+    for member in hosts:
+        if _is_awus1900(member):
+            return member.name
+    return hosts[0].name if hosts else ""
 
 
 def _method_names(methods: Iterable[int]) -> str:
@@ -239,8 +299,21 @@ def _system_summary(ap: AccessPoint) -> str:
         )
         if profile.probe_last_detail:
             lines.append(f"  {escape(profile.probe_last_detail)}")
+        for note in profile.probe_last_compatibility_notes[:6]:
+            lines.append(f"  [dim]• {escape(note)}[/dim]")
+        if profile.probe_last_mschap_challenge_path:
+            lines.append(
+                f"  MS-CHAPv2 challenge: [dim]{escape(profile.probe_last_mschap_challenge_path)}[/dim]"
+            )
+        if profile.probe_last_report_path:
+            lines.append(
+                f"  Report: [dim]{escape(profile.probe_last_report_path)}[/dim]"
+            )
     else:
-        lines.append("  [dim]Not run. The probe stops before inner authentication.[/dim]")
+        lines.append(
+            "  [dim]Not run. Probe surveys outer EAP/TLS and captures inner MS-CHAPv2 "
+            "challenges without sending a password.[/dim]"
+        )
 
     if profile.probe_history:
         lines.append("  [bold]Probe history[/bold]")
@@ -290,68 +363,168 @@ def _system_summary(ap: AccessPoint) -> str:
     return "\n".join(lines)
 
 
-class EnterprisePanel(ModalScreen[str | None]):
+class EnterprisePanel(ModalScreen[EnterpriseLabChoice | None]):
     BINDINGS = [Binding("escape", "dismiss", "Close", show=False)]
 
     DEFAULT_CSS = """
     EnterprisePanel { align: center middle; background: $background 70%; }
     EnterprisePanel > #enterprise-box {
-        width: 90%; max-width: 120; height: 90%;
+        width: 78; max-width: 92; height: auto;
         border: round $primary; background: $panel; padding: 1 2;
     }
-    #enterprise-title { height: 2; text-style: bold; }
-    #enterprise-systems { height: 1fr; }
+    #enterprise-title { height: 1; text-style: bold; color: $accent; }
+    #enterprise-hint { height: 1; color: $text-muted; margin-bottom: 1; }
+    .lab-row { height: 3; }
+    .lab-row .row-label {
+        width: 14; height: 3; content-align: left middle; color: $text-muted;
+    }
+    .lab-row Select { width: 1fr; }
+    #enterprise-channel { width: 28; max-width: 36; }
+    #enterprise-pcap { width: 22; height: 3; margin-left: 1; }
+    #enterprise-actions, #enterprise-actions-2 { height: 3; margin-top: 1; }
+    #enterprise-actions Button, #enterprise-actions-2 Button { width: 1fr; margin: 0 1; }
+    #enterprise-rule { height: 1; margin: 1 0 0 0; border-bottom: solid $primary; }
+    #enterprise-systems {
+        height: 12; margin-top: 1; border: round $boost;
+        background: $surface; padding: 0 1;
+    }
     .enterprise-system { width: 100%; height: auto; margin-bottom: 1; }
-    #enterprise-actions { height: 3; }
-    #enterprise-probe, #enterprise-eap-lab, #enterprise-save-report, #enterprise-close { width: 1fr; }
     """
 
-    def __init__(self, systems: Iterable[AccessPoint], *, probing: bool = False) -> None:
+    def __init__(
+        self,
+        systems: Iterable[AccessPoint],
+        *,
+        probing: bool = False,
+        members: list | None = None,
+        preferred_name: str = "",
+        target_channel: int | None = None,
+    ) -> None:
         super().__init__()
         self._systems = tuple(systems)
         self._probing = probing
+        self._hosts = list(lab_host_ifaces(members or []))
+        self._by_name = {member.name: member for member in self._hosts}
+        self._preferred_name = _initial_host_name(self._hosts, preferred_name)
+        first = self._systems[0] if self._systems else None
+        self._target_channel = int(
+            target_channel if target_channel is not None else (first.channel if first else 1)
+        )
 
     def compose(self) -> ComposeResult:
         summaries = [
             Static(_system_summary(ap), classes="enterprise-system")
             for ap in self._systems
         ]
+        host = self._by_name.get(self._preferred_name)
         with Vertical(id="enterprise-box"):
             yield Static(
                 f"ENTERPRISE ASSESSMENT · {len(self._systems)} observed system(s)",
                 id="enterprise-title",
             )
+            yield Static(
+                "Card, channel and PCAP apply to both labs",
+                id="enterprise-hint",
+            )
+            with Horizontal(classes="lab-row"):
+                yield Label("Wi-Fi card", classes="row-label")
+                yield Select(
+                    self._iface_options(),
+                    value=host.name if host else Select.NULL,
+                    allow_blank=not bool(self._hosts),
+                    id="enterprise-iface",
+                )
+            with Horizontal(classes="lab-row"):
+                yield Label("Channel", classes="row-label")
+                yield Select(
+                    self._channel_options(host),
+                    value=default_lab_channel(host, self._target_channel),
+                    allow_blank=False,
+                    id="enterprise-channel",
+                )
+                yield Checkbox("Record PCAP", value=True, id="enterprise-pcap")
+            with Horizontal(id="enterprise-actions"):
+                probe = Button(
+                    "Cancel AP test" if self._probing else "EAP AP test",
+                    id="enterprise-probe",
+                    variant="error" if self._probing else "warning",
+                )
+                probe.tooltip = (
+                    "Cancel the running EAP AP test"
+                    if self._probing else
+                    "Outer/inner EAP against the real AP. Identities are asked next."
+                )
+                yield probe
+                honeypot = Button(
+                    "EAP clients test",
+                    id="enterprise-eap-lab",
+                    variant="warning",
+                )
+                honeypot.tooltip = (
+                    "PEAP honeypot for client phones on the card and channel above. "
+                    "Any username is accepted. PAP and complete MS-CHAPv2 go to the Vault."
+                )
+                yield honeypot
+            with Horizontal(id="enterprise-actions-2"):
+                yield Button("Save Report", id="enterprise-save-report", variant="primary")
+                yield Button("Close", id="enterprise-close")
+            yield Static("", id="enterprise-rule")
             yield VerticalScroll(
                 Static(_infrastructure_summary(self._systems), classes="enterprise-system"),
                 *summaries,
                 id="enterprise-systems",
             )
-            with Horizontal(id="enterprise-actions"):
-                probe = Button(
-                    "Cancel active probe" if self._probing else "Run active outer-EAP probe",
-                    id="enterprise-probe",
-                    variant="error" if self._probing else "warning",
-                )
-                probe.tooltip = (
-                    "Cancel the running Enterprise probe"
-                    if self._probing else
-                    "Associates with an anonymous identity and stops before inner authentication"
-                )
-                yield probe
-                yield Button(
-                    "Start PEAP EAP lab honeypot",
-                    id="enterprise-eap-lab",
-                    variant="warning",
-                )
-                yield Button("Save report to Vault", id="enterprise-save-report")
-                yield Button("Close", id="enterprise-close", variant="primary")
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id != "enterprise-iface":
+            return
+        host = self._by_name.get(event.value if isinstance(event.value, str) else "")
+        channel = self.query_one("#enterprise-channel", Select)
+        channel.set_options(self._channel_options(host))
+        channel.value = default_lab_channel(host, self._target_channel)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "enterprise-probe":
-            self.dismiss("cancel_probe" if self._probing else "probe")
+            self.dismiss(self._choice("cancel_probe" if self._probing else "probe"))
         elif event.button.id == "enterprise-eap-lab":
-            self.dismiss("eap_lab")
+            self.dismiss(self._choice("eap_lab"))
         elif event.button.id == "enterprise-save-report":
-            self.dismiss("save_report")
+            self.dismiss(self._choice("save_report"))
         elif event.button.id == "enterprise-close":
             self.dismiss(None)
+
+    def _choice(self, action: str) -> EnterpriseLabChoice:
+        iface_value = self.query_one("#enterprise-iface", Select).value
+        iface_name = iface_value if isinstance(iface_value, str) else ""
+        host = self._by_name.get(iface_name)
+        channel_value = self.query_one("#enterprise-channel", Select).value
+        channel = channel_value if isinstance(channel_value, int) else self._target_channel
+        allowed = set(channels_for_lab_iface(host, self._target_channel))
+        if allowed and channel not in allowed:
+            channel = default_lab_channel(host, self._target_channel)
+        return EnterpriseLabChoice(
+            action=action,
+            iface_name=iface_name,
+            lab_channel=channel,
+            record_pcap=bool(self.query_one("#enterprise-pcap", Checkbox).value),
+        )
+
+    def _iface_options(self) -> list[tuple[str, str]]:
+        return [
+            (f"{_card_label(member)} · {member.name}", member.name)
+            for member in self._hosts
+        ] or [("No spoofable Wi-Fi card", "")]
+
+    def _channel_options(self, host) -> list[tuple[str, int]]:
+        channels = channels_for_lab_iface(host, self._target_channel)
+        if not channels:
+            channels = (self._target_channel,)
+        return [
+            (self._channel_label(channel), channel)
+            for channel in channels
+        ]
+
+    def _channel_label(self, channel: int) -> str:
+        band = "2.4 GHz" if channel <= 14 else "5 GHz"
+        target = " (target)" if channel == self._target_channel else ""
+        return f"{channel} · {band}{target}"

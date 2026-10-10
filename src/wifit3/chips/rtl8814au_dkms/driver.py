@@ -115,7 +115,9 @@ class Rtl8814auDkmsDriver(Driver):
 
     @classmethod
     def from_usb_device(cls, dev: usb.core.Device, id_entry: DeviceID) -> "Rtl8814auDkmsDriver":
-        return cls(Rtl8814auTransport(dev))
+        drv = cls(Rtl8814auTransport(dev))
+        drv.product_name = id_entry.product_name  # 0bda:8813 is the ALFA AWUS1900
+        return drv
 
     def register_rx_callback(self, cb: Callable[[dict], None]) -> None:
         self._rx_cb = cb

@@ -135,6 +135,13 @@ def test_beacon_clone_enterprise_strips_sae_keeps_eap():
     assert ds_param_ie(36) in out
 
 
+def test_beacon_clone_enterprise_can_rewrite_ssid():
+    beacon = bytes(36) + ssid_ie("EAP-TEST") + rates_ie() + ds_param_ie(1) + _RSN_EAP_PSK
+    out = beacon_clone_enterprise(beacon, 1, ssid="EAP-TEST-LAB")
+    assert ssid_ie("EAP-TEST-LAB") in out
+    assert ssid_ie("EAP-TEST") not in out
+
+
 def test_probe_resp_from_beacon_matches_tags():
     beacon = beacon_clone_enterprise(
         bytes(36) + ssid_ie("Corp") + rates_ie() + ds_param_ie(11) + _RSN_EAP_PSK,

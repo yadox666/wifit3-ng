@@ -226,3 +226,34 @@ def test_flicker_state_machine_caps_rate_then_decays():
     art._advance_blink()
     art._advance_blink()
     assert art._blink == "idle"
+
+
+async def test_cards_column_dual_sync_without_hackrf_widget():
+    """Public tree has no HackRF endpoint in the card rail; sync must not query it."""
+    from types import SimpleNamespace
+
+    from wifit3.ui.screens.focus_v2.cards_column import CardsColumn
+
+    def _iface(name: str):
+        return SimpleNamespace(
+            name=name,
+            mac_address=f"00:11:22:33:44:{name[-1]}",
+            chipset="RTL8814AU",
+            driver=SimpleNamespace(product_name="AWUS1900"),
+            current_channel=1,
+            current_channel_spec=SimpleNamespace(width_mhz=20),
+            _is_hopping=False,
+        )
+
+    class _CardHost(App):
+        def compose(self):
+            yield CardsColumn(id="card")
+
+    app = _CardHost()
+    async with app.run_test(size=(120, 40)) as pilot:
+        card = app.query_one(CardsColumn)
+        members = [_iface("wlan0"), _iface("wlan1")]
+        array = SimpleNamespace(is_claimed=lambda _iface: False)
+        card.sync(members, 1, members[0], False, array, None)
+        await pilot.pause(0)
+        assert card.region.width == 40

@@ -78,6 +78,11 @@ class EnterpriseProfile:
     probe_last_status: str | None = None
     probe_last_detail: str | None = None
     probe_last_seen: float | None = None
+    probe_last_compatibility_notes: list[str] = field(default_factory=list)
+    probe_last_mschap_challenge_path: str | None = None
+    probe_last_pcap_path: str | None = None
+    probe_last_report_path: str | None = None
+    probe_last_dump_path: str | None = None
     probe_history: list[EnterpriseProbeRun] = field(default_factory=list)
     first_seen: float | None = None
     last_seen: float | None = None
