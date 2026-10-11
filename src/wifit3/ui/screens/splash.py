@@ -6,7 +6,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.screen import Screen
-from textual.widgets import Static, Label, Footer, Button, Checkbox, ProgressBar
+from textual.widgets import Static, Label, Footer, Button, Checkbox
 from textual.containers import Vertical, Center, Horizontal
 from textual import events, work
 from rich.style import Style
@@ -21,7 +21,6 @@ from wifit3.bluetooth import BluetoothScanError
 from wifit3.bluetooth import scan_modes
 from wifit3.bluetooth.usb_hci import UsbBluetoothController
 from wifit3.device.manager import Status
-from wifit3.id import oui_db
 from wifit3.ui.notification_center import WifiteHeader
 from wifit3.ui.screens.bluetooth_picker import BluetoothPicker
 from wifit3.ui.screens.device_picker import DevicePicker
@@ -37,11 +36,6 @@ if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
 
 logger = logging.getLogger(__name__)
-
-# Give up the OUI refresh if the download hasn't even begun streaming bytes within
-# this many seconds (a dead/blocked connection), and tell the user instead of
-# leaving the bar spinning. Once bytes start flowing we let it run to completion.
-OUI_START_TIMEOUT_S = 10.0
 
 _NG_BADGE_COLUMN = 48
 
@@ -178,7 +172,7 @@ class SplashView(Screen):
         Binding("g", "start_background", "Background"),
         Binding("r", "start_spectrum", "RF Spectrum"),
         Binding("o", "offline", "Offline DB"),
-        Binding("u", "update_oui", "Update OUI DB"),
+        Binding("ctrl+d", "app.diagnostics", "Diagnostics", show=False),
     ]
 
     def __init__(self):
@@ -245,11 +239,6 @@ class SplashView(Screen):
                         id="offline-btn",
                         variant="default",
                     )
-            with Center():
-                # Small, centered OUI-download progress, hidden until 'u' is pressed.
-                with Vertical(id="oui-progress"):
-                    yield Label("", id="oui-progress-status")
-                    yield ProgressBar(total=None, show_eta=False, id="oui-progress-bar")
             with Center():
                 # Reverses driver/access changes for the highlighted card.
                 yield Button("Uninstall", id="uninstall-btn", variant="error")
@@ -330,123 +319,6 @@ class SplashView(Screen):
     def refresh_theme_art(self) -> None:
         logo = self.query_one("#ascii-art", Static)
         logo.update(self._logo())
-
-    @work(exclusive=True, group="oui-db")
-    async def action_update_oui(self) -> None:
-        if not self._oui_update_allowed():
-            return
-        self._show_oui_progress()
-
-        started = False
-        last_pct = -1
-
-        def _progress(done: int, total: int | None) -> None:
-            # Runs in the download worker thread; marshal to the UI thread and
-            # throttle to whole-percent (or 256 KB) steps to avoid spamming it.
-            nonlocal started, last_pct
-            started = True
-            pct = int(done / total * 100) if total else done // (256 * 1024)
-            if pct == last_pct:
-                return
-            last_pct = pct
-            self.app.call_from_thread(self._update_oui_progress, done, total)
-
-        task = asyncio.create_task(
-            asyncio.to_thread(oui_db.ensure, force=True, progress=_progress)
-        )
-        done, _pending = await asyncio.wait({task}, timeout=OUI_START_TIMEOUT_S)
-
-        # Nothing even began streaming within the start window: a dead/blocked
-        # connection. Abandon this attempt (the worker's own socket timeout reaps
-        # the thread) and surface a clear failure instead of spinning forever.
-        if task not in done and not started:
-            self._fail_oui_progress()
-            return
-
-        try:
-            status = await task
-        except Exception:
-            self._fail_oui_progress()
-            return
-
-        if not status.ok:
-            self._fail_oui_progress()
-            return
-
-        self._finish_oui_progress(status.message)
-        self.set_timer(1.5, self._hide_oui_progress)
-        self.notify(
-            status.message,
-            title="OUI database",
-            severity="information",
-        )
-
-    @staticmethod
-    def _kb(n: int) -> str:
-        return f"{n / 1024:.0f} KB"
-
-    def _oui_percentage(self):
-        """The ProgressBar's built-in '--%' readout, hidden until it's meaningful."""
-        try:
-            return self.query_one("#oui-progress-bar", ProgressBar).query_one(
-                "#percentage"
-            )
-        except Exception:
-            return None
-
-    def _show_oui_progress(self) -> None:
-        panel = self.query_one("#oui-progress", Vertical)
-        panel.display = True
-        self.query_one("#oui-progress-status", Label).update("Updating OUI database…")
-        self.query_one("#oui-progress-bar", ProgressBar).update(total=None)
-        # Indeterminate: don't show "--%" until a real percentage exists.
-        percentage = self._oui_percentage()
-        if percentage is not None:
-            percentage.display = False
-
-    def _update_oui_progress(self, done: int, total: int | None) -> None:
-        bar = self.query_one("#oui-progress-bar", ProgressBar)
-        status = self.query_one("#oui-progress-status", Label)
-        percentage = self._oui_percentage()
-        if total:
-            bar.update(total=total, progress=min(done, total))
-            if percentage is not None:
-                percentage.display = True
-            status.update(
-                f"Downloading OUI database… {self._kb(done)} / {self._kb(total)}"
-            )
-        else:
-            bar.update(total=None)
-            if percentage is not None:
-                percentage.display = False
-            status.update(f"Downloading OUI database… {self._kb(done)}")
-
-    def _finish_oui_progress(self, message: str) -> None:
-        bar = self.query_one("#oui-progress-bar", ProgressBar)
-        if bar.total:
-            bar.update(progress=bar.total)
-        self.query_one("#oui-progress-status", Label).update(message)
-
-    def _fail_oui_progress(self) -> None:
-        self._hide_oui_progress()
-        self.notify(
-            "Was not able to download!",
-            title="OUI database",
-            severity="error",
-        )
-
-    def _hide_oui_progress(self) -> None:
-        self.query_one("#oui-progress", Vertical).display = False
-
-    def _oui_update_allowed(self) -> bool:
-        if self._background_active:
-            return False
-        from wifit3.ui.pref import PreferencesModal
-        from wifit3.ui.screens.diagnostics import AdapterDiagnosticsModal
-
-        if isinstance(self.app.screen, (PreferencesModal, AdapterDiagnosticsModal)):
-            return False
-        return True
 
     def _background_wifi_counts(self) -> tuple[int, int]:
         array = self.app.array
@@ -680,10 +552,7 @@ class SplashView(Screen):
             "start_bluetooth",
             "start_spectrum",
             "offline",
-            "update_oui",
         }:
-            return None
-        if action == "update_oui" and not self._oui_update_allowed():
             return None
         return True
 

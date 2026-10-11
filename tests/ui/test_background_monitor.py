@@ -102,7 +102,6 @@ async def test_background_monitor_stays_on_splash_and_locks_actions(monkeypatch)
         assert modal.query_one("#background-progress-bar", ProgressBar).total is None
         assert "WIFI-APS" in stats and "WIFI-STA" in stats
         assert "      1         2" in stats
-        assert splash.check_action("update_oui", ()) is None
         assert app.check_action("preferences", ()) is None
 
         # Button has a ~0.2s "-active" press-effect debounce (see Textual's

@@ -69,11 +69,23 @@ async def test_spectrum_button_is_disabled_without_an_sdr():
         assert splash.check_action("start_spectrum", ()) is None
 
 
+async def _oui_setting(app, pilot):
+    app.action_preferences()
+    await pilot.pause()
+    from wifit3.ui.pref import OuiDatabaseSetting
+
+    general = app.screen.query_one("#panel-general")
+    setting = general.query_one(OuiDatabaseSetting)
+    assert general.query_one("#app-update-now")
+    assert general.query_one("#prefs-diagnostics")
+    assert general.query_one("#signature-refresh")
+    return setting
+
+
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("no_usb_devices")
 async def test_update_oui_shows_a_download_progress_bar(monkeypatch):
-    """Pressing 'u' reveals a small, centered progress bar below the buttons,
-    fed live by the download, that hides again once it finishes."""
+    """Preferences reveals a progress bar for the OUI download, then finishes it."""
     from textual.widgets import ProgressBar
     from wifit3.id import oui_db
 
@@ -88,20 +100,20 @@ async def test_update_oui_shows_a_download_progress_bar(monkeypatch):
 
     app = WifiteApp()
     async with app.run_test() as pilot:
-        splash = app.screen
-        panel = splash.query_one("#oui-progress")
-        assert panel.display is False       # hidden until invoked
+        setting = await _oui_setting(app, pilot)
+        panel = setting.query_one("#oui-progress")
+        assert panel.display is False
 
-        splash.action_update_oui()
+        setting._run_oui_update()
         for _ in range(40):
             await pilot.pause()
-            if "42 vendors" in str(splash.query_one("#oui-progress-status").render()):
+            if "42 vendors" in str(setting.query_one("#oui-progress-status").render()):
                 break
 
-        bar = splash.query_one("#oui-progress-bar", ProgressBar)
+        bar = setting.query_one("#oui-progress-bar", ProgressBar)
         assert bar.total == 1000
         assert bar.progress == 1000
-        assert "42 vendors" in str(splash.query_one("#oui-progress-status").render())
+        assert "42 vendors" in str(setting.query_one("#oui-progress-status").render())
 
 
 @pytest.mark.asyncio
@@ -116,16 +128,15 @@ async def test_update_oui_hides_progress_on_download_error(monkeypatch):
 
     app = WifiteApp()
     async with app.run_test() as pilot:
-        splash = app.screen
+        setting = await _oui_setting(app, pilot)
         notified = []
-        monkeypatch.setattr(splash, "notify", lambda msg, **kw: notified.append(msg))
-        splash.action_update_oui()
+        monkeypatch.setattr(setting, "notify", lambda msg, **kw: notified.append(msg))
+        setting._run_oui_update()
         for _ in range(40):
             await pilot.pause()
-            if splash.query_one("#oui-progress").display is False:
+            if notified:
                 break
-        # The progress panel must not be left stuck open after a failure.
-        assert splash.query_one("#oui-progress").display is False
+        assert setting.query_one("#oui-progress").display is False
         assert any("Was not able to download" in m for m in notified)
 
 
@@ -135,9 +146,9 @@ async def test_update_oui_times_out_if_download_never_starts(monkeypatch):
     """A connection that never streams bytes must fail fast, not spin forever."""
     import time as _time
     from wifit3.id import oui_db
-    from wifit3.ui.screens import splash as splash_mod
+    from wifit3.ui import pref as pref_mod
 
-    monkeypatch.setattr(splash_mod, "OUI_START_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(pref_mod, "OUI_START_TIMEOUT_S", 0.2)
 
     def _never_starts(*, force, progress=None):
         _time.sleep(0.6)                      # "connecting" but never reports progress
@@ -147,16 +158,16 @@ async def test_update_oui_times_out_if_download_never_starts(monkeypatch):
 
     app = WifiteApp()
     async with app.run_test() as pilot:
-        splash = app.screen
+        setting = await _oui_setting(app, pilot)
         notified = []
-        monkeypatch.setattr(splash, "notify", lambda msg, **kw: notified.append(msg))
-        splash.action_update_oui()
+        monkeypatch.setattr(setting, "notify", lambda msg, **kw: notified.append(msg))
+        setting._run_oui_update()
         for _ in range(60):
             await pilot.pause()
             if notified:
                 break
         assert any("Was not able to download" in m for m in notified)
-        assert splash.query_one("#oui-progress").display is False
+        assert setting.query_one("#oui-progress").display is False
 
 
 @pytest.mark.asyncio
@@ -180,14 +191,14 @@ async def test_update_oui_hides_percentage_until_determinate(monkeypatch):
 
     app = WifiteApp()
     async with app.run_test() as pilot:
-        splash = app.screen
-        splash.action_update_oui()
+        setting = await _oui_setting(app, pilot)
+        setting._run_oui_update()
         for _ in range(40):
             await pilot.pause()
-            if splash.query_one("#oui-progress").display:
+            if setting.query_one("#oui-progress").display:
                 break
 
-        pct = splash.query_one("#oui-progress-bar").query_one("#percentage")
+        pct = setting.query_one("#oui-progress-bar").query_one("#percentage")
         # Indeterminate phase: percentage hidden.
         assert pct.display is False
 

@@ -4,7 +4,7 @@ from pathlib import Path
 from rich.padding import Padding
 from rich.style import Style
 from rich.text import Text
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.color import Color
@@ -12,8 +12,19 @@ from textual.containers import Horizontal, Vertical, VerticalGroup, VerticalScro
 from textual.events import Event
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Button, Checkbox, ContentSwitcher, Input, Label, Select, Tab, Tabs
+from textual.widgets import (
+    Button,
+    Checkbox,
+    ContentSwitcher,
+    Input,
+    Label,
+    ProgressBar,
+    Select,
+    Tab,
+    Tabs,
+)
 
+from wifit3.id import oui_db
 from wifit3.observe.signature_pack import (
     export_user_pack,
     import_user_pack,
@@ -234,7 +245,7 @@ class SignaturePackSetting(VerticalGroup):
     """
 
     def compose(self) -> ComposeResult:
-        yield _pref_tag("Signature pack")
+        yield _pref_tag("Catalog and signatures")
         yield Label(
             "[dim]Stock rules refresh from GitHub. Your rules stay in a separate file. "
             "Separated trackers and Remote ID are marked on the scanner.[/dim]",
@@ -243,7 +254,7 @@ class SignaturePackSetting(VerticalGroup):
         yield Label(f"[dim]{stock_path()}[/dim]", markup=True)
         yield Label(f"[dim]{user_path()}[/dim]", markup=True)
         with Horizontal(id="signature-actions"):
-            yield Button("Refresh stock", id="signature-refresh")
+            yield Button("Update now", id="signature-refresh")
             yield Button("Export user rules", id="signature-export")
         yield Input(placeholder="Path to a signature JSON to import", id="signature-import-path")
         yield Button("Import user rules", id="signature-import")
@@ -278,6 +289,133 @@ class SignaturePackSetting(VerticalGroup):
             title="Signatures",
             severity="information" if status.ok else "error",
         )
+
+
+# Give up the OUI refresh if the download hasn't even begun streaming bytes within
+# this many seconds (a dead/blocked connection), and tell the user instead of
+# leaving the bar spinning. Once bytes start flowing we let it run to completion.
+OUI_START_TIMEOUT_S = 10.0
+
+
+class OuiDatabaseSetting(VerticalGroup):
+    """Manual IEEE OUI refresh, with the same progress bar the splash used to show."""
+
+    DEFAULT_CSS = _PREF_SECTION_CSS + """
+    #oui-update { margin-top: 1; }
+    #oui-progress {
+        display: none;
+        height: auto;
+        margin-top: 1;
+    }
+    #oui-progress-status {
+        width: 1fr;
+        color: $text-muted;
+    }
+    #oui-progress-bar { width: 1fr; margin-top: 1; }
+    #oui-progress-bar Bar { width: 1fr; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield _pref_tag("OUI database")
+        yield Label(
+            "[dim]IEEE manufacturer names. A fresh copy is kept for 30 days.[/dim]",
+            markup=True,
+        )
+        yield Button("Update now", id="oui-update")
+        with Vertical(id="oui-progress"):
+            yield Label("", id="oui-progress-status")
+            yield ProgressBar(total=None, show_eta=False, id="oui-progress-bar")
+
+    @on(Button.Pressed, "#oui-update")
+    def update_pressed(self) -> None:
+        self._run_oui_update()
+
+    @work(exclusive=True, group="oui-db")
+    async def _run_oui_update(self) -> None:
+        self._show_oui_progress()
+        started = False
+        last_pct = -1
+
+        def _progress(done: int, total: int | None) -> None:
+            nonlocal started, last_pct
+            started = True
+            pct = int(done / total * 100) if total else done // (256 * 1024)
+            if pct == last_pct:
+                return
+            last_pct = pct
+            self.app.call_from_thread(self._update_oui_progress, done, total)
+
+        task = asyncio.create_task(
+            asyncio.to_thread(oui_db.ensure, force=True, progress=_progress)
+        )
+        done, _pending = await asyncio.wait({task}, timeout=OUI_START_TIMEOUT_S)
+        if task not in done and not started:
+            self._fail_oui_progress()
+            return
+        try:
+            status = await task
+        except Exception:
+            self._fail_oui_progress()
+            return
+        if not status.ok:
+            self._fail_oui_progress()
+            return
+        self._finish_oui_progress(status.message)
+        self.set_timer(1.5, self._hide_oui_progress)
+        self.notify(status.message, title="OUI database", severity="information")
+
+    @staticmethod
+    def _kb(n: int) -> str:
+        return f"{n / 1024:.0f} KB"
+
+    def _oui_percentage(self):
+        try:
+            return self.query_one("#oui-progress-bar", ProgressBar).query_one("#percentage")
+        except Exception:
+            return None
+
+    def _show_oui_progress(self) -> None:
+        panel = self.query_one("#oui-progress", Vertical)
+        panel.display = True
+        self.query_one("#oui-progress-status", Label).update("Updating OUI database…")
+        self.query_one("#oui-progress-bar", ProgressBar).update(total=None)
+        percentage = self._oui_percentage()
+        if percentage is not None:
+            percentage.display = False
+
+    def _update_oui_progress(self, done: int, total: int | None) -> None:
+        bar = self.query_one("#oui-progress-bar", ProgressBar)
+        status = self.query_one("#oui-progress-status", Label)
+        percentage = self._oui_percentage()
+        if total:
+            bar.update(total=total, progress=min(done, total))
+            if percentage is not None:
+                percentage.display = True
+            status.update(
+                f"Downloading OUI database… {self._kb(done)} / {self._kb(total)}"
+            )
+        else:
+            bar.update(total=None)
+            if percentage is not None:
+                percentage.display = False
+            status.update(f"Downloading OUI database… {self._kb(done)}")
+
+    def _finish_oui_progress(self, message: str) -> None:
+        bar = self.query_one("#oui-progress-bar", ProgressBar)
+        if bar.total:
+            bar.update(progress=bar.total)
+        self.query_one("#oui-progress-status", Label).update(message)
+
+    def _fail_oui_progress(self) -> None:
+        self._hide_oui_progress()
+        self.notify(
+            "Was not able to download!",
+            title="OUI database",
+            severity="error",
+        )
+
+    def _hide_oui_progress(self) -> None:
+        self.query_one("#oui-progress", Vertical).display = False
 
 
 class PreferencesModal(ModalScreen):
@@ -366,10 +504,15 @@ class PreferencesModal(ModalScreen):
                             value=Config.auto_check_updates,
                             id="auto_check_updates",
                         )
+                        yield Button("Update now", id="app-update-now")
+                    yield SignaturePackSetting()
+                    yield OuiDatabaseSetting()
+                    with Vertical(classes="pref-field"):
+                        yield _pref_tag("Diagnostics")
+                        yield Button("Open diagnostics", id="prefs-diagnostics")
                 with VerticalScroll(id="panel-scanner", classes="pref-panel-scroll"):
                     yield SortDelaySetting()
                     yield ApExpirySetting()
-                    yield SignaturePackSetting()
                 with VerticalScroll(id="panel-safety", classes="pref-panel-scroll"):
                     yield ActiveIntensitySetting()
                     with Vertical(classes="pref-field"):
@@ -411,6 +554,14 @@ class PreferencesModal(ModalScreen):
                 with VerticalScroll(id="panel-gps", classes="pref-panel-scroll"):
                     yield GpsSetting()
             yield SaveFooter()
+
+    @on(Button.Pressed, "#app-update-now")
+    def update_now_pressed(self) -> None:
+        self.app.check_updates(show_current=True)
+
+    @on(Button.Pressed, "#prefs-diagnostics")
+    def diagnostics_pressed(self) -> None:
+        self.app.action_diagnostics()
 
     @on(Tabs.TabActivated, "#prefs-tabs")
     def prefs_tab_activated(self, event: Tabs.TabActivated) -> None:

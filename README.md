@@ -87,7 +87,7 @@ an SSID without a BSSID and reused across that SSID's access points.
 
 ### Navigation
 
-The startup screen shows a centered row of primary actions: **START WI-FI**, an adaptive **SCAN BT / SCAN BLE / SCAN BT+BLE** button, **RF-SPECTRUM**, **BACKGROUND**, and **OFFLINE DB**. Buttons and footer keys stay visible; they disable when no checked adapter or radio can run that action (for example unchecked Wi-Fi cards, OS BLE off with no USB Bluetooth selected, or no HackRF row checked). Disabled Wi-Fi reads **WI-FI** without the **START** prefix. `U` refreshes the IEEE OUI database and shows a compact download progress bar below the buttons.
+The startup screen shows a centered row of primary actions: **START WI-FI**, an adaptive **SCAN BT / SCAN BLE / SCAN BT+BLE** button, **RF-SPECTRUM**, **BACKGROUND**, and **OFFLINE DB**. Buttons and footer keys stay visible; they disable when no checked adapter or radio can run that action (for example unchecked Wi-Fi cards, OS BLE off with no USB Bluetooth selected, or no HackRF row checked). Disabled Wi-Fi reads **WI-FI** without the **START** prefix. OUI, signature, and app updates live under **Preferences → General**.
 
 | Key | Where | Action |
 |---|---|---|
@@ -97,7 +97,6 @@ The startup screen shows a centered row of primary actions: **START WI-FI**, an 
 | `R` | Startup | Open the receive-only RF Spectrum analyzer (checked HackRF) |
 | `O` | Startup | Open **Offline DB** (browse saved Wi-Fi and Bluetooth history with no adapter started) |
 | `C` | Offline DB | **Clear-DB** — delete saved Wi-Fi and/or Bluetooth history (type `DELETE NOW!` to confirm) |
-| `U` | Startup | Update the local OUI database (progress bar; 10 s start timeout on failure) |
 | `Ctrl+P` | Everywhere | Preferences (tabbed). `A` About, `T` targets library |
 | `Shift+T` | Wi-Fi/BLE scanners, Offline DB, Focus | Open Targets & whitelist; **New** uses the current row or focused device |
 | `Ctrl+D` | Everywhere | Adapter and GPS diagnostics |
@@ -173,7 +172,7 @@ All hardware panels use the same bordered style and a **shared width** so rows s
   Filter text also matches country codes; export CSV/JSON includes country.
 - Client rows show the associated AP, manufacturer, signal, packets, age, and probe requests.
 - AP expiry is set in Preferences, including a Never option.
-- Manufacturer names come from the local OUI database. On the startup screen, `U` downloads IEEE `oui.txt` immediately with a progress bar under the action buttons (percentage shown only once the size is known). If the download does not start within 10 seconds, you get a failure toast. When an update is required automatically, the cache is refreshed if it is older than 30 days. The file is stored in the operating system's wifit3 cache directory.
+- Manufacturer names come from the local OUI database. **Preferences → General → OUI database → Update now** downloads IEEE `oui.txt` with an in-dialog progress bar (percentage shown only once the size is known). If the download does not start within 10 seconds, you get a failure toast. When an update is required automatically, the cache is refreshed if it is older than 30 days. The file is stored in the operating system's wifit3 cache directory.
 - Saved **targets** show a red `!`; **whitelist** entries show a green `◇`
   (even when auto-lock is off). The first time each enabled entry is seen in a
   session, a short toast names the alias.
@@ -580,9 +579,10 @@ The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and 
 - **Observer signatures** sit on top of that compiled catalog. Decoders ship
   inside every OS binary. Match rules live in two JSON files in the OS
   user-data directory (`signatures-stock.json`, seeded on first launch, and
-  `signatures-user.json`). **Preferences → Scanner** refreshes stock from the
-  pinned GitHub raw URL, exports your rules into `captures/scan_exports/`, and
-  imports a file whose path you type. A refresh never replaces your file.
+  `signatures-user.json`). **Preferences → General → Catalog and signatures**
+  refreshes stock from the pinned GitHub raw URL, exports your rules into
+  `captures/scan_exports/`, and imports a file whose path you type. A refresh
+  never replaces your file.
   Adding a UUID, company id, SSID fragment, or name does not require a new
   `wifit3` binary; a new message layout does.
 - Built-in decoders read public advertisements and show state, not only a
@@ -837,8 +837,8 @@ form). Each setting has a short label above the control.
 
 | Tab | Settings |
 |-----|----------|
-| **General** | Theme, check for updates on startup |
-| **Scanner** | Table sort delay, hide inactive Wi-Fi/Bluetooth rows, signature pack (refresh stock, export or import user rules) |
+| **General** | Theme, check for updates on startup, **Update now** (app), catalog/signatures, OUI database, open diagnostics |
+| **Scanner** | Table sort delay, hide inactive Wi-Fi/Bluetooth rows |
 | **Safety** | Deauth/broadcast intensity, confirm before active actions, WPS PBC auto-capture |
 | **Captures** | Save directory, `.pcap` handshakes, target reacquire timeout, capture file size and rotation, auto-lock saved targets |
 | **GPS** | Serial port (blank = auto), movement threshold (≥20 m), max fix error radius |
@@ -850,9 +850,9 @@ Automatic update checking is off until it is enabled. When it is on, startup
 sends one HTTPS request to the
 [yadox666/wifit3-ng latest-release API](https://api.github.com/repos/yadox666/wifit3-ng/releases/latest).
 It never sends scan data, device identifiers, credentials, or other local
-content. **About → Check for updates** runs the same check on demand, reports
-the current version, and shows network or certificate failures instead of
-silently ignoring them.
+content. **Preferences → General → Update now** and **About → Check for updates**
+run the same check on demand, report the current version, and show network or
+certificate failures instead of silently ignoring them.
 
 For frozen macOS and Linux releases, an available update offers **Install
 update**. Installation remains opt-in: wifit3 selects only the published asset

@@ -171,24 +171,6 @@ class WifiteApp(App):
         width: 16;
         height: 3;
     }
-    #oui-progress {
-        display: none;
-        width: 44;
-        height: auto;
-        margin-top: 1;
-    }
-    #oui-progress-status {
-        width: 1fr;
-        content-align: center middle;
-        color: $text-muted;
-    }
-    #oui-progress-bar {
-        width: 1fr;
-        margin-top: 1;
-    }
-    #oui-progress-bar Bar {
-        width: 1fr;
-    }
     #spectrum-btn {
         margin-left: 2;
     }
