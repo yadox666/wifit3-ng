@@ -4,6 +4,28 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
+## 0.3.21 - 2026-10-11
+
+### Added
+
+- Persistent **own-station** tracking: MACs this app transmits as (spoofed probe
+  stations, active-monitor addresses, card MACs) are remembered across the
+  session and in AP history so they never reappear as clients after the radio
+  releases them. Enterprise-probe PCAPs under the captures directory are scanned
+  at startup to import those uplink stations.
+- macOS splash **OS BLE radio** polling via IOBluetooth controller power state,
+  so turning Bluetooth back on in System Settings refreshes the OS BLE row
+  without restarting the app.
+- USB Bluetooth reclaim can power the macOS controller off through IOBluetooth
+  (with optional ``blueutil`` fallback) and soft-block Linux Bluetooth through
+  ``/dev/rfkill`` before falling back to the ``rfkill`` command.
+
+### Fixed
+
+- **40 MHz** channel specs now derive the extension from the HT secondary
+  offset instead of a possibly disagreeing VHT/HE ``center_channel_0``, fixing
+  mistunes on some AX routers.
+
 ## 0.3.20 - 2026-10-10
 
 ### Added
