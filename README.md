@@ -1,9 +1,9 @@
 # wifit3-ng
-> Version 0.3.23. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
+> Version 0.3.24. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
 
-**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.23 - yadox666`.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.24 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.23** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.24** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
@@ -49,6 +49,10 @@ These capabilities come from the original [derv82/wifit3](https://github.com/der
 ## Fork additions (yadox666)
 
 The sections below are the additions in this fork (0.3.4 through current). They sit on top of the original auditor.
+
+**0.3.24:** Linux session USB claim / soft reclaim, ``start.sh`` Python package bootstrap, HackRF usbfs grant, and RTL8814AU 5 GHz
+mgmt TX at OFDM 6 Mbps. Details in
+[CHANGELOG → 0.3.24](CHANGELOG.md#0324---2026-10-11).
 
 **0.3.23:** **AntennaTune** live monitor on AP/client Focus, **Detect AP
 name** for hidden SSIDs, and Focus fingerprint/AP-banner jumps between
@@ -993,7 +997,7 @@ Retail vendors may change chipsets without changing a product name, so support i
 
 ## Installation and running
 
-Python 3.11 or newer is required to run from source. Release **0.3.23** binaries are published from this fork.
+Python 3.11 or newer is required to run from source. Release **0.3.24** binaries are published from this fork.
 
 ### Option 1: Download a prebuilt binary
 

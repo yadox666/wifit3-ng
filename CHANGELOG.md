@@ -4,6 +4,29 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
+## 0.3.24 - 2026-10-11
+
+### Added
+
+- Linux **session USB claim**: unbind + grant a writable ``/dev/bus/usb`` node
+  for the current run without writing persistent udev/modprobe files when the
+  host already allows it (or after a one-shot ``pkexec`` chmod).
+- Opt-in driver **soft reclaim** (``LINUX_SOFT_RECLAIM``): after blacklist
+  install, try a libusb detach/claim before asking for a physical replug.
+- ``./start.sh`` on Linux installs missing ``python3`` / venv / headers through
+  the distro package manager and warns against launching with ``sudo``.
+
+### Changed
+
+- Persistent Linux udev rules prefer ``plugdev`` / ``dialout`` / ``usb`` groups,
+  then ``sudo`` / ``wheel``, and fall back to ``OWNER="$USER"`` instead of
+  failing when the user is not in an admin group.
+- HackRF discovery also reads Linux sysfs; spectrum open uses the session USB
+  grant path when the usbfs node is not writable.
+- Splash auto Bluetooth reclaim stays non-privileged; explicit reclaim may
+  elevate. AR9271 warm claim detaches an active kernel driver first.
+- RTL8814AU DKMS injects 5 GHz management frames at OFDM 6 Mbps (not CCK 1 Mbps).
+
 ## 0.3.23 - 2026-10-11
 
 ### Added
