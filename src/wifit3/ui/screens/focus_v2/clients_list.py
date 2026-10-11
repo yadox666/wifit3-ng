@@ -204,29 +204,46 @@ class FingerprintModal(ModalScreen[None]):
         overflow-y: auto;
         border: round $primary; background: $panel; padding: 0 1;
     }
+    FingerprintModal #fp-focus-action {
+        width: 100%;
+        margin: 1 0 0 0;
+    }
     """
 
     def __init__(
         self, mac: str, fp: Fingerprint | None, *, details: str = "",
         offset: tuple[int, int],
+        action_label: str | None = None,
+        title: str | None = None,
     ) -> None:
         super().__init__()
         self._mac = mac
         self._fp = fp
         self._details = details
         self._offset = offset
+        self._action_label = (action_label or "").strip() or None
+        self._title = (title or "").strip() or None
 
     def compose(self) -> ComposeResult:
-        heading = f"{self._fp.emoji} {self._fp.label}" if self._fp else self._mac
+        if self._title:
+            heading = self._title
+        elif self._fp:
+            heading = f"{self._fp.emoji} {self._fp.label}"
+        else:
+            heading = self._mac
         rows = [Label(heading)]
-        rows.extend(Label(line) for line in self._details.splitlines()[1:] if line)
+        detail_lines = [line for line in self._details.splitlines() if line]
+        if self._title or not self._fp:
+            body = detail_lines
+        else:
+            body = detail_lines[1:]
+        rows.extend(Label(line) for line in body)
         oui = Text("OUI: ", style="dim")
         oui.append_text(mac_address_text(self._mac[:8], style="dim"))
-        box = Vertical(
-            *rows,
-            Label(oui),
-            id="fp-box",
-        )
+        children: list = [*rows, Label(oui)]
+        if self._action_label:
+            children.append(Button(self._action_label, id="fp-focus-action", variant="primary"))
+        box = Vertical(*children, id="fp-box")
         box.styles.offset = self._offset
         yield box
 
@@ -242,12 +259,34 @@ class FingerprintModal(ModalScreen[None]):
         x, y = self._offset
         box.styles.offset = (max(0, min(x, max_x)), max(0, min(y, max_y)))
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "fp-focus-action":
+            event.stop()
+            self.dismiss(True)
+
     def on_click(self, event: events.Click) -> None:
         if event.widget is self:            # the transparent backdrop, not the box or its labels
             self.dismiss()
 
 
 class ClientsList(Vertical):
+    class AssociatedApClicked(Message):
+        """The associated-AP banner in Client Focus was clicked."""
+
+        def __init__(self, ap, offset: tuple[int, int]) -> None:
+            super().__init__()
+            self.ap = ap
+            self.offset = offset
+
+    def on_click(self, event: events.Click) -> None:
+        ap = self._associated_ap
+        if ap is None:
+            return
+        if getattr(event.widget, "id", None) != "associated-ap-banner":
+            return
+        event.stop()
+        self.post_message(self.AssociatedApClicked(ap, (event.screen_x, event.screen_y)))
+
     DEFAULT_CSS = """
     ClientsList #client-web-search-box {
         width: 100%; height: 3; min-height: 3;
@@ -442,14 +481,16 @@ class ClientsList(Vertical):
         if ap is None:
             banner.display = False
             banner.update("")
+            banner.tooltip = None
             return
         ssid = ap.ssid or "‹hidden›"
         banner.update(
             Text("🛜 AP  ", style="bold")
-            + Text(ssid, style="bold")
+            + Text(ssid, style="bold underline")
             + Text("  ·  ", style="dim")
             + mac_address_text(ap.bssid, style="dim"),
         )
+        banner.tooltip = "AP focus"
         banner.display = True
 
     def set_open_network_metadata(

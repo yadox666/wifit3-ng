@@ -760,11 +760,11 @@ class PeapHoneypotCampaign(Campaign):
         )
 
     def _target_clients(self) -> list[bytes]:
-        target = self.target_ap.bssid.casefold()
+        from wifit3.campaigns.deauth_targets import associated_client_macs
+
         return [
-            str_to_mac(client.mac)
-            for client in self.array.clients.values()
-            if (client.bssid or "").casefold() == target
+            str_to_mac(mac)
+            for mac in associated_client_macs(self.array, self.target_ap.bssid)
         ]
 
     def _on_probe(self, packet, source: bytes, source_text: str) -> None:

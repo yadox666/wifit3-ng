@@ -50,6 +50,9 @@ from .client_endpoint import ClientEndpoint
 from .clients_list import ClientsList, ClientWidget, FingerprintModal
 from .log_band import LogBand
 from .packet_dashboard import PacketDashboard
+from .antenna_tune_modal import AntennaTuneModal
+from wifit3.ui.antenna_tune import client_sample_provider
+from wifit3.ui.antenna_tune_probe import open_session
 from .tx_picker import TxDevicePicker
 
 if TYPE_CHECKING:
@@ -84,6 +87,7 @@ class ClientFocusView(Screen):
         Binding("x", "toggle_capture", "Capture PCAP", show=True),
         Binding("y", "open_catalog", "Catalog", show=True),
         Binding("shift+t", "targets_editor", "Targets", show=True),
+        Binding("t", "antenna_tune", "AntennaTune", show=True),
     ]
 
     CSS = """
@@ -669,9 +673,113 @@ class ClientFocusView(Screen):
             self._network_store.metadata if self._network_store is not None else None
         )
         details = event.details + "\n" + client_network_details(metadata, event.mac)
+        self._fingerprint_mac = event.mac
         self.app.push_screen(
-            FingerprintModal(event.mac, event.fingerprint, details=details, offset=event.offset),
+            FingerprintModal(
+                event.mac, event.fingerprint, details=details, offset=event.offset,
+                action_label="CLIENT FOCUS",
+            ),
+            self._on_client_focus_chosen,
         )
+
+    def _on_client_focus_chosen(self, chosen: bool | None) -> None:
+        if chosen:
+            self.run_worker(
+                self._retarget_client(getattr(self, "_fingerprint_mac", "")),
+                exclusive=True,
+                group="client-focus-switch",
+            )
+
+    async def _retarget_client(self, mac: str) -> None:
+        ap = self._target_ap
+        array = self.app.array
+        if ap is None or array is None or not mac:
+            return
+        current = self._target_client
+        if current is not None and current.mac.casefold() == mac.casefold():
+            return
+        client = next(
+            (
+                candidate
+                for candidate in array.clients.values()
+                if candidate.mac.casefold() == mac.casefold()
+                and candidate.bssid == ap.bssid
+                and not getattr(candidate, "historical", False)
+            ),
+            None,
+        )
+        if client is None:
+            self.notify("That client is not live on this AP", severity="warning")
+            return
+        self.app.target_client = client
+        self.app.target_ap = ap
+        await self._enter_target()
+
+    def on_clients_list_associated_ap_clicked(self, event: ClientsList.AssociatedApClicked) -> None:
+        ap = event.ap
+        if ap is None:
+            return
+        ssid = ap.ssid or "‹hidden›"
+        channel = getattr(ap, "channel", None)
+        encryption = getattr(ap, "encryption", "") or ""
+        lines = []
+        if channel:
+            lines.append(f"Channel {channel}")
+        if encryption:
+            lines.append(str(encryption))
+        self.app.push_screen(
+            FingerprintModal(
+                ap.bssid,
+                None,
+                details="\n".join(lines),
+                offset=event.offset,
+                action_label="AP FOCUS",
+                title=ssid,
+            ),
+            self._on_ap_focus_chosen,
+        )
+
+    def _on_ap_focus_chosen(self, chosen: bool | None) -> None:
+        if chosen:
+            self.run_worker(self._open_ap_focus(), exclusive=True, group="ap-focus-switch")
+
+    async def _open_ap_focus(self) -> None:
+        ap = self._target_ap or getattr(self.app, "target_ap", None)
+        if ap is None:
+            self.notify("This client is not associated with a live AP", severity="warning")
+            return
+        self.app.target_ap = ap
+        self.app.target_client = None
+        await self.stop_honeypot()
+        self.stop_capture(notify=False)
+        self._stop_network_analysis()
+        from wifit3.ui.screens.focus_v2.screen import FocusViewV2
+
+        below = self.app.screen_stack[-2] if len(self.app.screen_stack) >= 2 else None
+        if isinstance(below, FocusViewV2):
+            self.app.pop_screen()
+            return
+        self.app.push_screen("focus")
+
+    def action_antenna_tune(self) -> None:
+        client = getattr(self.app, "target_client", None)
+        array = getattr(self.app, "array", None)
+        ap = None
+        if client is not None and client.bssid and array is not None:
+            ap = array.access_points.get(client.bssid.lower())
+        session = open_session(self.app, mode="client", channel=getattr(ap, "channel", None))
+        provider = client_sample_provider(self.app, session)
+        self.app.push_screen(AntennaTuneModal(provider, session))
+
+    def on_client_endpoint_antenna_tune_requested(
+        self, _event: ClientEndpoint.AntennaTuneRequested,
+    ) -> None:
+        self.action_antenna_tune()
+
+    def on_packet_dashboard_antenna_tune_requested(
+        self, _event: PacketDashboard.AntennaTuneRequested,
+    ) -> None:
+        self.action_antenna_tune()
 
     def on_client_endpoint_identity_requested(self, event: ClientEndpoint.IdentityRequested) -> None:
         self._log("[bold]Client details[/bold]")

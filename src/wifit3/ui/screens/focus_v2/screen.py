@@ -48,6 +48,7 @@ from wifit3.targeting import is_wifi_ap_whitelisted, is_wifi_client_whitelisted
 from wifit3.ui.screens.confirm_active import ConfirmActiveActionModal, ConfirmLeaveFocusModal
 from wifit3.campaigns.pin import WpsCampaign, load_run_state, run_progress_line
 from wifit3.campaigns.deauth import DeauthCampaign
+from wifit3.campaigns.deauth_decloak import DeauthDecloakCampaign
 from wifit3.campaigns.pbc import WpsPbcCapture
 from wifit3.campaigns.probe import probe_ap
 from wifit3.campaigns.enterprise_probe import EnterpriseProbe, EnterpriseProbeResult
@@ -94,6 +95,9 @@ from .cards_column import CardsColumn
 from .tx_picker import TxDevicePicker
 from .clients_list import ClientsList, ClientWidget, FingerprintModal
 from .packet_dashboard import PacketDashboard
+from .antenna_tune_modal import AntennaTuneModal
+from wifit3.ui.antenna_tune import ap_sample_provider
+from wifit3.ui.antenna_tune_probe import open_session
 from .log_band import LogBand
 from .router_endpoint import RouterEndpoint
 from .enterprise_panel import EnterpriseLabChoice, EnterprisePanel, assessment_markdown
@@ -124,6 +128,7 @@ _PBC_RETRY_COOLDOWN_S = 3.0
 _ATTACK_BUTTONS = [
     ("btn-enterprise", "Enterprise"),
     ("btn-gen-ivs", "ARP Replay"), ("btn-chop", "ChopChop"), ("btn-deauth", "AutoDeauth"),
+    ("btn-deauth-decloak", "Detect AP name"),
     ("btn-pmkid", "PMKID"), ("btn-fake-connect", "Fake-Connect"),
     ("btn-wps-info", "WPS Info"), ("btn-wps-pin", "WPS PIN"),
     ("btn-eviltwin", "EvilTwin"),
@@ -138,6 +143,11 @@ _BUTTON_TIPS = {
     "ChopChop": "Forge a replayable packet",
     "Stop Chop": "Interrupt chopping and return to ARP replay",
     "AutoDeauth": "De-authenticate clients 1-by-1, then de-authenticates broadcast. Loops.",
+    "Detect AP name": (
+        "Deauth associated clients (strongest signal first) until reconnect traffic reveals "
+        "the hidden network name"
+    ),
+    "Stop detecting": "Stop deauth-driven hidden SSID discovery",
     "PMKID": "Associate to extract PMKID\n(some APs not applicable)",
     "Fake-Connect": "Associate a fake client; OPEN networks also test Internet access",
     "Disconnect": "Send a client-leaving frame and end the temporary association",
@@ -215,6 +225,7 @@ class FocusViewV2(Screen):
         Binding("s", "unsilence", "unSilence", show=True),
         Binding("v", "open_vault", "Vault", show=True),
         Binding("shift+t", "targets_editor", "Targets", show=True),
+        Binding("t", "antenna_tune", "AntennaTune", show=True),
     ]
 
     CSS = """
@@ -676,6 +687,36 @@ class FocusViewV2(Screen):
         self._refresh_chop_button(ap, active, probing)
         self._refresh_wps_info_button(ap)
         self._refresh_stop_pbc_button(probing)
+        self._refresh_deauth_decloak_button(ap, probing)
+
+    def _live_associated_client_count(self) -> int:
+        return sum(
+            1
+            for client in self._live_client_list()
+            if not getattr(client, "historical", False)
+        )
+
+    def _refresh_deauth_decloak_button(self, ap, probing: bool) -> None:
+        btn = self.query_one("#btn-deauth-decloak", Button)
+        live = self._live_associated_client_count()
+        active = Campaign.active
+        running = active is not None and active.key == "deauth_decloak"
+        visible = DeauthDecloakCampaign.visible(ap)
+        btn.display = visible or running
+        reason = DeauthDecloakCampaign.ineligible_reason(
+            ap, live_client_count=live,
+        ) or ""
+        if probing and not running:
+            reason = "Disabled while probing"
+        if running:
+            btn.label = DeauthDecloakCampaign.run_label
+            btn.variant = DeauthDecloakCampaign.run_variant
+            btn.disabled = False
+        else:
+            btn.label = DeauthDecloakCampaign.idle_label
+            btn.variant = DeauthDecloakCampaign.idle_variant
+            btn.disabled = bool(reason)
+        btn.tooltip = reason or _BUTTON_TIPS.get(str(btn.label), "")
 
     def _refresh_chop_button(self, ap, active, probing: bool) -> None:
         """ChopChop: a WEP sub-action, enabled only while the WEP campaign runs."""
@@ -1158,6 +1199,8 @@ class FocusViewV2(Screen):
             self.action_enterprise()
         elif bid == "deauth-all":
             self._request_deauth_broadcast()
+        elif bid == "btn-deauth-decloak":
+            self._request_detect_ap_name()
         elif bid == "btn-deauth":
             self._request_campaign("deauth")
         elif bid == "btn-pmkid":
@@ -1191,9 +1234,57 @@ class FocusViewV2(Screen):
             + "\n"
             + client_network_details(metadata, event.mac)
         )
-        self.app.push_screen(FingerprintModal(
-            event.mac, event.fingerprint, details=details, offset=event.offset,
-        ))
+        self._fingerprint_mac = event.mac
+        self.app.push_screen(
+            FingerprintModal(
+                event.mac, event.fingerprint, details=details, offset=event.offset,
+                action_label="CLIENT FOCUS",
+            ),
+            self._on_client_focus_chosen,
+        )
+
+    def _on_client_focus_chosen(self, chosen: bool | None) -> None:
+        if chosen:
+            self._open_client_focus(getattr(self, "_fingerprint_mac", ""))
+
+    def _open_client_focus(self, mac: str) -> None:
+        """Leave this AP view stacked underneath and open Client Focus for ``mac``."""
+        ap = getattr(self.app, "target_ap", None)
+        array = getattr(self.app, "array", None)
+        if ap is None or array is None or not mac:
+            return
+        client = next(
+            (
+                candidate
+                for candidate in array.clients.values()
+                if candidate.mac.casefold() == mac.casefold()
+                and candidate.bssid == ap.bssid
+                and not getattr(candidate, "historical", False)
+            ),
+            None,
+        )
+        if client is None:
+            self.notify("That client is not live on this AP", severity="warning")
+            return
+        self.app.target_client = client
+        self.app.target_ap = ap
+        self.app.push_screen("client-focus")
+
+    def action_antenna_tune(self) -> None:
+        ap = getattr(self.app, "target_ap", None)
+        session = open_session(self.app, mode="ap", channel=getattr(ap, "channel", None))
+        provider = ap_sample_provider(self.app, self._beacon_samples, session)
+        self.app.push_screen(AntennaTuneModal(provider, session))
+
+    def on_router_endpoint_antenna_tune_requested(
+        self, _event: RouterEndpoint.AntennaTuneRequested,
+    ) -> None:
+        self.action_antenna_tune()
+
+    def on_packet_dashboard_antenna_tune_requested(
+        self, _event: PacketDashboard.AntennaTuneRequested,
+    ) -> None:
+        self.action_antenna_tune()
 
     def on_router_endpoint_identity_requested(self, event: RouterEndpoint.IdentityRequested) -> None:
         self._log_identity_details_text(event.details)
@@ -1985,6 +2076,33 @@ class FocusViewV2(Screen):
             self._toggle_eviltwin,
         )
 
+    def _request_detect_ap_name(self) -> None:
+        cur = self._controls.current
+        if cur is not None and cur.key == "deauth_decloak":
+            self._controls.request_stop()
+            self.refresh_buttons()
+            return
+        ap = self._target_ap
+        if ap is not None and is_wifi_ap_whitelisted(self.app.target_store, ap.bssid):
+            self.notify(
+                f"{ap.bssid} is on the whitelist",
+                severity="warning",
+                title="Whitelist",
+            )
+            return
+        blocked = DeauthDecloakCampaign.ineligible_reason(
+            ap, live_client_count=self._live_associated_client_count(),
+        )
+        if blocked:
+            self.notify(blocked, severity="warning", title="Detect AP name")
+            return
+        self._confirm_active(
+            "Detect AP name",
+            "Deauthenticates associated clients one at a time (strongest signal first) "
+            "and waits for reconnect traffic to reveal the hidden network name.",
+            self._start_deauth_decloak,
+        )
+
     def _request_deauth_broadcast(self) -> None:
         ap = self._target_ap
         if ap is not None and is_wifi_ap_whitelisted(self.app.target_store, ap.bssid):
@@ -2306,6 +2424,30 @@ class FocusViewV2(Screen):
             self._log("[bold green]✓ Deauth provoked a crackable handshake[/bold green]")
         else:
             self._log("[bright_red bold]Deauth stopped[/]")
+
+    def _start_deauth_decloak(self) -> None:
+        ap = self._target_ap
+        array = self.app.array
+        if not ap or not array:
+            self._log("[red]✗ No target / interface. Aborting SSID detection.[/red]")
+            return
+        self._log(
+            f"[bold]Detect AP name[/bold] on hidden [bold]{escape(ap.bssid)}[/bold]: "
+            "deauth → wait for SSID reveal",
+        )
+        self._controls.start(DeauthDecloakCampaign, array, ap, log=self._log)
+        self.refresh_buttons()
+
+    def _finish_deauth_decloak(self, camp) -> None:
+        if camp.revealed_ssid:
+            self._log(
+                f"[bold green]✓ Hidden SSID learned:[/bold green] "
+                f"[cyan]{escape(camp.revealed_ssid)}[/cyan]",
+            )
+        elif camp.stopped:
+            self._log("[bright_red bold]Detect AP name stopped[/]")
+        else:
+            self._log("[yellow]Detect AP name finished without learning the SSID[/yellow]")
 
     # ----- EvilTwin ----------------------------------------------------------
 

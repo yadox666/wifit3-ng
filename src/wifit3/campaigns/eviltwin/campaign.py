@@ -140,9 +140,12 @@ class EvilTwinCampaign(Campaign):
 
     def _target_clients(self) -> list[bytes]:
         """MACs associated to the real target AP: the STAs a BTM punt steers to the twin."""
-        target = self.ap.bssid.lower()
-        return [str_to_mac(c.mac) for c in self.array.clients.values()
-                if (c.bssid or "").lower() == target]
+        from wifit3.campaigns.deauth_targets import associated_client_macs
+
+        return [
+            str_to_mac(mac)
+            for mac in associated_client_macs(self.array, self.ap.bssid)
+        ]
 
     def _should_punt(self, already_punted: bool) -> bool:
         if self.punter is None or self.punt_period_sec is None:

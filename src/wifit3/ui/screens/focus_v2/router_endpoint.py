@@ -17,6 +17,7 @@ from rich.markup import escape
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual import events
 from textual.message import Message
 from textual.widgets import Button, Label
 
@@ -32,6 +33,9 @@ class RouterEndpoint(Vertical):
         def __init__(self, details: str) -> None:
             super().__init__()
             self.details = details
+
+    class AntennaTuneRequested(Message):
+        """Open the live AntennaTune monitor."""
 
     def __init__(self, *, essid: str = "", bssid: str = "", channel: int = 0,
                  channel_label: str = "",
@@ -60,7 +64,9 @@ class RouterEndpoint(Vertical):
         self._last: dict[str, str] = {}                # last-pushed label value; skip no-op repaints
 
     def compose(self) -> ComposeResult:
-        yield Label(self._power_line(), classes="ap-power", id="ap-power")
+        power = Label(self._power_line(), classes="ap-power", id="ap-power")
+        power.tooltip = "AntennaTune live monitor (t)"
+        yield power
         art = BreathingArt("focus-ap.ans", classes="endpoint-art", id="router-art")
         art.tooltip = self._identity_details
         yield art
@@ -141,6 +147,11 @@ class RouterEndpoint(Vertical):
     def flicker(self) -> None:
         """Pulse the router LED. The screen calls this on RX from the target."""
         self.query_one(BreathingArt).pulse()
+
+    def on_click(self, event: events.Click) -> None:
+        if event.widget.id == "ap-power":
+            event.stop()
+            self.post_message(self.AntennaTuneRequested())
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "ap-identity" and self._identity_details:

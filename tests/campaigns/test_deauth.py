@@ -73,8 +73,8 @@ def _target():
                            pmf_required=False, akm_suites=[2])
 
 
-def _client(bssid=_BSSID):
-    return SimpleNamespace(bssid=bssid)
+def _client(bssid=_BSSID, signal=-50):
+    return SimpleNamespace(bssid=bssid, signal=signal, is_fake=False, last_seen=1e9)
 
 
 async def test_round_robins_clients_then_broadcasts_and_stops_on_capture():
@@ -82,13 +82,16 @@ async def test_round_robins_clients_then_broadcasts_and_stops_on_capture():
     provokes the handshake, so the campaign stops with captured=True."""
     ap = SimpleNamespace(bssid=_BSSID, handshakes={})
     radio = _FakeRadio()
-    array = _FakeArray(radio, ap, {"c1": _client(), "c2": _client()})
+    array = _FakeArray(radio, ap, {
+        "c1": _client(signal=-70),
+        "c2": _client(signal=-40),
+    })
     camp = DeauthCampaign(array, _target())
     radio.on_bcast = lambda: ap.handshakes.__setitem__("c1", _pmkid_hs("c1"))
 
     await camp._loop()
 
-    assert [c[1] for c in radio.client_calls] == ["c1", "c2"]      # round-robin, in order
+    assert [c[1] for c in radio.client_calls] == ["c2", "c1"]      # strongest signal first
     assert len(radio.bcast_calls) == 1                             # one broadcast that round
     assert camp.captured is True
     assert camp.client_sent == 40 and camp.client_acks == 40       # 2 clients x 10 rounds x 2 dirs

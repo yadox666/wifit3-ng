@@ -238,6 +238,22 @@ async def test_metadata_kept_for_client_hints_when_website_pane_disabled():
 
 # ----- detail popup ---------------------------------------------------------
 
+async def test_focus_action_closes_the_detail_popup():
+    class _Host(App):
+        def compose(self) -> ComposeResult:
+            yield Static("")
+
+    app = _Host()
+    async with app.run_test(size=(60, 20)) as pilot:
+        popup = FingerprintModal(_MAC, _RING, offset=(1, 1), action_label="CLIENT FOCUS")
+        await app.push_screen(popup)
+        await pilot.pause()
+        assert popup.query_one("#fp-focus-action").label.plain == "CLIENT FOCUS"
+        await pilot.click("#fp-focus-action")
+        await pilot.pause()
+        assert app.screen is not popup
+
+
 def test_detail_popup_dismisses_on_backdrop_click_not_inner_content():
     popup = FingerprintModal(_MAC, _RING, offset=(1, 1))
     popup.dismiss = Mock()

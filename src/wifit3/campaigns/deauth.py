@@ -15,6 +15,7 @@ from wifit3.safety import deauth_limits
 
 from . import treelog
 from .campaign import Campaign
+from .deauth_targets import associated_client_macs
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +78,7 @@ class DeauthCampaign(Campaign):
         return self._crackable_count() > self._baseline
 
     def _target_clients(self) -> list[str]:
-        target = self.target.bssid.lower()
-        own = self.array.forged_macs
-        return [mac for mac, c in self.array.clients.items()
-                if (c.bssid or "").lower() == target and mac not in own]
+        return associated_client_macs(self.array, self.target.bssid)
 
     async def _settle(self) -> None:
         await self.array.wait_until(lambda: self._new_capture() or self.stopped, SETTLE_SEC)

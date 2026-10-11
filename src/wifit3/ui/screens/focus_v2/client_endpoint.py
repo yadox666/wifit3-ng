@@ -8,6 +8,7 @@ from rich.markup import escape
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual import events
 from textual.message import Message
 from textual.widgets import Button, Label
 
@@ -22,6 +23,9 @@ class ClientEndpoint(Vertical):
         def __init__(self, details: str) -> None:
             super().__init__()
             self.details = details
+
+    class AntennaTuneRequested(Message):
+        """Open the live AntennaTune monitor."""
 
     def __init__(
         self,
@@ -46,7 +50,9 @@ class ClientEndpoint(Vertical):
         self._last: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
-        yield Label(self._power_line(), classes="ap-power", id="client-power")
+        power = Label(self._power_line(), classes="ap-power", id="client-power")
+        power.tooltip = "AntennaTune live monitor (t)"
+        yield power
         art = BreathingArt(self._art_name, classes="endpoint-art", id="client-art")
         art.tooltip = self._identity_details
         yield art
@@ -98,6 +104,11 @@ class ClientEndpoint(Vertical):
 
     def flicker(self) -> None:
         self.query_one("#client-art", BreathingArt).pulse()
+
+    def on_click(self, event: events.Click) -> None:
+        if event.widget.id == "client-power":
+            event.stop()
+            self.post_message(self.AntennaTuneRequested())
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "client-identity" and self._identity_details:

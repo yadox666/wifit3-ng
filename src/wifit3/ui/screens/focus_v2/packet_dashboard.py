@@ -18,6 +18,8 @@ import math
 from collections import deque
 
 from rich.text import Text
+from textual import events
+from textual.message import Message
 from textual.widgets import Static
 
 # " ▁▂▃▄▅▆▇█": index 0 is blank, used only for the upper row of a 2-row pair.
@@ -33,6 +35,9 @@ _HISTORY = 256
 class PacketDashboard(Static):
     ALLOW_SELECT = False
     SAMPLE_S = 0.4                        # fake-sample cadence; ~window for the rate
+
+    class AntennaTuneRequested(Message):
+        """User clicked the traffic sparklines - open AntennaTune."""
 
     def __init__(self, rows, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -52,6 +57,9 @@ class PacketDashboard(Static):
     def on_mount(self) -> None:
         self.set_interval(self.SAMPLE_S, self._tick)
         self._tick()
+
+    def on_click(self, _event: events.Click) -> None:
+        self.post_message(self.AntennaTuneRequested())
 
     def on_resize(self) -> None:
         self._repaint()
