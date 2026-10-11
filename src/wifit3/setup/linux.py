@@ -34,6 +34,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+import libusb_package
+import usb.core
+import usb.util
+
 from wifit3.models import DeviceID
 from wifit3.device.manager import linux_node_path as usb_node_path
 from wifit3.setup import SetupTarget, target_for_vidpid
@@ -63,6 +67,171 @@ _REMOVED_MSG = ("Removed the udev rule + blocklist for this chipset. Replug the 
 _REPLUG_MSG = ("udev rule + blocklist installed. Unplug and replug the card, then press START.")
 
 
+def soft_reclaim_usb(device_id: DeviceID) -> SetupResult:
+    """Best-effort Linux handoff from a kernel Wi-Fi driver to libusb.
+
+    The setup step has already installed the blacklist and attempted ``modprobe
+    -r``. This final per-interface detach plus claim/release verifies that the
+    current process can open the same physical card. It deliberately does not
+    reset or reconfigure the radio: an opted-in driver must be able to adopt
+    the kernel-warmed firmware. Any failure is non-fatal and the caller asks
+    for the established physical replug instead.
+    """
+    if not sys.platform.startswith("linux"):
+        return SetupResult(ok=False, message="Linux soft reclaim is unavailable on this platform.")
+    if os.environ.get("WIFIT3_LINUX_SOFT_RECLAIM", "1").strip() == "0":
+        return SetupResult(ok=False, message="Linux soft reclaim is disabled.")
+
+    try:
+        backend = libusb_package.get_libusb1_backend()
+        candidates = [
+            dev for dev in usb.core.find(find_all=True, backend=backend)
+            if (dev.idVendor, dev.idProduct) == (device_id.vid, device_id.pid)
+        ]
+        exact = [
+            dev for dev in candidates
+            if device_id.bus is not None
+            and device_id.address is not None
+            and (dev.bus, dev.address) == (device_id.bus, device_id.address)
+        ]
+        matches = exact or candidates
+        if len(matches) != 1:
+            return SetupResult(
+                ok=False,
+                message="Could not uniquely identify the live USB adapter.",
+            )
+        dev = matches[0]
+        try:
+            active = dev.is_kernel_driver_active(0)
+        except (NotImplementedError, usb.core.USBError):
+            active = False
+        if active:
+            dev.detach_kernel_driver(0)
+
+        claimed = False
+        try:
+            try:
+                dev.get_active_configuration()
+            except usb.core.USBError:
+                dev.set_configuration()
+            usb.util.claim_interface(dev, 0)
+            claimed = True
+        finally:
+            if claimed:
+                usb.util.release_interface(dev, 0)
+            usb.util.dispose_resources(dev)
+    except (OSError, NotImplementedError, usb.core.USBError) as exc:
+        logger.info("Linux soft reclaim failed; physical replug retained: %s", exc)
+        return SetupResult(ok=False, message="Software reclaim failed; replug is still required.")
+
+    return SetupResult(
+        ok=True,
+        message="Adapter released from the Linux driver; continuing without a replug.",
+    )
+
+
+def usb_node_writable(device_id: DeviceID) -> bool:
+    """Whether this process can open the card's usbfs node (needed to detach)."""
+    node = usb_node_path(device_id)
+    return bool(node and os.access(node, os.W_OK))
+
+
+def _sysfs_unbind(device_id: DeviceID) -> bool:
+    """Drop the kernel driver via sysfs without root, when the unbind node is writable."""
+    unbound = False
+    ids = [(device_id.vid, device_id.pid)]
+    for device_dir in _matching_usb_dirs(ids):
+        if device_id.bus is not None and device_id.address is not None:
+            bus = _read(device_dir / "busnum")
+            address = _read(device_dir / "devnum")
+            if bus and address:
+                try:
+                    if (int(bus), int(address)) != (device_id.bus, device_id.address):
+                        continue
+                except ValueError:
+                    pass
+        for intf in sorted(device_dir.glob(f"{device_dir.name}:*")):
+            unbind = intf / "driver" / "unbind"
+            try:
+                unbind.write_text(intf.name)
+                unbound = True
+            except OSError:
+                continue
+    return unbound
+
+
+def _session_access_cmd(node: str | None, device_id: DeviceID, group: str | None) -> str:
+    """chmod this usbfs node and unbind it - no persistent blacklist."""
+    q = shlex.quote
+    steps: list[str] = []
+    grant = group or current_user()
+    if node:
+        steps += [f"(chgrp {q(grant)} {q(node)} || true)", f"(chmod 0660 {q(node)} || true)"]
+    ids = [(device_id.vid, device_id.pid)]
+    for device_dir in _matching_usb_dirs(ids):
+        for intf in sorted(device_dir.glob(f"{device_dir.name}:*")):
+            unbind = intf / "driver" / "unbind"
+            if unbind.exists():
+                steps.append(f"(echo {q(intf.name)} > {q(str(unbind))} || true)")
+    return " && ".join(steps) if steps else "true"
+
+
+def session_prepare_usb(device_id: DeviceID) -> SetupResult:
+    """Claim the card for this process without writing udev/modprobe files.
+
+    Works when usbfs is already writable (plugdev, live image, prior rule) or
+    when sysfs ``unbind`` is writable. The kernel may rebind after we release;
+    the following ``connect()`` must detach again and hold the interface.
+    """
+    if not sys.platform.startswith("linux"):
+        return SetupResult(ok=False, message="Session claim is Linux-only.")
+    unbound = _sysfs_unbind(device_id)
+    if usb_node_writable(device_id):
+        reclaim = soft_reclaim_usb(device_id)
+        if reclaim.ok or unbound:
+            return SetupResult(
+                ok=True,
+                message="Claimed the card for this session without root.",
+            )
+        if unbound:
+            return SetupResult(ok=True, message="Released the kernel driver for this session.")
+        return reclaim
+    if unbound:
+        return SetupResult(
+            ok=False,
+            message="Unbound the kernel driver, but /dev/bus/usb is not writable.",
+        )
+    return SetupResult(ok=False, message="Need write access to the USB device node.")
+
+
+def session_grant_usb(device_id: DeviceID) -> SetupResult:
+    """One-shot pkexec: chmod this USB node and unbind it. No blacklist files."""
+    if not sys.platform.startswith("linux"):
+        return SetupResult(ok=False, message="Session grant is Linux-only.")
+    if os.geteuid() == 0:
+        node = usb_node_path(device_id)
+        rc = _run_as_root(_session_access_cmd(node, device_id, None))
+        if rc == 0:
+            return SetupResult(ok=True, message="Granted USB access for this session.")
+        return SetupResult(ok=False, message=f"Couldn't grant USB access (exit {rc}).")
+    method = _choose_escalation_method()
+    if method is None:
+        return SetupResult(
+            ok=False,
+            message="No pkexec/sudo to grant this USB node for the session.",
+        )
+    node = usb_node_path(device_id)
+    rc = run_privileged(_session_access_cmd(node, device_id, _access_group()), method)
+    if rc == 0:
+        return SetupResult(ok=True, message="Granted USB access for this session.")
+    if rc == 126:
+        return SetupResult(
+            ok=False, cancelled=True,
+            message="Authorization dismissed. The card was not claimed.",
+        )
+    return SetupResult(ok=False, message=f"Couldn't grant USB access (exit {rc}).")
+
+
 def _safe(key: str) -> str:
     """Filename-safe chipset key (the registry keys already are, but never trust an interpolation
     into a privileged ``rm``/``install`` path)."""
@@ -79,14 +248,23 @@ def blacklist_path(key: str) -> str:
 
 
 def _access_group() -> str | None:
+    """A group the current user is already in, for a udev ``GROUP=`` grant.
+
+    Prefer USB-oriented groups, then admin groups, then the Debian/Ubuntu
+    user-private group (``GROUP="$USER"``). Persistent blacklist install used
+    to require sudo/wheel membership even when pkexec could still elevate.
+    """
     import grp  # Unix-only
     mine = set(os.getgroups()) | {os.getgid()}
-    for name in ("sudo", "wheel"):
+    names = ("plugdev", "dialout", "usb", "sudo", "wheel", current_user())
+    for name in names:
+        if not name:
+            continue
         try:
             if grp.getgrnam(name).gr_gid in mine:
                 return name
         except KeyError:
-            pass
+            continue
     return None
 
 
@@ -188,9 +366,11 @@ def discover_kernel_modules(target: SetupTarget) -> list[str]:
 
 # --- file text emitters -------------------------------------------------------------------------
 
-def emit_udev_text(target: SetupTarget, group: str) -> str:
-    """The per-chipset access rule: every VID:PID this driver claims, granted to ``group``. The
-    blacklist displaces *all* of them from the kernel, so all of them need userland access too."""
+def emit_udev_text(target: SetupTarget, group: str | None = None, owner: str | None = None) -> str:
+    """The per-chipset access rule: every VID:PID this driver claims, granted to ``group``
+    or ``owner``. The blacklist displaces *all* of them from the kernel, so all of them
+    need userland access too."""
+    grant = f'GROUP="{group}"' if group else f'OWNER="{owner}"'
     lines = [f"# wifit3 device-access rule: {target.description} ({target.key})", ""]
     seen: set[tuple[int, int]] = set()
     for vid, pid in target.ids:
@@ -199,7 +379,7 @@ def emit_udev_text(target: SetupTarget, group: str) -> str:
         seen.add((vid, pid))
         lines.append(
             f'SUBSYSTEM=="usb", ATTR{{idVendor}}=="{vid:04x}", '
-            f'ATTR{{idProduct}}=="{pid:04x}", GROUP="{group}", MODE="0660"')
+            f'ATTR{{idProduct}}=="{pid:04x}", {grant}, MODE="0660"')
     return "\n".join(lines) + "\n"
 
 
@@ -453,15 +633,16 @@ def install_rule(target: SetupTarget, *, node: str | None = None) -> SetupResult
     modules = discover_kernel_modules(target)
     is_root = os.geteuid() == 0
     group = None if is_root else _access_group()
-    if not is_root and group is None:
+    owner = None if is_root or group else current_user()
+    if not is_root and group is None and not owner:
         return SetupResult(
             ok=False,
             detail="Add yourself: `sudo usermod -aG sudo $USER`, then log out and back in. "
                    "Or run `sudo .venv/bin/python3 -m wifit3`.",
-            message="You're not in the sudo or wheel group, so device access can't be granted.")
+            message="Couldn't resolve a user or group to grant USB access to.")
 
     # As root the access rule is moot (root opens any node). Only the blacklist matters.
-    rule_text = emit_udev_text(target, group) if group else None
+    rule_text = emit_udev_text(target, group=group, owner=owner) if (group or owner) else None
     blacklist_text = emit_blacklist_text(target, modules) if modules else None
 
     try:
@@ -583,14 +764,28 @@ class SetupLinux(Setup):
     modprobe unload to reach a clean cold state; ``install`` drives that through the Prompter."""
 
     def requires_setup(self, device_id: DeviceID) -> bool:
-        """True when a kernel driver is bound to the card, so a cold bring-up would collide."""
-        return kernel_driver_bound([(device_id.vid, device_id.pid)])
+        """True when a kernel driver is bound and this process cannot detach it itself."""
+        if not kernel_driver_bound([(device_id.vid, device_id.pid)]):
+            return False
+        return not usb_node_writable(device_id)
 
     async def install(self, device_id: DeviceID, ui: Prompter) -> DeviceID | None:
         target = target_for_vidpid(device_id.vid, device_id.pid)
         if target is None:
             ui.error("Device setup", "This card isn't a supported chipset for setup.")
             return None
+
+        ui.status(f"Trying to claim {device_id.chipset} without root…")
+        session = await asyncio.to_thread(session_prepare_usb, device_id)
+        if session.ok:
+            ui.status(session.message)
+            return device_id
+        grant = await asyncio.to_thread(session_grant_usb, device_id)
+        if grant.ok:
+            prepared = await asyncio.to_thread(session_prepare_usb, device_id)
+            if prepared.ok or usb_node_writable(device_id):
+                ui.status(grant.message)
+                return device_id
 
         # Copy is the user's exact wording; do not paraphrase it.
         from wifit3.ui.screens.confirm_install import ConfirmInstallDialog
@@ -622,8 +817,20 @@ class SetupLinux(Setup):
                 ui.error("Couldn't install the device rules", result.message)
             return None
 
-        if target.replug_after_modprobe:
-            # A kernel-warmed chip can't cold-reset in userland; only a physical replug recovers RX.
+        reclaimed = False
+        if target.replug_after_modprobe and target.soft_reclaim:
+            ui.status(f"Trying to reclaim {chip} from the Linux driver…")
+            # The privileged install chgrp'd the current node. Let that settle
+            # before opening it through libusb; failure still goes to replug.
+            if await self._wait_for_access(device_id, writable=True):
+                reclaim = await asyncio.to_thread(soft_reclaim_usb, device_id)
+                reclaimed = reclaim.ok
+                if reclaimed:
+                    ui.status(f"{chip} reclaimed; attaching to its running firmware…")
+
+        if target.replug_after_modprobe and not reclaimed:
+            # The soft path is intentionally best-effort. A physical replug
+            # remains the reliable cold-state fallback for every failure.
             replugged = await ui.wait_replug(device_id)
             if replugged is None:
                 ui.status(f"Rules installed for {chip}. Replug, then press START.")

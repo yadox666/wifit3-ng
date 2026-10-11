@@ -702,7 +702,7 @@ class BluetoothManager:
         self._usb_not_claimed.discard(controller.instance_key)
 
     def reclaim_usb_controller(
-        self, controller: UsbBluetoothController,
+        self, controller: UsbBluetoothController, *, allow_privilege: bool = True,
     ) -> tuple[bool, str]:
         """Try to take the dongle from the OS without a physical replug."""
         key = controller.instance_key
@@ -718,7 +718,10 @@ class BluetoothManager:
         scanner = self._usb_scanner_factory(controller, self._on_usb_observation)
         try:
             if hasattr(scanner, "reclaim_from_os"):
-                scanner.reclaim_from_os()
+                try:
+                    scanner.reclaim_from_os(allow_privilege=allow_privilege)
+                except TypeError:
+                    scanner.reclaim_from_os()
             elif hasattr(scanner, "reserve"):
                 scanner.reserve(recover=True)
             else:

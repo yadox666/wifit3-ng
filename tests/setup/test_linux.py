@@ -299,14 +299,22 @@ def test_install_rule_root_writes_blacklist_without_elevation(monkeypatch, tmp_p
     assert not list(tmp_path.glob("*wifit3-ar9271.rules"))
 
 
-def test_install_rule_fails_when_in_no_admin_group(monkeypatch, tmp_path):
+def test_install_rule_uses_owner_when_user_is_in_no_shared_group(monkeypatch, tmp_path):
     _force_linux_nonroot(monkeypatch, tmp_path)
     monkeypatch.setattr(lin, "_access_group", lambda: None)
-    called = []
-    monkeypatch.setattr(lin, "run_privileged", lambda cmd, method: called.append(cmd) or 0)
+    monkeypatch.setattr(lin, "current_user", lambda: "alice")
+    monkeypatch.setattr(lin, "_choose_escalation_method", lambda: "pkexec")
+    seen = {}
+
+    def _run(cmd, method):
+        seen["rule"] = next(tmp_path.glob("*wifit3-ar9271.rules")).read_text()
+        return 0
+
+    monkeypatch.setattr(lin, "run_privileged", _run)
     r = install_rule(_target())
-    assert not r.ok and not r.cancelled and not called
-    assert "sudo or wheel" in r.message.lower()
+    assert r.ok and not r.cancelled
+    assert 'OWNER="alice"' in seen["rule"]
+    assert 'GROUP=' not in seen["rule"]
 
 
 def test_install_rule_declined_is_cancelled(monkeypatch, tmp_path):

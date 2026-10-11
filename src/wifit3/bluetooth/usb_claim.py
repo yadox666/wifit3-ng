@@ -44,13 +44,14 @@ def release_os_bluetooth_for_usb_hci(
     controller: UsbBluetoothController,
     *,
     allow_radio_power_off: bool = True,
+    allow_privilege: bool = False,
 ) -> list[str]:
     """Ask the OS to drop the HCI interface. Returns human-readable steps attempted."""
     steps: list[str] = []
     if sys.platform == "darwin":
         steps.extend(_macos_release(allow_radio_power_off=allow_radio_power_off))
     elif sys.platform.startswith("linux"):
-        steps.extend(_linux_release())
+        steps.extend(_linux_release(controller, allow_privilege=allow_privilege))
     else:
         steps.append("No automatic OS release helper on this platform; use WinUSB binding")
     if steps:
@@ -190,7 +191,41 @@ def linux_rfkill_set(blocked: bool) -> bool:
     return _run_quiet([binary, action, "bluetooth"])
 
 
-def _linux_release() -> list[str]:
+def _controller_device_id(controller: UsbBluetoothController):
+    from wifit3.models import DeviceID
+
+    return DeviceID(
+        vid=controller.vid,
+        pid=controller.pid,
+        chipset=controller.chipset,
+        vendor=controller.vendor,
+        product_name=controller.product_name,
+        bus=controller.bus,
+        address=controller.address,
+    )
+
+
+def _linux_session_claim(controller: UsbBluetoothController, *, allow_privilege: bool) -> list[str]:
+    """Detach btusb from this dongle. Privilege (pkexec) only when the user asked."""
+    from wifit3.setup.linux import session_grant_usb, session_prepare_usb
+
+    device_id = _controller_device_id(controller)
+    prepared = session_prepare_usb(device_id)
+    if prepared.ok:
+        return [prepared.message]
+    if not allow_privilege:
+        return []
+    granted = session_grant_usb(device_id)
+    if granted.ok or granted.message:
+        return [granted.message]
+    return []
+
+
+def _linux_release(
+    controller: UsbBluetoothController | None = None,
+    *,
+    allow_privilege: bool = False,
+) -> list[str]:
     steps: list[str] = []
     if shutil.which("bluetoothctl"):
         if _run_quiet(["bluetoothctl", "power", "off"]):
@@ -201,4 +236,9 @@ def _linux_release() -> list[str]:
     if linux_rfkill_set(True):
         steps.append("Blocked Bluetooth via rfkill")
         time.sleep(0.3)
+    if controller is not None:
+        try:
+            steps.extend(_linux_session_claim(controller, allow_privilege=allow_privilege))
+        except Exception:
+            logger.debug("Linux Bluetooth USB session claim failed", exc_info=True)
     return steps

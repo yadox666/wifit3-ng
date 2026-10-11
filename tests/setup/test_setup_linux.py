@@ -72,6 +72,10 @@ def _stub_platform_bits(monkeypatch):
     # the orchestration runs on any host.
     monkeypatch.setattr(lin, "current_user", lambda: "tester")
     monkeypatch.setattr(lin, "usb_node_path", lambda dev: "/dev/bus/usb/001/005")
+    # Session claim is covered separately. These tests pin the persistent rule path.
+    declined = lin.SetupResult(ok=False, message="session claim not used here")
+    monkeypatch.setattr(lin, "session_prepare_usb", lambda dev: declined)
+    monkeypatch.setattr(lin, "session_grant_usb", lambda dev: declined)
 
 
 # ---- install ------------------------------------------------------------------------------------

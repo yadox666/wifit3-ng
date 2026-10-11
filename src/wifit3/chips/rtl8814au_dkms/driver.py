@@ -47,7 +47,14 @@ from .powertrack import on_channel_switch
 from .rf import phy_rf_config
 from .rx import iter_frames
 from .transport import Rtl8814auTransport
-from .tx import DESC_RATE1M, RATEID_IDX_B, TXBF_GID_NONE, build_mgmt_txdesc
+from .tx import (
+    DESC_RATE1M,
+    DESC_RATE6M,
+    RATEID_IDX_B,
+    RATEID_IDX_G,
+    TXBF_GID_NONE,
+    build_mgmt_txdesc,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -383,9 +390,18 @@ class Rtl8814auDkmsDriver(Driver):
         watchdog via ``_io_lock`` so the frame is never emitted mid-retune."""
         if len(frame_bytes) < 10:           # need addr1 (bytes [4:10]) to read BMC
             return False
+        # CCK 1 Mbps is not a valid 5 GHz rate. Management frames on that band
+        # go out at OFDM 6 Mbps so the peer can decode them.
+        hw_rate, rate_id = DESC_RATE1M, RATEID_IDX_B
+        if self._channel is not None and self._channel > 14:
+            hw_rate, rate_id = DESC_RATE6M, RATEID_IDX_G
         loop = asyncio.get_running_loop()
         async with self._io_lock:           # don't TX mid-retune (set_channel/DIG)
-            await loop.run_in_executor(None, self._inject, self.transport, frame_bytes)
+            await loop.run_in_executor(
+                None, lambda: self._inject(
+                    self.transport, frame_bytes, hw_rate=hw_rate, rate_id=rate_id,
+                ),
+            )
         return True
 
     def _stamp_tx_seq(self, frame_bytes: bytes) -> bytes:

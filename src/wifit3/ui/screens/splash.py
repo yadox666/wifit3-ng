@@ -994,7 +994,9 @@ class SplashView(Screen):
             if controller.instance_key not in self.app.bluetooth_manager.usb_not_claimed_keys():
                 continue
             ok, message = await asyncio.to_thread(
-                self.app.bluetooth_manager.reclaim_usb_controller, controller,
+                self.app.bluetooth_manager.reclaim_usb_controller,
+                controller,
+                allow_privilege=False,
             )
             if not ok:
                 failures.append(message)

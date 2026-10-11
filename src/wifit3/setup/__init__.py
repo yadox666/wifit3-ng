@@ -24,6 +24,7 @@ class SetupTarget:
     ids: tuple[tuple[int, int], ...]      # every VID:PID this driver claims
     module_hints: tuple[str, ...]         # fallback names (driver's CONFLICTING_LINUX_MODULES)
     replug_after_modprobe: bool = False   # warm card can't recover → make the user replug (cold)
+    soft_reclaim: bool = False            # try libusb detach/claim before requesting that replug
 
 
 def target_for_vidpid(vid: int, pid: int) -> SetupTarget | None:
@@ -45,4 +46,5 @@ def target_for_vidpid(vid: int, pid: int) -> SetupTarget | None:
     return SetupTarget(
         key=claim.key, description=claim.entry.description, ids=ids,
         module_hints=tuple(driver_cls.CONFLICTING_LINUX_MODULES),
-        replug_after_modprobe=driver_cls.LINUX_REPLUG_AFTER_MODPROBE)
+        replug_after_modprobe=driver_cls.LINUX_REPLUG_AFTER_MODPROBE,
+        soft_reclaim=driver_cls.LINUX_SOFT_RECLAIM)

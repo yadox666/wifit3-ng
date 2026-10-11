@@ -1018,7 +1018,7 @@ uv sync
 uv run wifit3
 ```
 
-`./start.sh` creates a local virtualenv, installs the package, and launches the same entry point. Each run gets an automatic memorable scan-session name for Offline DB grouping; add **`--case`** when you want to set the name and optional notes in a dialog first (**Enter** accepts; `wifit3 --case` works the same).
+`./start.sh` creates a local virtualenv, installs the package, and launches the same entry point. On Linux it also installs missing `python3` / `venv` / headers through the distro package manager when needed, and warns if you launched it with `sudo` (USB adapters run in userspace). Each run gets an automatic memorable scan-session name for Offline DB grouping; add **`--case`** when you want to set the name and optional notes in a dialog first (**Enter** accepts; `wifit3 --case` works the same).
 
 `./start.sh --background --all` stays on the startup screen and records Wi-Fi, Bluetooth Classic, and BLE together until Ctrl+Q or **Stop monitor**. GPS positions are stored when a receiver is connected. The on-screen **BACKGROUND** button uses the cards and the OS BLE switch you have enabled; `--all` turns those three sources on for that launch. Combine flags as needed (for example `./start.sh --case --background --all`).
 
@@ -1034,7 +1034,7 @@ The executable is written to `dist/`. PyInstaller does not cross-compile, so bui
 
 After you press **START WI-FI**, wifit3 configures the selected USB adapter:
 
-- **Linux:** Prompts once through `pkexec` or `sudo` to write udev permissions and blocklists in `/etc/modprobe.d/`.
+- **Linux:** Prefers a **session claim** (unbind + writable `/dev/bus/usb` node) without writing persistent files. When that is not enough, it prompts once through `pkexec` or `sudo` for a one-shot node grant or for udev/modprobe blocklists under `/etc`. Persistent rules grant `GROUP=` for `plugdev`/`dialout`/`usb`/`sudo`/`wheel` when you are a member, otherwise `OWNER="$USER"`. Drivers that opt into soft reclaim may skip a physical replug after blacklist install. HackRF spectrum uses the same session USB grant path. Auto Bluetooth reclaim on the splash stays non-privileged; an explicit reclaim may elevate.
 - **macOS:** No installation step. Plug in the device and select *Allow* in the authorization dialog.
 - **Windows:** Prompts once through UAC to install WinUSB for the device.
 

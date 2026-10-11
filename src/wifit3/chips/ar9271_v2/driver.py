@@ -356,6 +356,11 @@ class AR9271V2Driver(Driver):
                 dev.set_configuration()
             except usb.core.USBError:
                 pass                                   # already configured
+            try:
+                if dev.is_kernel_driver_active(0):
+                    dev.detach_kernel_driver(0)
+            except (NotImplementedError, usb.core.USBError):
+                pass
             usb.util.claim_interface(dev, 0)
         except (usb.core.USBError, NotImplementedError) as e:
             logger.debug("ar9271_v2: warm-probe claim failed (%s) -> assume cold", e)
@@ -399,6 +404,11 @@ class AR9271V2Driver(Driver):
                     dev.set_configuration()
                 except usb.core.USBError:
                     pass                    # already configured
+                try:
+                    if dev.is_kernel_driver_active(0):
+                        dev.detach_kernel_driver(0)
+                except (NotImplementedError, usb.core.USBError):
+                    pass
                 usb.util.claim_interface(dev, 0)
                 return
             except (usb.core.USBError, NotImplementedError) as e:

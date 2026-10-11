@@ -14,7 +14,7 @@ import numpy as np
 import usb.core
 import usb.util
 
-from wifit3.sdr.hackrf import HackRfDevice, find_hackrf_devices
+from wifit3.sdr.hackrf import HackRfDevice, ensure_hackrf_usb_access, find_hackrf_devices
 
 _REQUEST_TYPE_OUT = 0x40
 _REQUEST_TYPE_IN = 0xC0
@@ -170,6 +170,10 @@ class HackRfSweep:
         return centers
 
     def _open(self, selected: HackRfDevice) -> None:
+        try:
+            ensure_hackrf_usb_access(selected)
+        except PermissionError as exc:
+            raise HackRfSweepError(str(exc)) from exc
         backend = libusb_package.get_libusb1_backend()
         device = usb.core.find(
             idVendor=selected.vid,

@@ -883,10 +883,10 @@ class UsbHciScanner:
         if self._device is None:
             self._open(recover=recover)
 
-    def reclaim_from_os(self) -> None:
+    def reclaim_from_os(self, *, allow_privilege: bool = True) -> None:
         """Release from the OS (if needed) and hold the HCI interface for wifit3."""
         self._close()
-        self._open(recover=True)
+        self._open(recover=True, allow_privilege=allow_privilege)
 
     async def stop(self) -> None:
         self._running = False
@@ -1012,7 +1012,7 @@ class UsbHciScanner:
         self._classic_inquiry_active = True
         self._classic_inquiry_started_at = time.monotonic()
 
-    def _open(self, *, recover: bool = False) -> None:
+    def _open(self, *, recover: bool = False, allow_privilege: bool = False) -> None:
         last_error: UsbBluetoothError | None = None
         attempts = 3 if recover else 1
         rfkill_blocked = False
@@ -1031,7 +1031,9 @@ class UsbHciScanner:
                     )
                     if not claim_error_is_recoverable(str(exc)):
                         raise
-                    steps = release_os_bluetooth_for_usb_hci(self.controller)
+                    steps = release_os_bluetooth_for_usb_hci(
+                        self.controller, allow_privilege=allow_privilege,
+                    )
                     rfkill_blocked = rfkill_blocked or any(
                         step.startswith("Blocked Bluetooth") for step in steps
                     )

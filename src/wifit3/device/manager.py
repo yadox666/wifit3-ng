@@ -290,12 +290,23 @@ def linux_node_path(device_id: DeviceID) -> Optional[str]:
     returned with identical siblings plugged in. The path the udev rule / chgrp acts on."""
     backend = libusb_package.get_libusb1_backend()
     want_instance = device_id.bus is not None and device_id.address is not None
-    for dev in _bus_devices(backend):
-        if (dev.idVendor, dev.idProduct) != (device_id.vid, device_id.pid):
-            continue
-        if want_instance and (dev.bus, dev.address) != (device_id.bus, device_id.address):
-            continue
-        return f"/dev/bus/usb/{dev.bus:03d}/{dev.address:03d}"
+    try:
+        for dev in _bus_devices(backend):
+            if (dev.idVendor, dev.idProduct) != (device_id.vid, device_id.pid):
+                continue
+            if want_instance and (dev.bus, dev.address) != (device_id.bus, device_id.address):
+                continue
+            return f"/dev/bus/usb/{dev.bus:03d}/{dev.address:03d}"
+    except (usb.core.USBError, usb.core.NoBackendError, OSError, WifiteFatalError):
+        pass
+    if (
+        sys.platform.startswith("linux")
+        and device_id.bus is not None
+        and device_id.address is not None
+    ):
+        path = f"/dev/bus/usb/{device_id.bus:03d}/{device_id.address:03d}"
+        if os.path.exists(path):
+            return path
     return None
 
 

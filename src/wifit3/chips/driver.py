@@ -48,6 +48,13 @@ class Driver(ABC):
     """Whether Linux setup must request a physical replug before ``connect()`` (default
     True: a kernel-warmed chip usually can't reach a clean cold state in userland)."""
 
+    LINUX_SOFT_RECLAIM: ClassVar[bool] = False
+    """Try a libusb kernel-driver detach/claim before requesting the Linux replug.
+
+    This is opt-in per driver: it is safe only when the live driver can adopt a
+    kernel-warmed device. Failure always falls back to the normal physical replug.
+    """
+
     DEVICE_REENUMERATES: ClassVar[bool] = False
     """True if ``connect()`` can trigger a USB re-enumeration mid-bring-up (the handle drops and the
     device re-appears, usually at a new address). The driver re-acquires its own handle internally,
