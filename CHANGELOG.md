@@ -4,6 +4,16 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
+## 0.3.22 - 2026-10-11
+
+### Changed
+
+- **Preferences → General** now hosts app **Update now**, **Catalog and
+  signatures** (stock refresh / user import-export), **OUI database** refresh
+  with the previous splash progress bar, and **Open diagnostics**. The splash
+  `U` OUI shortcut and under-button progress panel are removed; `Ctrl+D`
+  remains available but is hidden from the startup footer.
+
 ## 0.3.21 - 2026-10-11
 
 ### Added
