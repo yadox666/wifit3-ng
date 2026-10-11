@@ -4,6 +4,24 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
+## 0.3.23 - 2026-10-11
+
+### Added
+
+- **AntennaTune** on AP and client Focus (`t`, power meter, or packet dashboard):
+  live signal graph, beacon/data rates, and optional link ACK probing with a
+  card picker and Close-only chrome.
+- **Detect AP name** campaign on hidden SSIDs in AP Focus: round-robin deauth of
+  live associated clients until a passive decloak reveals the ESSID.
+- Focus navigation: fingerprint modal **CLIENT FOCUS** / associated-AP banner
+  **AP FOCUS** to jump between client and AP Focus without returning to the
+  scanner.
+
+### Changed
+
+- Deauth, evil-twin punt, and PEAP honeypot eviction share
+  ``associated_client_macs`` for stronger-first target selection.
+
 ## 0.3.22 - 2026-10-11
 
 ### Changed
