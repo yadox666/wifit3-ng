@@ -80,8 +80,20 @@ class WlanInterface:
         self._is_hopping = False
         self._hop_lock = asyncio.Lock()
 
+        self._own_mac_registry = None
         self.driver.register_rx_callback(self._on_frame_parsed)
         self.driver.register_disconnect_callback(self._on_device_lost)
+
+    def bind_own_mac_registry(self, registry) -> None:
+        """Tell the pool which addresses this card transmits as, so they are never clients."""
+        self._own_mac_registry = registry
+        if self.mac_address:
+            registry.register_own_mac(self.mac_address)
+
+    def _note_own_mac(self, mac) -> None:
+        registry = self._own_mac_registry
+        if registry is not None and mac:
+            registry.register_own_mac(mac)
 
     def _on_frame_parsed(self, pkt: Packet) -> None:
         """Fan the driver's parsed frame out to raw subscribers (the array's _ingest, campaigns).
@@ -167,9 +179,13 @@ class WlanInterface:
                 logger.info("set_fake_mac: %s FIXED_MAC but own MAC unknown; skipping", self._chipset)
                 return None
         mac_b = str_to_mac(mac)
+        # Register before the radio starts ACKing, so the scanner cannot
+        # record this station as a client of the AP we are probing.
+        self._note_own_mac(mac_b)
         bssid_b = str_to_mac(bssid) if bssid is not None else None
         assumed = await self.driver.enter_active_monitor(mac_b, bssid_b)
         assumed_str = mac_to_str(assumed)
+        self._note_own_mac(assumed)
         logger.info("[FAKEMAC] %s now HW-ACKing %s", self._chipset, assumed_str)
         return assumed_str
 

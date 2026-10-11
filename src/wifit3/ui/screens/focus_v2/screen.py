@@ -510,6 +510,11 @@ class FocusViewV2(Screen):
         ap = self.app.target_ap
         return fm.dashboard_rows(ap) if ap is not None else []
 
+    def _is_our_station(self, mac: str) -> bool:
+        """True when this address is one the app transmitted as."""
+        store = self.app.ap_history_store
+        return store.is_own_station(mac)
+
     def _live_client_list(self) -> list[Client]:
         """Clients currently heard on the target, including Fake-Connect."""
         ap = self.app.target_ap
@@ -521,6 +526,7 @@ class FocusViewV2(Screen):
             client
             for client in array.clients.values()
             if client.bssid == ap.bssid
+            and (client.is_fake or not self._is_our_station(client.mac))
             and (
                 client.is_fake
                 or now - client.last_seen <= _CLIENT_LIVE_SECONDS
@@ -540,7 +546,7 @@ class FocusViewV2(Screen):
 
         for record in self.app.ap_history_store.clients_for_ap(ap.bssid):
             mac = record.client_mac.casefold()
-            if mac in rows:
+            if mac in rows or self._is_our_station(mac):
                 continue
             source = session_clients.get(mac)
             if source is not None:
@@ -565,6 +571,8 @@ class FocusViewV2(Screen):
                 if record.ssid.casefold() != ssid:
                     continue
                 mac = record.client_mac.casefold()
+                if self._is_our_station(mac):
+                    continue
                 existing = rows.get(mac)
                 if existing is not None:
                     if existing.historical:

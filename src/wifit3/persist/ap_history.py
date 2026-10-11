@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -18,7 +19,7 @@ from wifit3.persist.scan_sessions import ScanSession, merge_session_metadata
 
 
 AP_HISTORY_PATH = Path(user_data_dir("wifit3", appauthor=False)) / "ap_history.sqlite3"
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 _WRITE_INTERVAL_SECONDS = 5.0
 _MAX_APS = 20_000
 _MAX_CLIENTS = 50_000
@@ -37,6 +38,18 @@ class ClientAssociationRecord:
     ssid: str | None = None
     channel: int | None = None
     encryption: str | None = None
+
+
+_PROBE_CAPTURE_RE = re.compile(
+    r"^.+_(?P<bssid>[0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})_\d+_enterprise_probe\.pcap$"
+)
+
+
+def _bssid_from_probe_capture(name: str) -> str | None:
+    match = _PROBE_CAPTURE_RE.match(name)
+    if match is None:
+        return None
+    return match.group("bssid").replace("-", ":").lower()
 
 
 def _locked(method):
@@ -59,6 +72,7 @@ class ApHistoryStore:
         self._last_client_write: dict[tuple[str, str], float] = {}
         self._signatures: dict[str, str] = {}
         self._active_session_id: str | None = None
+        self._own_stations: set[str] = set()
         self._connection: sqlite3.Connection | None = None
         self._lock = threading.RLock()
         self._open()
@@ -78,6 +92,7 @@ class ApHistoryStore:
             connection.execute("PRAGMA secure_delete = ON")
             self._connection = connection
             self._migrate()
+            self._load_own_stations()
             try:
                 os.chmod(self.path, 0o600)
             except OSError:
@@ -284,6 +299,28 @@ class ApHistoryStore:
             with connection:
                 connection.execute("PRAGMA user_version = 10")
             version = 10
+        if version == 10:
+            with connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS own_stations (
+                        client_mac TEXT PRIMARY KEY COLLATE NOCASE,
+                        first_seen REAL NOT NULL
+                    );
+                    PRAGMA user_version = 11;
+                    """
+                )
+
+    def _load_own_stations(self) -> None:
+        connection = self._connection
+        if connection is None:
+            return
+        try:
+            rows = connection.execute("SELECT client_mac FROM own_stations")
+        except sqlite3.Error as exc:
+            self.errors.append(f"Could not load own stations: {exc}")
+            return
+        self._own_stations = {str(row["client_mac"]).casefold() for row in rows}
 
     @_locked
     def start_scan_session(self, session: ScanSession) -> None:
@@ -641,6 +678,8 @@ class ApHistoryStore:
         client_mac = client_mac.casefold().strip()
         if connection is None or not bssid or not client_mac:
             return False
+        if client_mac in self._own_stations:
+            return False
         observed_at = time.time() if observed_at is None else observed_at
         key = (bssid, client_mac)
         if (
@@ -707,6 +746,102 @@ class ApHistoryStore:
         self._last_client_write[key] = observed_at
         return True
 
+    def is_own_station(self, client_mac: str) -> bool:
+        """True when this MAC is one this app has transmitted as."""
+        return client_mac.casefold().strip() in self._own_stations
+
+    def own_station_macs(self) -> set[str]:
+        return set(self._own_stations)
+
+    @_locked
+    def remember_own_station(
+        self,
+        client_mac: str,
+        *,
+        observed_at: float | None = None,
+    ) -> bool:
+        """Remember a MAC we transmit as and drop it from saved client lists."""
+        connection = self._connection
+        client_mac = client_mac.casefold().strip()
+        if connection is None or not client_mac:
+            return False
+        observed_at = time.time() if observed_at is None else observed_at
+        self._own_stations.add(client_mac)
+        try:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO own_stations (client_mac, first_seen)
+                    VALUES (?, ?)
+                    ON CONFLICT(client_mac) DO NOTHING
+                    """,
+                    (client_mac, observed_at),
+                )
+                connection.execute(
+                    "DELETE FROM client_associations WHERE client_mac = ?",
+                    (client_mac,),
+                )
+                connection.execute(
+                    "DELETE FROM client_session_sightings WHERE client_mac = ?",
+                    (client_mac,),
+                )
+        except sqlite3.Error as exc:
+            self.errors.append(f"Could not remember own station {client_mac}: {exc}")
+            return False
+        self._last_client_write = {
+            key: seen
+            for key, seen in self._last_client_write.items()
+            if key[1] != client_mac
+        }
+        return True
+
+    @_locked
+    def import_probe_stations(self, directory: Path) -> int:
+        """Mark station addresses from saved enterprise-probe captures as our own."""
+        from wifit3.persist.probe_stations import dominant_probe_station
+
+        if not directory.is_dir():
+            return 0
+        recorded = 0
+        probed_bssids: set[str] = set()
+        for path in sorted(directory.glob("*_enterprise_probe.pcap")):
+            bssid = _bssid_from_probe_capture(path.name)
+            if bssid:
+                probed_bssids.add(bssid)
+            try:
+                if path.stat().st_size > 32 * 1024 * 1024:
+                    continue
+                mac = dominant_probe_station(path)
+            except OSError as exc:
+                self.errors.append(f"Could not read probe capture {path.name}: {exc}")
+                continue
+            if mac and self.remember_own_station(mac):
+                recorded += 1
+        recorded += self._forget_short_probe_associations(probed_bssids)
+        return recorded
+
+    def _forget_short_probe_associations(self, bssids: set[str]) -> int:
+        """Drop one-shot ``02:`` stations on an AP this app has already probed."""
+        connection = self._connection
+        if connection is None or not bssids:
+            return 0
+        forgotten = 0
+        for bssid in bssids:
+            rows = connection.execute(
+                """
+                SELECT client_mac
+                FROM client_associations
+                WHERE bssid = ?
+                  AND client_mac LIKE '02:%'
+                  AND last_seen - first_seen <= 2
+                """,
+                (bssid,),
+            ).fetchall()
+            for row in rows:
+                if self.remember_own_station(str(row["client_mac"])):
+                    forgotten += 1
+        return forgotten
+
     @_locked
     def remember_client_fingerprint(
         self,
@@ -767,6 +902,7 @@ class ApHistoryStore:
             SELECT bssid, client_mac, first_seen, last_seen
             FROM client_associations
             WHERE bssid = ?
+              AND client_mac NOT IN (SELECT client_mac FROM own_stations)
             ORDER BY last_seen DESC
             """,
             (bssid.casefold(),),
@@ -794,6 +930,9 @@ class ApHistoryStore:
             FROM client_associations AS association
             JOIN access_points AS ap ON ap.bssid = association.bssid
             WHERE association.client_mac = ?
+              AND association.client_mac NOT IN (
+                  SELECT client_mac FROM own_stations
+              )
             ORDER BY association.last_seen DESC
             """,
             (client_mac.casefold(),),
@@ -1173,6 +1312,7 @@ class ApHistoryStore:
             connection.execute("DELETE FROM identity_evidence")
             connection.execute("DELETE FROM ap_relationships")
             connection.execute("DELETE FROM client_associations")
+            connection.execute("DELETE FROM own_stations")
             connection.execute("DELETE FROM artifacts")
             connection.execute("DELETE FROM access_points")
             connection.execute("DELETE FROM metadata")
@@ -1183,6 +1323,7 @@ class ApHistoryStore:
         self._last_write.clear()
         self._last_client_write.clear()
         self._signatures.clear()
+        self._own_stations.clear()
 
     @_locked
     def count(self) -> int:

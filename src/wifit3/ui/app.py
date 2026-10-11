@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from textual import events, work
 from textual.app import App
 from textual.binding import Binding
@@ -301,6 +302,13 @@ class WifiteApp(App):
         self.wifi_profile_store = WifiProfileStore()
         self.enterprise_session_store = EnterpriseSessionStore()
         self.ap_history_store = ApHistoryStore()
+        try:
+            self.ap_history_store.import_probe_stations(Path(Config.captures_dir))
+        except Exception:
+            logger.warning(
+                "Could not import enterprise-probe station addresses",
+                exc_info=True,
+            )
         self.active_scan_session: ScanSession | None = None
         self.locked_target_id: str | None = None
         self.target_missing_since: float | None = None

@@ -257,6 +257,7 @@ class BluetoothManager:
                 "System adapter",
                 "Checking operating-system BLE availability",
             )
+        self._os_radio_powered: bool | None = None
         self._scanner = None
         # ``_usb_scanner`` is the *operational* scanner (labs/connect/SDP use it,
         # chosen per-operation by the router). ``_usb_scanners`` is the registry
@@ -777,6 +778,42 @@ class BluetoothManager:
                 state="CHECKING",
                 detail="Checking operating-system BLE availability",
             )
+
+    def apply_os_radio_power(self, powered: bool) -> str:
+        """Follow the host Bluetooth radio while the splash screen is open.
+
+        A failed CoreBluetooth probe stays failed until something asks again.
+        Returns ``updated`` when the panel should show the radio as off,
+        ``probe`` when it should be checked again, or ``unchanged``.
+        """
+        if not self.os_ble_enabled or self._scanner is not None:
+            return "unchanged"
+        if self.os_ble_status.state in {"OS-ACTIVE", "APP-DISABLED"}:
+            return "unchanged"
+        previous = self._os_radio_powered
+        self._os_radio_powered = powered
+        if previous == powered:
+            return "unchanged"
+        if not powered:
+            if (
+                self.os_ble_status.state == "OS-DISABLED"
+                and self.os_ble_status.available is False
+            ):
+                return "unchanged"
+            self.os_ble_status = replace(
+                self.os_ble_status,
+                enabled=True,
+                available=False,
+                state="OS-DISABLED",
+                detail="Bluetooth is turned off in System Settings",
+            )
+            return "updated"
+        if (
+            self.os_ble_status.state in {"OS-READY", "CHECKING"}
+            and self.os_ble_status.available is not False
+        ):
+            return "unchanged"
+        return "probe"
 
     async def probe_os_ble(self) -> OsBleSourceStatus:
         if not self.os_ble_enabled:

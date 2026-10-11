@@ -115,6 +115,11 @@ class WlanSink:
         self.wep_store = WepCaptureStore()  # WEP IV tallying
         self.packet_stats = PacketStats()   # Packet dashboard source
         self.own_macs: Set[str] = set()     # MACs we transmit as; dropped at ingest, never a client
+        # Once a MAC has been ours it stays ignored for the session, even after the
+        # radio stops ACKing it. Otherwise the AP's reply still looks like a client.
+        self._retired_own_macs: Set[str] = set()
+        if ap_history is not None:
+            self._retired_own_macs.update(ap_history.own_station_macs())
         self._waiters: list = []            # (match, future, loop) for the next_frame await-API
         self._waiters_lock = threading.Lock()
         self._eap_tls_fragments: dict[tuple[str, str, int, int], bytearray] = {}
@@ -465,7 +470,7 @@ class WlanSink:
         bssid = pkt.bssid
         rssi = pkt.rssi
         client_mac = pkt.client_mac
-        if not client_mac or client_mac in self.own_macs:
+        if not client_mac or self.is_our_station(client_mac):
             return True
 
         if client_mac not in self.clients:
@@ -591,7 +596,7 @@ class WlanSink:
                 akm = client_obj.akm_selected
 
         # Forged MACs keep a Handshake (for PMKID) but skip the EAPOL list.
-        if client_mac not in self.own_macs and not hs.has_message(raw_frame):
+        if not self.is_our_station(client_mac) and not hs.has_message(raw_frame):
             eapol = HandshakeMessage(
                 raw=raw_frame,
                 msg_num=pkt.msg_num,
@@ -834,15 +839,31 @@ class WlanSink:
             await asyncio.sleep(poll)
         return bool(condition())
 
+    def is_our_station(self, mac: str) -> bool:
+        """True for a MAC this app transmits as, including ones armed earlier this session."""
+        folded = mac.casefold()
+        return folded in self.own_macs or folded in self._retired_own_macs
+
     def register_own_mac(self, mac) -> str:
         """Mark ``mac`` as one we transmit as: ingest drops its frames, and it never becomes a client."""
         mac_str = mac_to_str(mac) if isinstance(mac, (bytes, bytearray)) else str(mac).lower()
         self.own_macs.add(mac_str)
-        self.clients.pop(mac_str, None)
+        self._retired_own_macs.add(mac_str)
+        client = self.clients.get(mac_str)
+        if client is None or not client.is_fake:
+            self.clients.pop(mac_str, None)
+        if self.ap_history is not None:
+            try:
+                self.ap_history.remember_own_station(mac_str)
+            except ApHistoryStoreError:
+                logger.warning("Could not persist own station", exc_info=True)
         return mac_str
 
     def unregister_own_mac(self, mac) -> None:
-        """Inverse of ``register_own_mac``."""
+        """Stop treating ``mac`` as the address currently on the air.
+
+        It stays retired for the session so a late AP reply cannot reappear as a client.
+        """
         mac_str = mac_to_str(mac) if isinstance(mac, (bytes, bytearray)) else str(mac).lower()
         self.own_macs.discard(mac_str)
 

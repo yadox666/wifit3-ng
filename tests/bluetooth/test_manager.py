@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -420,6 +421,31 @@ async def test_os_ble_probe_reports_os_disabled_instead_of_raising():
     assert status.available is False
     assert status.state == "OS-DISABLED"
     assert status.detail == "Bluetooth is off"
+
+
+def test_os_radio_power_on_after_off_requests_a_new_probe():
+    manager = BluetoothManager()
+    manager.os_ble_status = replace(
+        manager.os_ble_status,
+        available=False,
+        state="OS-DISABLED",
+        detail="Bluetooth is off",
+    )
+    assert manager.apply_os_radio_power(False) == "unchanged"
+    assert manager.apply_os_radio_power(True) == "probe"
+
+
+def test_os_radio_power_off_marks_corebluetooth_disabled():
+    manager = BluetoothManager()
+    manager.os_ble_status = replace(
+        manager.os_ble_status,
+        available=True,
+        state="OS-READY",
+        detail="Operating-system BLE scanning is available",
+    )
+    assert manager.apply_os_radio_power(False) == "updated"
+    assert manager.os_ble_status.state == "OS-DISABLED"
+    assert manager.apply_os_radio_power(False) == "unchanged"
 
 
 @pytest.mark.asyncio

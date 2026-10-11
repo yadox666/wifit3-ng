@@ -57,6 +57,18 @@ def test_channel_spec_for_40mhz_ap_uses_secondary_and_center():
     assert channel_spec_for_ap(ap) == ChannelSpec(9, 40, 7, -1)
 
 
+def test_channel_spec_derives_center_from_primary_not_conflicting_ie():
+    ap = SimpleNamespace(
+        channel=5,
+        capabilities=SimpleNamespace(
+            operating_width_mhz=40,
+            secondary_channel_offset=1,
+            center_channel_0=6,
+        ),
+    )
+    assert channel_spec_for_ap(ap) == ChannelSpec(5, 40, 7, 1)
+
+
 def test_channel_spec_falls_back_to_20_when_operation_is_incomplete():
     ap = SimpleNamespace(
         channel=44,

@@ -34,13 +34,12 @@ def channel_spec_for_ap(ap) -> ChannelSpec:
     """Build a safe tune request from an AP's decoded Operation IEs."""
     caps = ap.capabilities
     width = caps.operating_width_mhz
-    if width == 40 and caps.secondary_channel_offset in (-1, 1):
-        return ChannelSpec(
-            ap.channel,
-            40,
-            caps.center_channel_0,
-            caps.secondary_channel_offset,
-        )
+    offset = caps.secondary_channel_offset
+    if width == 40 and offset in (-1, 1):
+        # Center frequency index comes from primary + offset (802.11n HT).
+        # ``center_channel_0`` can disagree on real AX routers when a VHT/HE
+        # Operation IE overwrites the HT-derived value (extension vs center).
+        return ChannelSpec(ap.channel, 40, None, offset)
     return ChannelSpec(ap.channel)
 
 

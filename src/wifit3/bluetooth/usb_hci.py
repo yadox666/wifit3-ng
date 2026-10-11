@@ -1015,24 +1015,36 @@ class UsbHciScanner:
     def _open(self, *, recover: bool = False) -> None:
         last_error: UsbBluetoothError | None = None
         attempts = 3 if recover else 1
-        for attempt in range(attempts):
-            try:
-                self._open_once()
-                return
-            except UsbBluetoothError as exc:
-                last_error = exc
-                if not recover or attempt >= attempts - 1:
-                    raise
-                from wifit3.bluetooth.usb_claim import (
-                    claim_error_is_recoverable,
-                    release_os_bluetooth_for_usb_hci,
-                )
-                if not claim_error_is_recoverable(str(exc)):
-                    raise
-                release_os_bluetooth_for_usb_hci(self.controller)
-                time.sleep(0.35 * (attempt + 1))
-        if last_error is not None:
-            raise last_error
+        rfkill_blocked = False
+        try:
+            for attempt in range(attempts):
+                try:
+                    self._open_once()
+                    return
+                except UsbBluetoothError as exc:
+                    last_error = exc
+                    if not recover or attempt >= attempts - 1:
+                        raise
+                    from wifit3.bluetooth.usb_claim import (
+                        claim_error_is_recoverable,
+                        release_os_bluetooth_for_usb_hci,
+                    )
+                    if not claim_error_is_recoverable(str(exc)):
+                        raise
+                    steps = release_os_bluetooth_for_usb_hci(self.controller)
+                    rfkill_blocked = rfkill_blocked or any(
+                        step.startswith("Blocked Bluetooth") for step in steps
+                    )
+                    time.sleep(0.35 * (attempt + 1))
+            if last_error is not None:
+                raise last_error
+        finally:
+            # The soft-block is only there so BlueZ lets go of the HCI interface.
+            # Clear it once claim has the interface, or if claim failed, so the
+            # dongle radio is not left blocked.
+            if rfkill_blocked:
+                from wifit3.bluetooth.usb_claim import linux_rfkill_set
+                linux_rfkill_set(False)
 
     def _open_once(self) -> None:
         backend = libusb_package.get_libusb1_backend()

@@ -8,8 +8,11 @@ before retrying claim.
 """
 from __future__ import annotations
 
+import ctypes
 import logging
+import os
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -19,6 +22,10 @@ if TYPE_CHECKING:
     from wifit3.bluetooth.usb_hci import UsbBluetoothController
 
 logger = logging.getLogger(__name__)
+
+# Same private C entry points blueutil links against. They live in the OS
+# IOBluetooth framework, so the app does not ship or invoke an external binary.
+_IOBLUETOOTH = "/System/Library/Frameworks/IOBluetooth.framework/IOBluetooth"
 
 
 def claim_error_is_recoverable(message: str) -> bool:
@@ -72,18 +79,115 @@ def _run_quiet(argv: list[str], timeout: float = 8.0) -> bool:
         return False
 
 
+def macos_controller_power_on() -> bool | None:
+    """Read the macOS Bluetooth radio. ``None`` when the call is unavailable."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        get_power, _set_power = _macos_power_api()
+        return bool(int(get_power()))
+    except (AttributeError, OSError):
+        logger.debug("IOBluetooth power read unavailable", exc_info=True)
+        return None
+
+
+def _macos_power_api():
+    library = ctypes.CDLL(_IOBLUETOOTH)
+    get_power = library.IOBluetoothPreferenceGetControllerPowerState
+    get_power.argtypes = []
+    get_power.restype = ctypes.c_int
+    set_power = library.IOBluetoothPreferenceSetControllerPowerState
+    set_power.argtypes = [ctypes.c_int]
+    set_power.restype = None
+    return get_power, set_power
+
+
+def _macos_set_controller_power(enabled: bool, *, timeout: float = 8.0) -> bool:
+    """Power the macOS Bluetooth controller on or off via IOBluetooth.
+
+    ``IOBluetoothPreferenceSetControllerPowerState`` is the call ``blueutil -p``
+    uses. Poll until the getter matches, the same way that tool waits for
+    bluetoothd to finish the transition.
+    """
+    get_power, set_power = _macos_power_api()
+    want = 1 if enabled else 0
+    if int(get_power()) == want:
+        return True
+    set_power(want)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if int(get_power()) == want:
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def _macos_release(*, allow_radio_power_off: bool) -> list[str]:
     steps: list[str] = []
     if not allow_radio_power_off:
         return steps
-    # macOS exposes no public, dependency-free API for detaching its Bluetooth
-    # driver or changing radio power. Keep reclaim portable: retry the native
-    # libusb claim, then direct the user to the built-in System Settings switch.
+    # bluetoothd keeps the HCI interface until the controller is powered off.
+    powered_off = False
+    try:
+        powered_off = _macos_set_controller_power(False)
+    except (AttributeError, OSError):
+        logger.debug("IOBluetooth power-off unavailable", exc_info=True)
+    if powered_off:
+        steps.append("Turned macOS Bluetooth power off")
+        time.sleep(0.6)
+        return steps
+    blueutil = shutil.which("blueutil")
+    if blueutil is not None and _run_quiet([blueutil, "-p", "0"]):
+        steps.append("Turned macOS Bluetooth power off (blueutil)")
+        time.sleep(0.6)
+        return steps
     steps.append(
-        "Turn Bluetooth off in System Settings, then retry claim or replug the "
-        "dedicated adapter"
+        "Could not turn macOS Bluetooth off. Turn it off in System Settings, "
+        "then click ↻ again."
     )
     return steps
+
+
+# linux/rfkill.h - soft-block every Bluetooth radio without the rfkill(8) binary.
+_RFKILL_TYPE_BLUETOOTH = 2
+_RFKILL_OP_CHANGE_ALL = 3
+
+
+def _rfkill_event(blocked: bool) -> bytes:
+    """Pack one ``struct rfkill_event`` (8 bytes, protocol v1)."""
+    return struct.pack(
+        "<IBBBB",
+        0,
+        _RFKILL_TYPE_BLUETOOTH,
+        _RFKILL_OP_CHANGE_ALL,
+        1 if blocked else 0,
+        0,
+    )
+
+
+def _linux_rfkill_write(blocked: bool) -> bool:
+    try:
+        descriptor = os.open("/dev/rfkill", os.O_WRONLY | os.O_CLOEXEC)
+    except OSError:
+        return False
+    try:
+        os.write(descriptor, _rfkill_event(blocked))
+    except OSError:
+        return False
+    finally:
+        os.close(descriptor)
+    return True
+
+
+def linux_rfkill_set(blocked: bool) -> bool:
+    """Soft-block or unblock Bluetooth. ``/dev/rfkill`` first, then the ``rfkill`` command."""
+    if _linux_rfkill_write(blocked):
+        return True
+    binary = shutil.which("rfkill")
+    if binary is None:
+        return False
+    action = "block" if blocked else "unblock"
+    return _run_quiet([binary, action, "bluetooth"])
 
 
 def _linux_release() -> list[str]:
@@ -94,8 +198,7 @@ def _linux_release() -> list[str]:
             time.sleep(0.5)
         else:
             steps.append("bluetoothctl power off failed (DBus session?)")
-    if shutil.which("rfkill"):
-        if _run_quiet(["rfkill", "block", "bluetooth"]):
-            steps.append("Blocked Bluetooth via rfkill")
-            time.sleep(0.3)
+    if linux_rfkill_set(True):
+        steps.append("Blocked Bluetooth via rfkill")
+        time.sleep(0.3)
     return steps

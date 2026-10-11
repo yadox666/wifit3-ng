@@ -405,6 +405,10 @@ class ClientFocusView(Screen):
         card.update_bssid(members[0].mac_address if len(members) == 1 else None)
         card.update(dynamic=fm.status_under_card())
 
+    def _is_our_station(self, mac: str) -> bool:
+        """True when this address is one the app transmitted as."""
+        return self.app.ap_history_store.is_own_station(mac)
+
     def _client_panel_list(self) -> list[Client]:
         client = self._live_client()
         array = self.app.array
@@ -436,6 +440,8 @@ class ClientFocusView(Screen):
             now = time.time()
             for sta in array.clients.values():
                 if sta.bssid == self._target_ap.bssid and (
+                    sta.is_fake or not self._is_our_station(sta.mac)
+                ) and (
                     sta.is_fake or now - sta.last_seen <= _CLIENT_LIVE_SECONDS
                 ):
                     rows[sta.mac.casefold()] = sta

@@ -532,6 +532,7 @@ class SplashView(Screen):
         self._enter_scanning_mode()
         self._set_background_button(running=False)
         self.set_interval(1.0, self.refresh_usb_bluetooth_controllers)
+        self.set_interval(1.0, self.refresh_os_ble_radio)
         await self.refresh_usb_bluetooth_controllers()
         self.autoreclaim_usb_bluetooth_once()
         self.probe_os_ble()
@@ -543,6 +544,25 @@ class SplashView(Screen):
         status = await self.app.bluetooth_manager.probe_os_ble()
         if self.app.screen is self:
             self._os_ble_picker().set_status(status)
+            self._sync_optional_hardware_ui()
+            self._sync_adapter_widths()
+
+    def refresh_os_ble_radio(self) -> None:
+        """Notice the macOS Bluetooth radio coming back after it was off."""
+        if sys.platform != "darwin" or self._is_initializing:
+            return
+        from wifit3.bluetooth.usb_claim import macos_controller_power_on
+
+        powered = macos_controller_power_on()
+        if powered is None:
+            return
+        manager = self.app.bluetooth_manager
+        action = manager.apply_os_radio_power(powered)
+        if action == "probe":
+            self.probe_os_ble()
+            return
+        if action == "updated" and self.app.screen is self:
+            self._os_ble_picker().set_status(manager.os_ble_status)
             self._sync_optional_hardware_ui()
             self._sync_adapter_widths()
 

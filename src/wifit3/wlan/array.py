@@ -89,6 +89,11 @@ class WlanArray:
                 pass
         self._dedupe.add_source(iface.name)
         iface.on_tx = self._sink.record_tx
+        bind_own_mac = getattr(iface, "bind_own_mac_registry", None)
+        if bind_own_mac is not None:
+            bind_own_mac(self)
+        elif getattr(iface, "mac_address", None):
+            self.register_own_mac(iface.mac_address)
         iface.register_rx_callback(lambda pkt, i=iface: self._ingest(i, pkt))
         iface.register_disconnect_callback(lambda exc, i=iface: self._member_lost(i, exc))
         logger.info("attached %s (%s); %d card(s)", iface.name, iface.description,
@@ -205,7 +210,7 @@ class WlanArray:
         # FromDS frame source is addr3, so the AP's fresh-IV rebroadcast of our replayed ARP (our MAC
         # in addr3, BSSID as TA) would be dropped and zero the IV rate. TA-keying counts it and still
         # drops a second card hearing our own ToDS injection (TA == our MAC).
-        if pkt.transmitter in self._sink.own_macs:
+        if self._sink.is_our_station(pkt.transmitter):
             return
         if self._is_stray_beacon(pkt):
             return
