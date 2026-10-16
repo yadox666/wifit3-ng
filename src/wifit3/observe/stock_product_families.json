@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "families": [
-    {
+{
       "id": "flock-cameras",
       "label": "Flock Safety Cameras",
       "class": "Surveillance",
@@ -42,7 +42,7 @@
         }
       ]
     },
-    {
+{
       "id": "penguin",
       "label": "Penguin",
       "class": "Surveillance",
@@ -63,7 +63,7 @@
         }
       ]
     },
-    {
+{
       "id": "raven",
       "label": "Raven / ShotSpotter",
       "class": "Surveillance",
@@ -111,7 +111,7 @@
         }
       ]
     },
-    {
+{
       "id": "securitas-direct-alarm",
       "label": "Securitas Direct / Verisure",
       "class": "Alarm",
@@ -162,6 +162,10 @@
         },
         {
           "kind": "name_regex",
+          "text": "(?i)^AirTag\\d+,\\d+$"
+        },
+        {
+          "kind": "name_regex",
           "text": "(?i)^.*Find\\s+My.*$"
         },
         {
@@ -190,10 +194,14 @@
           "kind": "name_regex",
           "text": "(?i)^.*\\biPhone\\b.*$",
           "radio": "wifi"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^iPhone\\d+,\\d+$"
         }
       ]
     },
-    {
+{
       "id": "oppo-phone",
       "label": "OPPO smartphone",
       "class": "Phone",
@@ -211,7 +219,7 @@
         }
       ]
     },
-    {
+{
       "id": "samsung-phone",
       "label": "Samsung smartphone",
       "class": "Phone",
@@ -238,7 +246,7 @@
         }
       ]
     },
-    {
+{
       "id": "honor-phone",
       "label": "HONOR smartphone",
       "class": "Phone",
@@ -250,7 +258,7 @@
         }
       ]
     },
-    {
+{
       "id": "caterpillar-phone",
       "label": "Caterpillar smartphone",
       "class": "Phone",
@@ -273,6 +281,10 @@
           "kind": "name_regex",
           "text": "(?i)^.*\\biPad\\b.*$",
           "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^iPad\\d+,\\d+$"
         }
       ]
     },
@@ -296,6 +308,10 @@
           "kind": "name_regex",
           "text": "(?i)^.*Mac\\s+mini.*$",
           "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Mac\\d+,\\d+$"
         }
       ]
     },
@@ -314,6 +330,10 @@
           "kind": "name_regex",
           "text": "(?i)^.*\\bAppleTV\\b.*$",
           "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^AppleTV\\d+,\\d+$"
         }
       ]
     },
@@ -327,6 +347,10 @@
           "kind": "name_regex",
           "text": "(?i)^.*Apple\\s+Watch.*$",
           "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Watch\\d+,\\d+$"
         }
       ]
     },
@@ -334,16 +358,20 @@
       "id": "apple-homepod",
       "label": "HomePod",
       "class": "Audio",
-      "notes": "The name says HomePod.",
+      "notes": "The name says HomePod, or the model is an AudioAccessory identifier (HomePod and HomePod mini).",
       "rules": [
         {
           "kind": "name_regex",
           "text": "(?i)^.*\\bHomePod\\b.*$",
           "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^AudioAccessory(?:Single)?\\d+,\\d+$"
         }
       ]
     },
-    {
+{
       "id": "apple-device",
       "label": "Apple Device",
       "class": "Ambiguous",
@@ -395,7 +423,7 @@
       "id": "apple-audio",
       "label": "Apple audio",
       "class": "Audio",
-      "notes": "Proximity pairing, AirPlay target, or an AirPods or Beats name.",
+      "notes": "Proximity pairing, AirPlay target, an AirPods or Beats name, or an AirPods, Beats, or Powerbeats board id. Device1 ids are included only when that Bluetooth product id is a published headphone.",
       "rules": [
         {
           "kind": "manufacturer_data",
@@ -421,10 +449,27 @@
           "kind": "name_regex",
           "text": "(?i)^.*\\bBeats\\b.*$",
           "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bPowerbeats\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^AirPods(?:Pro|Max)?\\d+,\\d+$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^iProd\\d+,\\d+$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^(?:Power)?Beats[A-Za-z]*\\d+,\\d+$"
         }
       ]
     },
-    {
+{
       "id": "dult",
       "label": "DULT tracker",
       "class": "Finder",
@@ -438,7 +483,7 @@
         }
       ]
     },
-    {
+{
       "id": "find-hub",
       "label": "Google Find Hub",
       "class": "Finder",
@@ -459,7 +504,7 @@
         }
       ]
     },
-    {
+{
       "id": "chipolo",
       "label": "Chipolo",
       "class": "Finder",
@@ -475,7 +520,7 @@
         }
       ]
     },
-    {
+{
       "id": "pebblebee",
       "label": "Pebblebee / moto tag",
       "class": "Finder",
@@ -498,7 +543,7 @@
         }
       ]
     },
-    {
+{
       "id": "tile",
       "label": "Tile Trackers",
       "class": "Finder",
@@ -521,7 +566,7 @@
         }
       ]
     },
-    {
+{
       "id": "projector-wifi",
       "label": "Projector",
       "class": "Display",
@@ -551,7 +596,7 @@
         }
       ]
     },
-    {
+{
       "id": "ble-tv-bracket",
       "label": "Television",
       "class": "Display",
@@ -584,7 +629,7 @@
         }
       ]
     },
-    {
+{
       "id": "windows-desktop-ble",
       "label": "Windows PC",
       "class": "Computer",
@@ -597,7 +642,7 @@
         }
       ]
     },
-    {
+{
       "id": "samsung-tv",
       "label": "Samsung TV",
       "class": "Display",
@@ -625,7 +670,7 @@
         }
       ]
     },
-    {
+{
       "id": "huawei-wearable",
       "label": "Huawei wearable",
       "class": "Wearable",
@@ -674,22 +719,12 @@
         },
         {
           "kind": "name_regex",
-          "text": "(?i)^Xiaomi\\s+Mi\\s+Color.*$",
-          "radio": "ble"
-        },
-        {
-          "kind": "name_regex",
-          "text": "(?i)^.*\\bMi\\s+Color\\s+S\\b.*$",
-          "radio": "ble"
-        },
-        {
-          "kind": "name_regex",
           "text": "(?i)^.*\\bMi\\s+Smart\\s+Band\\b.*$",
           "radio": "ble"
         }
       ]
     },
-    {
+{
       "id": "service-audio-output",
       "label": "Bluetooth audio output",
       "class": "Audio",
@@ -717,7 +752,7 @@
         }
       ]
     },
-    {
+{
       "id": "service-video-device",
       "label": "Bluetooth video device",
       "class": "Display",
@@ -737,7 +772,7 @@
         }
       ]
     },
-    {
+{
       "id": "service-media-remote-target",
       "label": "TV / media device",
       "class": "Ambiguous",
@@ -753,7 +788,7 @@
         }
       ]
     },
-    {
+{
       "id": "service-health-monitor",
       "label": "Health monitor",
       "class": "Health",
@@ -805,7 +840,7 @@
         }
       ]
     },
-    {
+{
       "id": "service-fitness-device",
       "label": "Fitness device",
       "class": "Fitness",
@@ -829,7 +864,7 @@
         }
       ]
     },
-    {
+{
       "id": "service-human-interface",
       "label": "Human interface device",
       "class": "Peripherals",
@@ -849,7 +884,7 @@
         }
       ]
     },
-    {
+{
       "id": "service-environment-sensor",
       "label": "Environmental sensor",
       "class": "Sensor",
@@ -865,7 +900,7 @@
         }
       ]
     },
-    {
+{
       "id": "service-network-access",
       "label": "Bluetooth network device",
       "class": "Network",
@@ -893,7 +928,7 @@
         }
       ]
     },
-    {
+{
       "id": "service-printer",
       "label": "Bluetooth printer",
       "class": "Printer",
@@ -929,7 +964,7 @@
         }
       ]
     },
-    {
+{
       "id": "generic-speaker",
       "label": "Speaker",
       "class": "Audio",
@@ -945,7 +980,7 @@
         }
       ]
     },
-    {
+{
       "id": "generic-headphones",
       "label": "Headphones",
       "class": "Audio",
@@ -957,7 +992,7 @@
         }
       ]
     },
-    {
+{
       "id": "sony-audio",
       "label": "Sony headphones",
       "class": "Audio",
@@ -1010,7 +1045,7 @@
         }
       ]
     },
-    {
+{
       "id": "epson-printer-ble",
       "label": "Epson printer",
       "class": "Printer",
@@ -1038,7 +1073,7 @@
         }
       ]
     },
-    {
+{
       "id": "ble-mesh-provisioning",
       "label": "Bluetooth Mesh provisioner",
       "class": "Network",
@@ -1051,7 +1086,7 @@
         }
       ]
     },
-    {
+{
       "id": "smarttag",
       "label": "Samsung SmartTags",
       "class": "Finder",
@@ -1075,7 +1110,7 @@
         }
       ]
     },
-    {
+{
       "id": "fast-pair",
       "label": "Fast Pair",
       "class": "Ambiguous",
@@ -1088,7 +1123,7 @@
         }
       ]
     },
-    {
+{
       "id": "tesla",
       "label": "Tesla",
       "class": "Vehicle",
@@ -1149,7 +1184,7 @@
         }
       ]
     },
-    {
+{
       "id": "home-router-digi",
       "label": "DIGI",
       "class": "Home router",
@@ -1161,7 +1196,7 @@
         {"kind": "name_regex", "text": "(?i)^DIGIFIBRA-PLUS[\\w-]*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-movistar",
       "label": "Movistar",
       "class": "Home router",
@@ -1170,7 +1205,7 @@
         {"kind": "name_regex", "text": "(?i)^MOVISTAR[\\w-]*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-orange",
       "label": "Orange",
       "class": "Home router",
@@ -1183,7 +1218,7 @@
         {"kind": "name_regex", "text": "(?i)^WIFI6-ORANGE[\\w-]*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-vodafone",
       "label": "Vodafone",
       "class": "Home router",
@@ -1195,7 +1230,7 @@
         {"kind": "name_regex", "text": "(?i)^.*\\bVodafone Station\\b.*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-jazztel",
       "label": "Jazztel",
       "class": "Home router",
@@ -1204,7 +1239,7 @@
         {"kind": "name_regex", "text": "(?i)^Jazztel[\\w-]*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-o2",
       "label": "O2",
       "class": "Home router",
@@ -1214,7 +1249,7 @@
         {"kind": "name_regex", "text": "(?i)^.*\\bO2 Wireless\\b.*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-masmovil",
       "label": "MasMovil",
       "class": "Home router",
@@ -1226,7 +1261,7 @@
         {"kind": "name_regex", "text": "(?i)^MIWIFI_[\\w-]+$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-yoigo",
       "label": "Yoigo",
       "class": "Home router",
@@ -1235,7 +1270,7 @@
         {"kind": "name_regex", "text": "(?i)^Yoigo[\\w-]*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-pepephone",
       "label": "Pepephone",
       "class": "Home router",
@@ -1244,7 +1279,7 @@
         {"kind": "name_regex", "text": "(?i)^Pepephone[\\w-]*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-mifibra",
       "label": "MiFibra",
       "class": "Home router",
@@ -1253,7 +1288,7 @@
         {"kind": "name_regex", "text": "(?i)^MiFibra[\\w-]+$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-lowi",
       "label": "Lowi",
       "class": "Home router",
@@ -1262,7 +1297,7 @@
         {"kind": "name_regex", "text": "(?i)^Lowi[\\w-]*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-iberdrola",
       "label": "Iberdrola",
       "class": "Home router",
@@ -1271,7 +1306,7 @@
         {"kind": "name_regex", "text": "(?i)^Iberdrola[\\w-]*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-calima",
       "label": "Calima",
       "class": "Home router",
@@ -1280,7 +1315,7 @@
         {"kind": "name_regex", "text": "(?i)^Calima[\\w-]*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-sagemcom",
       "label": "Sagemcom",
       "class": "Home router",
@@ -1290,7 +1325,7 @@
         {"kind": "name_regex", "text": "(?i)^.*\\bSagemcom\\b.*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-sercomm",
       "label": "Sercomm",
       "class": "Home router",
@@ -1300,7 +1335,7 @@
         {"kind": "name_regex", "text": "(?i)^.*\\bSercomm\\b.*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-tp-link",
       "label": "TP-Link",
       "class": "Home router",
@@ -1312,7 +1347,7 @@
         {"kind": "name_regex", "text": "(?i)^TP[-_]Link.*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-tenda",
       "label": "Tenda",
       "class": "Home router",
@@ -1321,7 +1356,7 @@
         {"kind": "name_regex", "text": "(?i)^Tenda_[\\w-]+$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-zte",
       "label": "ZTE",
       "class": "Home router",
@@ -1331,7 +1366,7 @@
         {"kind": "name_regex", "text": "(?i)^ZTE_[\\w-]+$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "home-router-isp",
       "label": "Generic ISP router",
       "class": "Home router",
@@ -1342,7 +1377,7 @@
         {"kind": "name_regex", "text": "(?i)^REDWIFI[\\w_]*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "hospitality-hotel-lodging",
       "label": "Hotel / lodging",
       "class": "Hospitality",
@@ -1368,7 +1403,7 @@
         {"kind": "name_regex", "text": "(?i)^.*(_INN$|INN_).*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "hospitality-apartment",
       "label": "Apartment",
       "class": "Hospitality",
@@ -1379,7 +1414,7 @@
         {"kind": "name_regex", "text": "(?i)^.*APARTAMENTO(S)?.*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "hospitality-restaurant",
       "label": "Restaurant",
       "class": "Hospitality",
@@ -1392,7 +1427,7 @@
         {"kind": "name_regex", "text": "(?i)^.*COMEDOR.*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "hospitality-cafe-lounge",
       "label": "Café / lounge",
       "class": "Hospitality",
@@ -1405,7 +1440,7 @@
         {"kind": "name_regex", "text": "(?i)^(?!My\\s)(?!^Cafe$).*\\b(CAFE|CAFÉ)\\b.*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "hospitality-workspace",
       "label": "Workspace / coworking",
       "class": "Hospitality",
@@ -1417,7 +1452,7 @@
         {"kind": "name_regex", "text": "(?i)^.*BUSINESS[-_ ]?CENT(ER|RE).*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "hospitality-guest-wifi",
       "label": "Guest Wi-Fi",
       "class": "Hospitality",
@@ -1429,7 +1464,7 @@
         {"kind": "name_regex", "text": "(?i)^.*\\bWiFi Guest\\b.*$", "radio": "wifi"}
       ]
     },
-    {
+{
       "id": "printer-wifi-direct",
       "label": "Wi-Fi Direct printer",
       "class": "Printer",
@@ -1513,7 +1548,7 @@
         }
       ]
     },
-    {
+{
       "id": "engenius-cloud-ap-setup",
       "label": "EnGenius cloud AP (setup)",
       "class": "Computer",
@@ -1536,7 +1571,7 @@
       "label": "Robot vacuum / mop",
       "class": "Cleaning device",
       "attention": "Floor-care and connected laundry setup Wi-Fi (Roomba, iRobot, Braava, Samsung Washer_*, [washer]_*).",
-      "notes": "Wi-Fi SSID clues only. Robot APs are often short-lived during provisioning.",
+      "notes": "Wi-Fi setup SSIDs, BLE names, and iRobot company 0x0600. Robot APs are often short-lived during provisioning.",
       "rules": [
         {
           "kind": "name_regex",
@@ -1580,7 +1615,7 @@
         },
         {
           "kind": "name_regex",
-          "text": "(?i)^.*[[]washer[]\\]_.*$",
+          "text": "(?i)^.*\\[washer\\]_.*$",
           "radio": "wifi"
         },
         {
@@ -1597,6 +1632,30 @@
           "kind": "name_regex",
           "text": "(?i)^Samsung\\s+Washer_.*$",
           "radio": "wifi"
+        },
+        {
+          "kind": "manufacturer_id",
+          "company_id": 1536
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\biRobot\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^iRobot.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bRoomba\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Roomba.*$",
+          "radio": "ble"
         }
       ]
     },
@@ -1604,7 +1663,7 @@
       "id": "dashcam-wifi",
       "label": "Dashcam Wi-Fi",
       "class": "Camera",
-      "attention": "Action cam / dashcam AP (70mai, KAWA, CVR-*, E-ACE B46P, YantopCam-*, Meitrack MTDVR / MT-* fleet DVR).",
+      "attention": "Dashcam AP or BLE radio (70mai company 0x0909, KAWA, CVR-*, E-ACE B46P, YantopCam-*, Meitrack MTDVR / MT-* fleet DVR).",
       "rules": [
         {
           "kind": "name_regex",
@@ -1645,10 +1704,32 @@
           "kind": "name_regex",
           "text": "(?i)^YantopCam-.*$",
           "radio": "wifi"
+        },
+        {
+          "kind": "manufacturer_id",
+          "company_id": 2313
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD4D"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD4E"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\b70mai\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^70mai.*$",
+          "radio": "ble"
         }
       ]
     },
-    {
+{
       "id": "iot-ai-thinker-esp",
       "label": "Ai-Thinker ESP soft AP",
       "class": "Computer",
@@ -1671,7 +1752,7 @@
         }
       ]
     },
-    {
+{
       "id": "lorawan-lpwan-iot",
       "label": "LoRaWAN / LPWAN",
       "class": "IoT",
@@ -1820,7 +1901,7 @@
         }
       ]
     },
-    {
+{
       "id": "trimble-snm941-gateway",
       "label": "Trimble SNM941 gateway",
       "class": "Vehicle",
@@ -1839,7 +1920,7 @@
         }
       ]
     },
-    {
+{
       "id": "phone-wifi-tether",
       "label": "Phone / tablet hotspot",
       "class": "Phone",
@@ -1938,7 +2019,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-vag-hotspot",
       "label": "VAG infotainment hotspot",
       "class": "Vehicle",
@@ -2022,7 +2103,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-android-auto",
       "label": "Android Auto Wi-Fi",
       "class": "Vehicle",
@@ -2045,7 +2126,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-carplay",
       "label": "Apple CarPlay Wi-Fi",
       "class": "Vehicle",
@@ -2068,7 +2149,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-chigee-display",
       "label": "CHIGEE motorcycle display",
       "class": "Vehicle",
@@ -2082,7 +2163,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-bmw",
       "label": "BMW WLAN",
       "class": "Vehicle",
@@ -2114,7 +2195,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-mercedes",
       "label": "Mercedes MBUX",
       "class": "Vehicle",
@@ -2141,7 +2222,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-stellantis",
       "label": "Stellantis Uconnect",
       "class": "Vehicle",
@@ -2169,7 +2250,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-ford",
       "label": "Ford SYNC",
       "class": "Vehicle",
@@ -2196,7 +2277,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-hyundai",
       "label": "Hyundai / Kia in-car Wi-Fi",
       "class": "Vehicle",
@@ -2239,7 +2320,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-toyota",
       "label": "Toyota in-car Wi-Fi",
       "class": "Vehicle",
@@ -2267,7 +2348,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-renault",
       "label": "Renault in-car Wi-Fi",
       "class": "Vehicle",
@@ -2295,7 +2376,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-dacia",
       "label": "Dacia in-car Wi-Fi",
       "class": "Vehicle",
@@ -2308,7 +2389,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-mazda",
       "label": "Mazda in-car Wi-Fi",
       "class": "Vehicle",
@@ -2325,7 +2406,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-porsche",
       "label": "Porsche in-car Wi-Fi",
       "class": "Vehicle",
@@ -2342,7 +2423,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-byd",
       "label": "BYD vehicle",
       "class": "Vehicle",
@@ -2365,7 +2446,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-generic-car",
       "label": "Generic vehicle",
       "class": "Vehicle",
@@ -2378,7 +2459,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-car-dongle",
       "label": "Car Wi-Fi dongle",
       "class": "Vehicle",
@@ -2401,7 +2482,7 @@
         }
       ]
     },
-    {
+{
       "id": "vehicle-pioneer-car-audio",
       "label": "Pioneer car stereo",
       "class": "Vehicle",
@@ -2419,7 +2500,7 @@
         }
       ]
     },
-    {
+{
       "id": "ibeacon",
       "label": "iBeacon",
       "class": "Beacon",
@@ -2442,7 +2523,7 @@
         }
       ]
     },
-    {
+{
       "id": "osmo",
       "label": "Osmo",
       "class": "Camera",
@@ -2537,7 +2618,7 @@
         }
       ]
     },
-    {
+{
       "id": "dji",
       "label": "DJI",
       "class": "Drone",
@@ -2570,7 +2651,7 @@
         }
       ]
     },
-    {
+{
       "id": "remote-id",
       "label": "Remote ID aircraft",
       "class": "Drone",
@@ -2592,7 +2673,7 @@
         }
       ]
     },
-    {
+{
       "id": "meta-glasses",
       "label": "Ray-Ban / Meta glasses",
       "class": "Glasses",
@@ -2638,7 +2719,7 @@
         }
       ]
     },
-    {
+{
       "id": "snap-spectacles",
       "label": "Snap Spectacles",
       "class": "Glasses",
@@ -2665,7 +2746,7 @@
         }
       ]
     },
-    {
+{
       "id": "vuzix",
       "label": "Vuzix",
       "class": "Glasses",
@@ -2687,7 +2768,7 @@
         }
       ]
     },
-    {
+{
       "id": "axon",
       "label": "Axon",
       "class": "Public safety",
@@ -2737,7 +2818,7 @@
         }
       ]
     },
-    {
+{
       "id": "flipper",
       "label": "Flipper Zero",
       "class": "Pentest",
@@ -2759,7 +2840,7 @@
         }
       ]
     },
-    {
+{
       "id": "hak5-pineapple",
       "label": "Hak5 Pineapple",
       "class": "Pentest",
@@ -2787,7 +2868,7 @@
         }
       ]
     },
-    {
+{
       "id": "keyboard-mouse",
       "label": "Keyboard and mouse",
       "class": "Peripherals",
@@ -2799,7 +2880,7 @@
         }
       ]
     },
-    {
+{
       "id": "gopro",
       "label": "GoPro",
       "class": "Cameras",
@@ -2819,7 +2900,7 @@
         }
       ]
     },
-    {
+{
       "id": "pwnagotchi",
       "label": "Pwnagotchi",
       "class": "Pentest",
@@ -2838,6 +2919,1352 @@
           "text": "(?i)^pwnagotchi.*$"
         }
       ]
+    },
+    {
+      "id": "xiaomi-mi-colors",
+      "label": "Xiaomi Mi ColorS",
+      "class": "Phone",
+      "notes": "Xiaomi Mi ColorS handset. The spaced form Mi Color S is the same phone. Mi Band and Mi Watch stay on the wearable row.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMi\\s+ColorS\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMi\\s+Color\\s+S\\b.*$"
+        }
+      ]
+    },
+    {
+      "id": "apple-ipod",
+      "label": "iPod",
+      "class": "Tablet",
+      "notes": "The name says iPod, or the model is an iPod touch board id.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\biPod\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^iPod\\d+,\\d+$"
+        }
+      ]
+    },
+    {
+      "id": "apple-vision",
+      "label": "Apple Vision Pro",
+      "class": "Glasses",
+      "notes": "The name says Vision Pro, or the model is a RealityDevice board id.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bVision\\s+Pro\\b.*$",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^RealityDevice\\d+,\\d+$"
+        }
+      ]
+    },
+    {
+      "id": "ble-door-lock",
+      "label": "Door lock",
+      "class": "Lock",
+      "notes": "Appearance subcategory Door lock, or a door-lock / smart-lock name. A branded lock row replaces this one.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bdoor\\s+lock\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^door\\s+lock.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bsmart\\s+lock\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^smart\\s+lock.*$"
+        }
+      ]
+    },
+    {
+      "id": "lock-yale",
+      "label": "Yale",
+      "class": "Lock",
+      "notes": "Bluetooth SIG company 0x0BDE.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 3038
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bYale\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Yale.*$"
+        }
+      ]
+    },
+    {
+      "id": "lock-schlage",
+      "label": "Schlage",
+      "class": "Lock",
+      "notes": "Allegion company 0x013B and member service FCF4. Schlage is an Allegion brand.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 315
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FCF4"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSchlage\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Schlage.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bAllegion\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Allegion.*$"
+        }
+      ]
+    },
+    {
+      "id": "lock-august",
+      "label": "August",
+      "class": "Lock",
+      "notes": "August Home company 0x01D1 and member service FE24. A bare month name is not this row.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 465
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE24"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bAugust\\s+Home\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^August\\s+Home.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bAugust\\s+Lock\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^August\\s+Lock.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^August-[0-9A-Fa-f].*$"
+        }
+      ]
+    },
+    {
+      "id": "lock-assa-abloy",
+      "label": "ASSA ABLOY",
+      "class": "Lock",
+      "notes": "Bluetooth SIG company 0x012E and member service FCBF.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 302
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FCBF"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bASSA\\s+ABLOY\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^ASSA\\s+ABLOY.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bASSA\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^ASSA.*$"
+        }
+      ]
+    },
+    {
+      "id": "lock-salto",
+      "label": "SALTO",
+      "class": "Lock",
+      "notes": "SALTO company 0x0199 and member service FE88.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 409
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE88"
+        },
+        {
+          "kind": "manufacturer",
+          "text": "Salto"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSALTO\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^SALTO.*$"
+        }
+      ]
+    },
+    {
+      "id": "lock-abus",
+      "label": "ABUS",
+      "class": "Lock",
+      "notes": "Bluetooth SIG company 0x0CC4.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 3268
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bABUS\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^ABUS.*$"
+        }
+      ]
+    },
+    {
+      "id": "lock-sesame",
+      "label": "Sesame",
+      "class": "Lock",
+      "notes": "CANDY HOUSE company 0x055A and member service FD81. Sesame is that company's lock.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 1370
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD81"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSesame\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Sesame.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bCandy\\s+House\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Candy\\s+House.*$"
+        }
+      ]
+    },
+    {
+      "id": "lock-tapkey",
+      "label": "Tapkey",
+      "class": "Lock",
+      "notes": "Bluetooth SIG company 0x04FD and member service FD5E.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 1277
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD5E"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bTapkey\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Tapkey.*$"
+        }
+      ]
+    },
+    {
+      "id": "camera-arlo",
+      "label": "Arlo",
+      "class": "Camera",
+      "notes": "Arlo company 0x0C19. Arlotto is a different vendor and does not match this name.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 3097
+        },
+        {
+          "kind": "manufacturer",
+          "text": "Arlo"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bArlo\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Arlo.*$"
+        }
+      ]
+    },
+    {
+      "id": "camera-axis",
+      "label": "Axis",
+      "class": "Camera",
+      "notes": "Wi-Fi vendor name Axis Communications, or a name that starts with AXIS.",
+      "rules": [
+        {
+          "kind": "manufacturer",
+          "text": "Axis Communications"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^AXIS.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bAxis\\s+Communications\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Axis\\s+Communications.*$"
+        }
+      ]
+    },
+    {
+      "id": "camera-hikvision",
+      "label": "Hikvision",
+      "class": "Camera",
+      "notes": "Wi-Fi vendor name. The OUI list is not copied into this row.",
+      "rules": [
+        {
+          "kind": "manufacturer",
+          "text": "Hikvision"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bHikvision\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Hikvision.*$"
+        }
+      ]
+    },
+    {
+      "id": "camera-verkada",
+      "label": "Verkada",
+      "class": "Camera",
+      "notes": "Member services FD3A and FD3B.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "FD3A"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD3B"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bVerkada\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Verkada.*$"
+        }
+      ]
+    },
+    {
+      "id": "camera-rhombus",
+      "label": "Rhombus",
+      "class": "Camera",
+      "notes": "Bluetooth SIG company 0x075D and member service FDA9.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 1885
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FDA9"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bRhombus\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Rhombus.*$"
+        }
+      ]
+    },
+    {
+      "id": "camera-wyze",
+      "label": "Wyze",
+      "class": "Camera",
+      "notes": "Wyze Labs company 0x0870 and member service FD7B.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 2160
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD7B"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bWyze\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Wyze.*$"
+        }
+      ]
+    },
+    {
+      "id": "camera-insta360",
+      "label": "Insta360",
+      "class": "Camera",
+      "notes": "Advertised name. Insta GmbH and Instabeat are different companies and are not this row.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bInsta360\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Insta360.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bInsta\\s+360\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Insta\\s*360.*$"
+        }
+      ]
+    },
+    {
+      "id": "wearable-garmin",
+      "label": "Garmin",
+      "class": "Wearable",
+      "notes": "Garmin company 0x0087 and member service FE1F.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 135
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE1F"
+        },
+        {
+          "kind": "manufacturer",
+          "text": "Garmin"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bGarmin\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Garmin.*$"
+        }
+      ]
+    },
+    {
+      "id": "wearable-polar",
+      "label": "Polar",
+      "class": "Wearable",
+      "notes": "Polar Electro companies 0x006B and 0x00D1, member services FEEF and FEEE.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 107
+        },
+        {
+          "kind": "manufacturer_id",
+          "company_id": 209
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEEF"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEEE"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bPolar\\b.*$"
+        }
+      ]
+    },
+    {
+      "id": "wearable-suunto",
+      "label": "Suunto",
+      "class": "Wearable",
+      "notes": "Bluetooth SIG company 0x009F.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 159
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSuunto\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Suunto.*$"
+        }
+      ]
+    },
+    {
+      "id": "wearable-wahoo",
+      "label": "Wahoo",
+      "class": "Wearable",
+      "notes": "Bluetooth SIG company 0x01FC.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 508
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bWahoo\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Wahoo.*$"
+        }
+      ]
+    },
+    {
+      "id": "wearable-oura",
+      "label": "Oura",
+      "class": "Wearable",
+      "notes": "Oura company 0x02B2 and member services FDB0 and FDB1.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 690
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FDB0"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FDB1"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bOura\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Oura.*$"
+        }
+      ]
+    },
+    {
+      "id": "wearable-withings",
+      "label": "Withings",
+      "class": "Wearable",
+      "notes": "Withings company 0x03FF. Watches and scales share this identifier.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 1023
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD77"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD78"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD79"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD7A"
+        },
+        {
+          "kind": "manufacturer",
+          "text": "Withings"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bWithings\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Withings.*$"
+        }
+      ]
+    },
+    {
+      "id": "wearable-huami",
+      "label": "Huami / Amazfit",
+      "class": "Wearable",
+      "notes": "Huami companies 0x0157 and 0x022F, member services FEE0 and FEE1.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 343
+        },
+        {
+          "kind": "manufacturer_id",
+          "company_id": 559
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEE0"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEE1"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bHuami\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Huami.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bAmazfit\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Amazfit.*$"
+        }
+      ]
+    },
+    {
+      "id": "home-aqara",
+      "label": "Aqara",
+      "class": "Smart home",
+      "notes": "Lumi United company 0x0B27 and member service FCB9. A bare Lumi name is not this row.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 2855
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FCB9"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bAqara\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Aqara.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^lumi\\..*$"
+        }
+      ]
+    },
+    {
+      "id": "home-tuya",
+      "label": "Tuya",
+      "class": "Smart home",
+      "notes": "Hangzhou Tuya company 0x07D0 and member service FD50. White-label modules use this identifier.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 2000
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD50"
+        },
+        {
+          "kind": "manufacturer",
+          "text": "Tuya"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bTuya\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Tuya.*$"
+        }
+      ]
+    },
+    {
+      "id": "home-shelly",
+      "label": "Shelly",
+      "class": "Smart home",
+      "notes": "Allterco Robotics company 0x0BA9. Service FCD2 is BTHome and stays off this row.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 2985
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bShelly\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Shelly.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bAllterco\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Allterco.*$"
+        }
+      ]
+    },
+    {
+      "id": "home-signify",
+      "label": "Signify",
+      "class": "Smart home",
+      "notes": "Signify company 0x060F and its member services. Koninklijke Philips 0x01DD is not this row.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 1551
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE0F"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE4B"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD8A"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "932c32bd-0000-47a2-835a-a8d455b859dd"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "b8843add-0000-4aa1-8794-c3f462030bda"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSignify\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Signify.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bPhilips\\s+Hue\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Philips\\s+Hue.*$"
+        }
+      ]
+    },
+    {
+      "id": "home-nest",
+      "label": "Nest",
+      "class": "Smart home",
+      "notes": "Nest Labs company 0x01B5 and member services FEB0 and FEAF.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 437
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEB0"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEAF"
+        },
+        {
+          "kind": "manufacturer",
+          "text": "Nest Labs"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bNest\\b.*$"
+        }
+      ]
+    },
+    {
+      "id": "home-ecobee",
+      "label": "ecobee",
+      "class": "Smart home",
+      "notes": "Bluetooth SIG company 0x07D6.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 2006
+        },
+        {
+          "kind": "manufacturer",
+          "text": "ecobee"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\becobee\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^ecobee.*$"
+        }
+      ]
+    },
+    {
+      "id": "home-victron",
+      "label": "Victron",
+      "class": "Smart home",
+      "notes": "Victron Energy company 0x02E1.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 737
+        },
+        {
+          "kind": "manufacturer",
+          "text": "Victron"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bVictron\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Victron.*$"
+        }
+      ]
+    },
+    {
+      "id": "home-switchbot",
+      "label": "SwitchBot",
+      "class": "Smart home",
+      "notes": "Member service FD3D and the SwitchBot 128-bit service. No company identifier is used.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "FD3D"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "cba20d00-224d-11e6-9fb8-0002a5d5c51b"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSwitchBot\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^SwitchBot.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSwitch\\s+Bot\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Switch\\s+Bot.*$"
+        }
+      ]
+    },
+    {
+      "id": "beacon-eddystone",
+      "label": "Eddystone",
+      "class": "Beacon",
+      "notes": "FEAA frames 0x00, 0x10, 0x20, and 0x30. Find Hub frames 0x40 and 0x41 stay on that row.",
+      "rules": [
+        {
+          "kind": "service_data",
+          "text": "FEAA",
+          "prefix": "00",
+          "radio": "ble"
+        },
+        {
+          "kind": "service_data",
+          "text": "FEAA",
+          "prefix": "10",
+          "radio": "ble"
+        },
+        {
+          "kind": "service_data",
+          "text": "FEAA",
+          "prefix": "20",
+          "radio": "ble"
+        },
+        {
+          "kind": "service_data",
+          "text": "FEAA",
+          "prefix": "30",
+          "radio": "ble"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bEddystone\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Eddystone.*$"
+        }
+      ]
+    },
+    {
+      "id": "beacon-kontakt",
+      "label": "Kontakt",
+      "class": "Beacon",
+      "notes": "Kontakt company 0x01FD and member service FE6A.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 509
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE6A"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bKontakt\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Kontakt.*$"
+        }
+      ]
+    },
+    {
+      "id": "beacon-minew",
+      "label": "Minew",
+      "class": "Beacon",
+      "notes": "Advertised name. Company 0x0639 is shared with Minew sensor frames and is not this row.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bMinew\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Minew.*$"
+        }
+      ]
+    },
+    {
+      "id": "beacon-wiliot",
+      "label": "Wiliot",
+      "class": "Beacon",
+      "notes": "Wiliot company 0x0500 and member services FDAF, FCC6, and FC90.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 1280
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FDAF"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FCC6"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FC90"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bWiliot\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Wiliot.*$"
+        }
+      ]
+    },
+    {
+      "id": "beacon-gimbal",
+      "label": "Gimbal",
+      "class": "Beacon",
+      "notes": "Gimbal company 0x008C and member services FEFD and FEFC. A name that merely contains gimbal is not this row.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 140
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEFD"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FEFC"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Gimbal.*$"
+        }
+      ]
+    },
+    {
+      "id": "beacon-estimote",
+      "label": "Estimote",
+      "class": "Beacon",
+      "notes": "Estimote company 0x015D and member service FE9A.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 349
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE9A"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bEstimote\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Estimote.*$"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-volvo-ble",
+      "label": "Volvo",
+      "class": "Vehicle",
+      "notes": "Volvo Car member services FD57 and FD58.",
+      "rules": [
+        {
+          "kind": "service_uuid",
+          "text": "FD57"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FD58"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bVolvo\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Volvo.*$"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-rivian",
+      "label": "Rivian",
+      "class": "Vehicle",
+      "notes": "Bluetooth SIG company 0x0941.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 2369
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bRivian\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Rivian.*$"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-gm",
+      "label": "GM",
+      "class": "Vehicle",
+      "notes": "General Motors company 0x0068 and member services FE47 and FE48. A bare GM token is not this row.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 104
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE47"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE48"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bGeneral\\s+Motors\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^General\\s+Motors.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bOnStar\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^OnStar.*$"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-nio",
+      "label": "NIO",
+      "class": "Vehicle",
+      "notes": "NIO company 0x0B48 and member service FCDF.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 2888
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FCDF"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bNIO\\b.*$"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-geotab",
+      "label": "Geotab",
+      "class": "Vehicle",
+      "notes": "Bluetooth SIG company 0x0275. Fleet telematics.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 629
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bGeotab\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Geotab.*$"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-samsara",
+      "label": "Samsara",
+      "class": "Vehicle",
+      "notes": "Samsara company 0x0B6B and its member services. Fleet telematics.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 2923
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FE9B"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FCE4"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FCE5"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FC86"
+        },
+        {
+          "kind": "service_uuid",
+          "text": "FC87"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSamsara\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Samsara.*$"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-tpms",
+      "label": "TPMS",
+      "class": "Vehicle",
+      "notes": "Schrader Electronics company 0x0601. Sensata is the Wi-Fi vendor name for the same sensors.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 1537
+        },
+        {
+          "kind": "manufacturer",
+          "text": "Sensata"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bTPMS\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^TPMS.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bSchrader\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Schrader.*$"
+        }
+      ]
+    },
+    {
+      "id": "drone-parrot",
+      "label": "Parrot",
+      "class": "Drone",
+      "notes": "PARROT SA vendor name, or an ANAFI / Bebop / Parrot name. PARROT AUTOMOTIVE company 0x0043 is not this row.",
+      "rules": [
+        {
+          "kind": "manufacturer",
+          "text": "PARROT SA"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bANAFI\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^ANAFI.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bBebop\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Bebop.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Parrot.*$"
+        }
+      ]
+    },
+    {
+      "id": "glasses-even",
+      "label": "Even Realities",
+      "class": "Glasses",
+      "notes": "Advertised name. No company identifier is assigned to this row.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bEven\\s+Realities\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Even\\s+Realities.*$"
+        }
+      ]
+    },
+    {
+      "id": "glasses-ixi",
+      "label": "IXI",
+      "class": "Glasses",
+      "notes": "Name is IXI or starts with IXI. A company identifier is not used.",
+      "rules": [
+        {
+          "kind": "name_regex",
+          "text": "(?i)^IXI$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^IXI[\\s_-].*$"
+        }
+      ]
+    },
+    {
+      "id": "glasses-luxottica",
+      "label": "Luxottica",
+      "class": "Glasses",
+      "notes": "Luxottica company 0x0D53.",
+      "rules": [
+        {
+          "kind": "manufacturer_id",
+          "company_id": 3411
+        },
+        {
+          "kind": "manufacturer",
+          "text": "Luxottica"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^.*\\bLuxottica\\b.*$"
+        },
+        {
+          "kind": "name_regex",
+          "text": "(?i)^Luxottica.*$"
+        }
+      ]
     }
   ],
   "suppress": [
@@ -2851,7 +4278,9 @@
         "apple-mac",
         "apple-tv",
         "apple-watch",
-        "apple-homepod"
+        "apple-homepod",
+        "apple-ipod",
+        "apple-vision"
       ],
       "unless_name_contains": [
         "AirTag"
@@ -2871,7 +4300,9 @@
     {
       "drop": "generic-speaker",
       "when_any": [
-        "generic-headphones"
+        "generic-headphones",
+        "apple-homepod",
+        "apple-audio"
       ]
     },
     {
@@ -2907,13 +4338,29 @@
         "apple-mac",
         "apple-tv",
         "apple-watch",
-        "apple-homepod"
+        "apple-homepod",
+        "apple-audio",
+        "apple-ipod",
+        "apple-vision"
       ]
     },
     {
       "drop": "phone-wifi-tether",
       "when_any": [
         "vehicle-vag-hotspot"
+      ]
+    },
+    {
+      "drop": "ble-door-lock",
+      "when_any": [
+        "lock-yale",
+        "lock-schlage",
+        "lock-august",
+        "lock-assa-abloy",
+        "lock-salto",
+        "lock-abus",
+        "lock-sesame",
+        "lock-tapkey"
       ]
     }
   ]

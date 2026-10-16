@@ -1,9 +1,9 @@
 # wifit3-ng
-> Version 0.3.24. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
+> Version 0.3.25. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
 
-**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.24 - yadox666`.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.25 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.24** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.25** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
@@ -49,6 +49,11 @@ These capabilities come from the original [derv82/wifit3](https://github.com/der
 ## Fork additions (yadox666)
 
 The sections below are the additions in this fork (0.3.4 through current). They sit on top of the original auditor.
+
+**0.3.25:** **Investigate** on Focus, AntennaTune Passive/Active rates,
+scanner APS/STA and BT/BLE header counts, GPS/GNSS NMEA hardware notes,
+Apple audio board ids, and expanded product-catalog families. Details in
+[CHANGELOG → 0.3.25](CHANGELOG.md#0325---2026-10-16).
 
 **0.3.24:** Linux session USB claim / soft reclaim, ``start.sh`` Python package bootstrap, HackRF usbfs grant, and RTL8814AU 5 GHz
 mgmt TX at OFDM 6 Mbps. Details in
@@ -122,6 +127,8 @@ The startup screen shows a centered row of primary actions: **START WI-FI**, an 
 | `X` | Wi-Fi scanner | Export the scan as CSV and JSON |
 | `X` | AP Focus | Start or stop a focused libpcap capture |
 | `E` | Enterprise AP Focus | Open the Enterprise assessment panel |
+| `G` | AP / Client Focus | Open **Investigate** (live + Offline DB dossier; optional Markdown save) |
+| `T` | AP / Client Focus | Open **AntennaTune** (Passive listen or Active TX/ACK probe) |
 | `X` | Bluetooth scanner | Export CSV, JSON, JSONL, and captured direct-USB HCI traffic as btsnoop |
 | `R` | Bluetooth Focus | Re-read the selected GATT characteristic |
 | `A` | Bluetooth Focus | Toggle the GATT value column between on-wire bytes and parsed payload hex |
@@ -228,6 +235,9 @@ All hardware panels use the same bordered style and a **shared width** so rows s
   diagnosis but is not yet selected automatically.
 - Signal colours match across AP, client, and Bluetooth views.
 - A hidden AP that has a named same-radio sibling uses a yellow `SSID [guess]` label in both Scanner and Focus. The marker is presentation-only and is never appended to the transmitted SSID.
+- **Investigate** (`G` in AP or Client Focus) builds a scrollable dossier from the live beacon, OUI/vendor (including locally administered BSSIDs), same-radio / other-band siblings, Offline DB sightings, product-catalog match, and associated clients. It does not guess passwords or street addresses. **Save** writes Markdown under the configured capture directory.
+- **AntennaTune** (`T`) defaults to **Passive** listen (beacon/data rates over a 1 s window). Switch to **Active** to run the optional TX/ACK probe; the link panel shows sent/acked counts for the live window.
+- Wi-Fi scanner header shows **APS** / **STA** counts for the rows currently on screen (beside channel readout). Bluetooth scanner header shows **BT** / **BLE** counts beside the sort summary.
 
 ### Automated probe honeypot
 
@@ -534,7 +544,8 @@ The connectivity probe is capped at one 8 KiB HTTP header, bounded retries, and 
   read), reads standardized **Generic Access** device name and **Device
   Information** (model, manufacturer, serial, firmware/hardware/software, **PnP
   ID**), and caches the result on the row. Apple internal model strings map to
-  marketing names from bundled identifier tables; other vendors show DIS text,
+  marketing names from bundled identifier tables (phones, watches, Macs, plus
+  HomePod / AirPods / Beats / AirTag board ids); other vendors show DIS text,
   GATT name, or decoded PnP vendor/product labels. The column width tracks the
   longest visible friendly model string (without repeating the internal ID in
   parentheses). The sweep stops when you open Bluetooth Focus or leave the
@@ -735,10 +746,13 @@ terminal widths.
 
 Offline DB rows carry **CLASS** and **FAMILY** columns that label a saved AP,
 client, or Bluetooth/BLE device from a product catalog (for example a vacuum
-`cleaning-robot-wifi`, a wearable, a speaker, or a camera). The catalog ships as
-data outside the binary: a bundled set of **regex families** (SSID, device name,
-vendor, service, and manufacturer patterns grouped into classes) plus your own
-**user overrides**, so a new product family needs no new build.
+`cleaning-robot-wifi`, a wearable, a speaker, a door lock, a smart-home hub, or
+a camera). The catalog ships as data outside the binary: a bundled set of
+**regex families** (SSID, device name, vendor, service, and manufacturer
+patterns grouped into classes) plus your own **user overrides**, so a new
+product family needs no new build. Stock families cover locks, smart home,
+beacons, additional cameras/vehicles, and Apple audio board ids
+(HomePod / AirPods / Beats / AirTag) mapped to marketing names.
 
 - **`y` · Catalog** opens a browsable, editable catalog view. Filter by class or
   free text, inspect each family's match rules, and press **`e`** to edit, **`n`**
@@ -967,6 +981,28 @@ The SDR backend does not transmit, flash firmware, reset the device, or enable
 the HackRF RF amplifier. Firmware identity is read during diagnostics. A
 PortaPack LCD may remain unchanged while the host tunes the radio.
 
+### GPS / GNSS USB receivers
+
+Optional location tagging uses any USB serial GPS/GNSS that emits checksummed
+**NMEA 0183** sentences over a CDC-ACM / FTDI / CP210x / CH340-style COM port
+(or a built-in USB-UART GNSS module). Support is protocol-based, not a fixed
+VID/PID allowlist: the receiver is accepted only after live `$GPGGA` /
+`$GNGGA` / `$GPRMC` / `$GNRMC` traffic validates.
+
+| Requirement | Detail |
+|---|---|
+| Protocol | NMEA 0183 (talker IDs `GP` and `GN`) with `*` checksum |
+| Sentences used | GGA (fix quality, satellites, HDOP) and RMC (valid position) |
+| Baud rates tried | 4800, 9600, 19200, 38400, 57600, 115200 |
+| Platforms | Linux (`/dev/ttyUSB*`, `/dev/ttyACM*`), macOS (`/dev/cu.*`), Windows (`COMn`) |
+| Configuration | Blank Preferences port = auto-detect; set a port to pin one device |
+
+Typical compatible hardware includes USB puck receivers and USB-UART GNSS
+modules (u-blox, GlobalSat, VK, Quectel, and similar) that expose NMEA 0183
+by default. Binary protocols (UBX-only, SiRF binary) and NMEA 2000 CAN buses
+are not used. Preferences can pin a port when several serial devices are
+present.
+
 ### Dedicated Bluetooth Classic + BLE adapter
 
 The startup **`B`** action uses the operating system's BLE adapter through Bleak when OS BLE is enabled, and adds selected USB controllers when present. Classic-only dongles run direct Classic HCI; dual-mode sticks support per-row **ALL | BT | BLE** modes and can run Classic inquiry alongside OS BLE.
@@ -997,7 +1033,7 @@ Retail vendors may change chipsets without changing a product name, so support i
 
 ## Installation and running
 
-Python 3.11 or newer is required to run from source. Release **0.3.24** binaries are published from this fork.
+Python 3.11 or newer is required to run from source. Release **0.3.25** binaries are published from this fork.
 
 ### Option 1: Download a prebuilt binary
 

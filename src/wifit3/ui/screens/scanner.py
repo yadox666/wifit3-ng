@@ -224,12 +224,39 @@ def device_scan_summary(members) -> Optional[str]:
     return f"Scanning with [bold cyan]{len(members)}[/] {noun}: {', '.join(tags)}"
 
 
+def _census_host(screen):
+    """The scanner that owns the visible rows, or the app in header-only tests."""
+    if screen is not None and hasattr(screen, "_row_states"):
+        return screen
+    app = getattr(screen, "app", None)
+    if app is not None and hasattr(app, "_row_states"):
+        return app
+    return None
+
+
+def header_ap_sta(screen, array) -> str:
+    """Access-point and station counts for the rows currently on screen."""
+    host = _census_host(screen)
+    if host is None:
+        return "" if array is None else "APS: 0  STA: 0"
+    if getattr(host, "_view_mode", "aps") == "clients":
+        stations = getattr(host, "_client_row_states", None)
+        sta_count = len(stations) if isinstance(stations, dict) else 0
+        return f"APS: 0  STA: {sta_count}"
+    rows = host._row_states
+    if not isinstance(rows, dict):
+        return "APS: 0  STA: 0"
+    sta_count = sum(int(getattr(state, "clients", 0) or 0) for state in rows.values())
+    return f"APS: {len(rows)}  STA: {sta_count}"
+
+
 class _ChannelReadout(HeaderClock):
-    """Header right slot: active sort and live hopped channels."""
+    """Header right slot: active sort, AP/station counts, and live hopped channels."""
     DEFAULT_CSS = """
     _ChannelReadout {
         dock: right;
         width: auto;
+        margin-right: 9;
         padding: 0 1;
         content-align: right middle;
     }
@@ -248,9 +275,13 @@ class _ChannelReadout(HeaderClock):
         channel_text = " | ".join(f"CH:{m.current_channel:>3}" for m in members)
         sort_summary = getattr(self.screen, "_sort_summary", None)
         sort_text = sort_summary() if callable(sort_summary) else ""
-        body = "  |  ".join(part for part in (sort_text, channel_text) if part)
+        census = header_ap_sta(self.screen, array)
+        body = "  |  ".join(
+            part for part in (sort_text, census, channel_text) if part
+        )
         # Trailing separator is rendered here; NotificationBell shows only the icon.
         self.channels = f"{body}  |  " if body else ""
+        self.styles.width = Text(self.channels).cell_len + 2 if self.channels else 0
 
     def render(self) -> RenderResult:
         return Text(self.channels)

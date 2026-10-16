@@ -1,8 +1,9 @@
 """Map Apple GATT model strings (e.g. iPhone13,4) to marketing names.
 
 Data is vendored from the community-maintained apple-device-identifiers project
-(iOS, iPadOS, watchOS, tvOS, macOS, visionOS JSON files). No network fetch at
-runtime.
+(iOS, iPadOS, watchOS, tvOS, macOS, visionOS JSON files). HomePod, AirPods, and
+Beats board ids are a small local map of published identifiers. No network
+fetch at runtime.
 """
 from __future__ import annotations
 
@@ -13,8 +14,10 @@ from functools import lru_cache
 from importlib import resources
 
 _APPLE_IDENTIFIER = re.compile(
-    r"^(?:iPhone|iPad|iPod|Watch|AppleTV|AudioAccessory|AirPods|"
-    r"Mac|RealityDevice|iBridge|HomePod|iProd)\d",
+    r"^(?:(?:iPhone|iPad|iPod|Watch|AppleTV|AudioAccessory(?:Single)?|"
+    r"AirPods(?:Pro|Max)?|Mac|RealityDevice|iBridge|HomePod|iProd|"
+    r"Powerbeats[A-Za-z]*|Beats[A-Za-z]*|AirTag|Audio)\d"
+    r"|Device1,\d)",
     re.IGNORECASE,
 )
 _APPLE_PNP_PRODUCT = re.compile(
@@ -29,6 +32,7 @@ _DATASETS = (
     "tvos-device-identifiers.json",
     "mac-device-identifiers.json",
     "visionos-device-identifiers.json",
+    "audio-device-identifiers.json",
 )
 
 
@@ -56,7 +60,14 @@ def apple_marketing_name(model_number: str) -> str | None:
     if not key:
         return None
     mappings = _load_mappings()
-    return mappings.get(key)
+    found = mappings.get(key)
+    if found is not None:
+        return found
+    folded = key.casefold()
+    for candidate, value in mappings.items():
+        if candidate.casefold() == folded:
+            return value
+    return None
 
 
 def format_device_model_number(

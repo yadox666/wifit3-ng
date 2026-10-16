@@ -31,7 +31,7 @@ async def test_single_card_channel_is_visible_on_first_paint():
         readout = app.query_one(_ChannelReadout)
         # The readout renders a trailing "  |  " separator so it sits cleanly
         # next to the NotificationBell icon in the header's right slot.
-        assert readout.channels == "CH:  1  |  "
+        assert readout.channels == "APS: 0  STA: 0  |  CH:  1  |  "
         assert readout.region.width > 0
 
 
@@ -47,7 +47,7 @@ async def channel_readout():
 async def test_multi_card_joined_and_width_padded(channel_readout):
     channel_readout.app.array = _array(9, 149)
     channel_readout._poll()
-    assert channel_readout.channels == "CH:  9 | CH:149  |  "
+    assert channel_readout.channels == "APS: 0  STA: 0  |  CH:  9 | CH:149  |  "
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -55,3 +55,25 @@ async def test_no_array_is_blank(channel_readout):
     channel_readout.app.array = None
     channel_readout._poll()
     assert channel_readout.channels == ""
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_header_counts_rows_on_screen(channel_readout):
+    channel_readout.app.array = SimpleNamespace(
+        members=[SimpleNamespace(current_channel=6)],
+        access_points={"old": object()},
+        clients={"gone": object()},
+    )
+    app = channel_readout.app
+    app._view_mode = "aps"
+    app._row_states = {
+        "aa": SimpleNamespace(clients=2),
+        "bb": SimpleNamespace(clients=0),
+    }
+    try:
+        channel_readout._poll()
+        assert channel_readout.channels == "APS: 2  STA: 2  |  CH:  6  |  "
+    finally:
+        for name in ("_view_mode", "_row_states"):
+            if hasattr(app, name):
+                delattr(app, name)
+

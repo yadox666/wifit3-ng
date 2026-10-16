@@ -44,6 +44,7 @@ path = "src/wifit3/__init__.py"
 "src/wifit3/bluetooth/data/tvos-device-identifiers.json" = "wifit3/bluetooth/data/tvos-device-identifiers.json"
 "src/wifit3/bluetooth/data/mac-device-identifiers.json" = "wifit3/bluetooth/data/mac-device-identifiers.json"
 "src/wifit3/bluetooth/data/visionos-device-identifiers.json" = "wifit3/bluetooth/data/visionos-device-identifiers.json"
+"src/wifit3/bluetooth/data/audio-device-identifiers.json" = "wifit3/bluetooth/data/audio-device-identifiers.json"
 
 [dependency-groups]
 dev = [

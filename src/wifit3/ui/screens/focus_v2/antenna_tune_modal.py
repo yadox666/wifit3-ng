@@ -10,9 +10,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Label, Select, Static
+from textual.widgets import Button, Label, RadioButton, RadioSet, Select, Static
 
-from wifit3.ui.antenna_tune import AntennaTuneSample, SampleProvider
+from wifit3.ui.antenna_tune import AntennaTuneSample, SampleProvider, frames_per_second
 from wifit3.ui.screens.focus_v2.art import display_name
 from wifit3.ui.antenna_tune_graph import (
     render_strength_wave,
@@ -93,6 +93,37 @@ class AntennaTuneModal(ModalScreen[None]):
         width: 1fr;
         max-width: 48;
     }
+    AntennaTuneModal #mode-row-label {
+        width: 100%;
+        height: 1;
+        content-align: center middle;
+        color: $text-muted;
+        padding: 0;
+    }
+    AntennaTuneModal #mode-row {
+        width: 100%;
+        height: 3;
+        align: center middle;
+        margin: 0 0 1 0;
+    }
+    AntennaTuneModal #tune-mode {
+        layout: horizontal;
+        height: 3;
+        width: auto;
+        border: none;
+        background: transparent;
+        padding: 0;
+    }
+    AntennaTuneModal #tune-mode > RadioButton {
+        width: auto;
+        height: 3;
+        background: transparent;
+        padding: 0 2 0 0;
+    }
+    AntennaTuneModal #tune-mode > RadioButton.-on {
+        text-style: bold;
+        color: $accent;
+    }
     AntennaTuneModal .section-title {
         width: 100%;
         height: 1;
@@ -122,10 +153,16 @@ class AntennaTuneModal(ModalScreen[None]):
     }
     AntennaTuneModal #ack-spark {
         width: 100%;
-        height: 6;
+        height: 7;
         border: round $warning-darken-1;
         background: #100e0a;
         padding: 0 1;
+    }
+    AntennaTuneModal #link-stats {
+        width: 100%;
+        height: 1;
+        content-align: center middle;
+        margin: 0 0 0 0;
     }
     AntennaTuneModal #tx-panel {
         width: 100%;
@@ -164,12 +201,16 @@ class AntennaTuneModal(ModalScreen[None]):
         self._tone_hist: deque[float] = deque([0.0] * _HISTORY, maxlen=_HISTORY)
         self._tx_hist: deque[float] = deque([0.0] * _HISTORY, maxlen=_HISTORY)
         self._ack_hist: deque[float] = deque([0.0] * _HISTORY, maxlen=_HISTORY)
-        self._prev_packets: dict[str, int] | None = None
         self._prev_probe_sent = 0
         self._prev_probe_acked = 0
+        self._packet_hist: deque[tuple[float, dict[str, int]]] = deque()
+        self._probe_hist: deque[tuple[float, dict[str, int]]] = deque()
+        self._rates: dict[str, float] = {}
+        self._probe_1s = (0, 0)
         self._prev_time: float | None = None
         self._rows: list = []
         self._card_ready = False
+        self._mode_ready = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):
@@ -184,12 +225,20 @@ class AntennaTuneModal(ModalScreen[None]):
                     id="tune-card",
                     disabled=True,
                 )
+            yield Label("Stream", id="mode-row-label")
+            with Horizontal(id="mode-row"):
+                yield RadioSet(
+                    RadioButton("Passive", value=True, id="tune-passive"),
+                    RadioButton("Active", id="tune-active"),
+                    id="tune-mode",
+                )
             yield Label("RECEPTION", classes="section-title")
             yield Static("", id="reception-bar")
             yield Static("", id="beacon-spark")
             yield Static("", id="hero-stats")
-            yield Label("LINK  TX / ACK", classes="section-title")
+            yield Label("LINK  LISTEN", id="link-title", classes="section-title")
             yield Static("", id="ack-spark")
+            yield Static("", id="link-stats")
             yield Static("", id="tx-panel")
             yield Label("TRAFFIC", classes="section-title")
             yield Static("", id="metrics")
@@ -199,8 +248,7 @@ class AntennaTuneModal(ModalScreen[None]):
     def on_mount(self) -> None:
         self._fill_card_select()
         self._card_ready = True
-        if self._session is not None and self._session.probe is not None:
-            self._session.probe.start()
+        self._mode_ready = True
         self.set_interval(_SAMPLE_S, self._tick)
         self._tick()
 
@@ -275,13 +323,45 @@ class AntennaTuneModal(ModalScreen[None]):
         if iface is self._session.iface:
             return
         self._session.iface = iface
+        self._packet_hist.clear()
         self._reset_ack_history()
-        if self._session.probe is not None:
-            self.run_worker(self._session.probe.restart(), exclusive=True, group="tune-card")
+        if self._session.probe is not None and self._transmitting():
+            self.run_worker(self._session.probe.restart(), exclusive=True, group="tune-probe")
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        if not self._mode_ready or event.radio_set.id != "tune-mode":
+            return
+        pressed = event.pressed
+        self._apply_transmit(pressed is not None and pressed.id == "tune-active")
+
+    def _transmitting(self) -> bool:
+        pressed = self.query_one("#tune-mode", RadioSet).pressed_button
+        return pressed is not None and pressed.id == "tune-active"
+
+    def _apply_transmit(self, active: bool) -> None:
+        if self._session is None or self._session.probe is None:
+            return
+        self._reset_ack_history()
+        self.run_worker(
+            self._set_transmit(active),
+            exclusive=True,
+            group="tune-probe",
+        )
+
+    async def _set_transmit(self, active: bool) -> None:
+        probe = None if self._session is None else self._session.probe
+        if probe is None:
+            return
+        if active:
+            probe.start()
+            return
+        await probe.stop()
 
     def _reset_ack_history(self) -> None:
         self._tx_hist = deque([0.0] * _HISTORY, maxlen=_HISTORY)
         self._ack_hist = deque([0.0] * _HISTORY, maxlen=_HISTORY)
+        self._probe_hist.clear()
+        self._probe_1s = (0, 0)
         self._prev_probe_sent = 0
         self._prev_probe_acked = 0
 
@@ -302,14 +382,25 @@ class AntennaTuneModal(ModalScreen[None]):
         if sample is None:
             return
         now = sample.sample_time
-        dt = (now - self._prev_time) if self._prev_time is not None else _SAMPLE_S
-        dt = max(dt, 1e-3)
         self._rows = [r for r in sample.rows if r.key != "beacon"]
         if not self._hist:
             self._hist = {r.key: deque([0.0] * _HISTORY, maxlen=_HISTORY) for r in self._rows}
 
-        reception = sample.beacon_rate
-        if reception is None:
+        self._rates = frames_per_second(self._packet_hist, now, sample.packet_totals)
+        probe_rates = frames_per_second(
+            self._probe_hist,
+            now,
+            {"sent": sample.probe_sent, "acked": sample.probe_acked},
+        )
+        sent_1s = int(round(probe_rates.get("sent", 0.0)))
+        ack_1s = int(round(min(probe_rates.get("acked", 0.0), probe_rates.get("sent", 0.0))))
+        self._probe_1s = (sent_1s, ack_1s)
+
+        if "beacon" in sample.packet_totals:
+            reception = self._rates.get("beacon", 0.0)
+        elif sample.beacon_rate is not None:
+            reception = sample.beacon_rate
+        else:
             reception = self._meter_from_dbm(sample.dbm) or 0.0
         self._reception_hist.append(float(reception))
         self._tone_hist.append(_dbm_tone(sample.dbm))
@@ -322,22 +413,14 @@ class AntennaTuneModal(ModalScreen[None]):
         self._prev_probe_sent = sample.probe_sent
         self._prev_probe_acked = sample.probe_acked
 
-        deltas: dict[str, float] = {}
-        if self._prev_packets is not None:
-            for r in sample.rows:
-                cur = sample.packet_totals.get(r.key, 0)
-                prev = self._prev_packets.get(r.key, 0)
-                rate = max(0, cur - prev) / dt
-                deltas[r.key] = rate
-                if r.key == "beacon":
-                    continue
-                self._hist.setdefault(r.key, deque([0.0] * _HISTORY, maxlen=_HISTORY))
-                self._hist[r.key].append(rate)
-        self._prev_packets = dict(sample.packet_totals)
+        deltas = {key: value for key, value in self._rates.items() if key != "beacon"}
+        for row in self._rows:
+            self._hist.setdefault(row.key, deque([0.0] * _HISTORY, maxlen=_HISTORY))
+            self._hist[row.key].append(deltas.get(row.key, 0.0))
         self._prev_time = now
 
         self.query_one("#subtitle", Label).update(sample.subheading)
-        self._paint_reception(sample, deltas)
+        self._paint_reception(sample)
         self._paint_ack(sample)
         self.query_one("#hero-stats", Static).update(
             Text.from_markup(
@@ -352,31 +435,40 @@ class AntennaTuneModal(ModalScreen[None]):
 
     def _hero_stats_markup(self, sample: AntennaTuneSample, deltas: dict[str, float]) -> str:
         parts = [f"[{dbm_style(sample.dbm)}]{sample.dbm} dBm[/]"]
-        beacon_r = deltas.get("beacon", sample.beacon_rate or 0.0)
-        parts.append(f"[cyan]{beacon_r:.1f}[/] beacons/s")
-        data_r = deltas.get("data", 0.0)
-        parts.append(f"[blue]{data_r:.0f}[/] data/s")
+        if "beacon" in sample.packet_totals:
+            beacon_r = self._rates.get("beacon", 0.0)
+            parts.append(f"[cyan]{beacon_r:.1f}[/] beacons/s")
+        elif sample.beacon_rate is not None:
+            parts.append(f"[cyan]{sample.beacon_rate:.1f}[/] beacons/s")
+        data_r = self._rates.get("data", deltas.get("data", 0.0))
+        parts.append(f"[blue]{data_r:.1f}[/] data/s")
         return "  [dim]│[/dim]  ".join(parts)
 
     def _spark_width(self) -> int:
         shell_w = self.query_one("#shell").size.width or self.size.width or 100
         return max(56, min(108, shell_w - 6))
 
-    def _paint_reception(self, sample: AntennaTuneSample, deltas: dict[str, float]) -> None:
+    def _paint_reception(self, sample: AntennaTuneSample) -> None:
         width = self._spark_width()
         pulse = 0.5 + 0.5 * math.sin(time.time() * math.tau)
-        live_rate = sample.beacon_rate if sample.beacon_rate is not None else self._meter_from_dbm(sample.dbm)
+        if "beacon" in sample.packet_totals:
+            live_rate: float | None = self._rates.get("beacon", 0.0)
+        else:
+            live_rate = sample.beacon_rate
         bar = render_signal_bar(live_rate, width=width, pulse=pulse)
         self.query_one("#reception-bar", Static).update(bar)
 
         values = window(self._reception_hist, width)
         tones = window(self._tone_hist, width)
         wave = render_strength_wave(values, rows=_WAVE_ROWS, peak=_BEACON_PEAK, colors=tones)
-        beacon_r = deltas.get("beacon", 0.0) if deltas else (sample.beacon_rate or 0.0)
+        if "beacon" in sample.packet_totals:
+            beacon_r = self._rates.get("beacon", 0.0)
+        else:
+            beacon_r = sample.beacon_rate or 0.0
         caption = Text()
         caption.append("beacon  ", style="bold cyan")
         caption.append(f"{beacon_r:.1f}/s", style="bold cyan")
-        caption.append("   height = rate   ·   color = RSSI", style="dim")
+        caption.append("   last 1s   ·   color = RSSI", style="dim")
         self.query_one("#beacon-spark", Static).update(Text("\n").join([wave, caption]))
 
     def _paint_ack(self, sample: AntennaTuneSample) -> None:
@@ -384,18 +476,52 @@ class AntennaTuneModal(ModalScreen[None]):
         pair_w = max(20, width // 2)
         sent = window(self._tx_hist, pair_w)
         acked = window(self._ack_hist, pair_w)
+        sent_n, ack_n = self._probe_1s
+        pct = None
+        if sent_n >= 1:
+            pct = max(0, min(100, int(round(100 * ack_n / sent_n))))
         wave = render_tx_ack_wave(sent, acked, rows=_ACK_ROWS, peak=1.0)
         legend = Text()
-        legend.append("sent  ", style="bold rgb(80,170,255)")
-        legend.append("acked  ", style="bold rgb(40,210,90)")
-        if sample.probe_sent:
-            pct = int(100 * sample.probe_acked / sample.probe_sent)
-            legend.append(f"{sample.probe_acked}/{sample.probe_sent}  {pct}%", style="bold")
+        if not self._transmitting():
+            title = "LINK  LISTEN"
+            legend.append("sent  ", style="bold rgb(80,170,255)")
+            legend.append("acked  ", style="bold rgb(40,210,90)")
+            legend.append("passive · not transmitting", style="dim")
+        elif pct is not None:
+            title = f"LINK  TX / ACK  {pct}%"
+            legend.append("sent  ", style="bold rgb(80,170,255)")
+            legend.append(f"{sent_n}  ", style="bold rgb(80,170,255)")
+            legend.append("acked  ", style="bold rgb(40,210,90)")
+            legend.append(f"{ack_n}  ", style="bold rgb(40,210,90)")
+            legend.append(f"{pct}%", style="bold")
+            legend.append("  1s", style="dim")
+            if sample.probe_sent:
+                session = max(0, min(100, int(round(100 * sample.probe_acked / sample.probe_sent))))
+                legend.append(
+                    f"    session {sample.probe_acked}/{sample.probe_sent}  {session}%",
+                    style="dim",
+                )
+        elif sample.probe_sent:
+            legend.append("sent  ", style="bold rgb(80,170,255)")
+            legend.append("acked  ", style="bold rgb(40,210,90)")
+            session = max(0, min(100, int(round(100 * sample.probe_acked / sample.probe_sent))))
+            title = f"LINK  TX / ACK  {session}%"
+            legend.append(
+                f"{sample.probe_acked}/{sample.probe_sent}  {session}%",
+                style="bold",
+            )
         else:
+            title = "LINK  TX / ACK"
+            legend.append("sent  ", style="bold rgb(80,170,255)")
+            legend.append("acked  ", style="bold rgb(40,210,90)")
             legend.append("waiting for first probe…", style="dim")
-        self.query_one("#ack-spark", Static).update(Text("\n").join([wave, legend]))
+        self.query_one("#link-title", Label).update(title)
+        self.query_one("#ack-spark", Static).update(wave)
+        self.query_one("#link-stats", Static).update(legend)
 
     def _tx_panel_markup(self, sample: AntennaTuneSample) -> str:
+        if not self._transmitting():
+            return f"[cyan]{sample.card_label}[/cyan]  ·  Passive · listening only"
         if sample.probe_mode in ("ap", "client"):
             kind = "Probe Req → AP" if sample.probe_mode == "ap" else "Null AP → client"
             return (
@@ -424,8 +550,8 @@ class AntennaTuneModal(ModalScreen[None]):
             lower = "".join(
                 _BLOCKS[max(1, min(8, self._col(v, peak, 16)))] for v in series
             )
-            rate = deltas.get(row.key, 0.0)
-            num = f"{rate:.0f}/s" if row.as_rate else f"{sum(hist[-6:]):.0f}"
+            rate = self._rates.get(row.key, deltas.get(row.key, 0.0))
+            num = f"{rate:.1f}/s" if row.as_rate else f"{rate:.0f}"
             color = row.color if any(series) else f"dim {row.color}"
             head = Text()
             head.append(f"{row.label:>{_LABEL_W}} ", style=f"bold {color}")

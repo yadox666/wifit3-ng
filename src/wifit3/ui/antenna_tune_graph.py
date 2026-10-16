@@ -92,6 +92,26 @@ def render_tx_ack_wave(
     return Text("\n").join(lines)
 
 
+def live_tx_ack(sent: Sequence[float], acked: Sequence[float]) -> tuple[int, int, int | None]:
+    """Sent count, acked count, and acked/sent percent for one live window.
+
+    The percent is ``None`` until the window contains a transmitted frame.
+    An ack never counts above the frames sent in the same column.
+    """
+    n = min(len(sent), len(acked))
+    sent_n = 0
+    ack_n = 0
+    for raw_sent, raw_acked in zip(list(sent)[-n:], list(acked)[-n:]):
+        sent_i = int(round(max(0.0, raw_sent)))
+        ack_i = int(round(max(0.0, min(raw_acked, raw_sent))))
+        sent_n += sent_i
+        ack_n += ack_i
+    if sent_n < 1:
+        return 0, 0, None
+    pct = max(0, min(100, int(round(100 * ack_n / sent_n))))
+    return sent_n, ack_n, pct
+
+
 def window(values: Iterable[float], width: int) -> list[float]:
     """Right-aligned slice, padded on the left so newest sits at the right edge."""
     data = list(values)

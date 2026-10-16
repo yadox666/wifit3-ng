@@ -88,6 +88,7 @@ class ClientFocusView(Screen):
         Binding("y", "open_catalog", "Catalog", show=True),
         Binding("shift+t", "targets_editor", "Targets", show=True),
         Binding("t", "antenna_tune", "AntennaTune", show=True),
+        Binding("g", "investigate", "Investigate", show=True),
     ]
 
     CSS = """
@@ -760,6 +761,20 @@ class ClientFocusView(Screen):
             self.app.pop_screen()
             return
         self.app.push_screen("focus")
+
+    def action_investigate(self) -> None:
+        from wifit3.ui.investigate import investigate_client
+        from wifit3.ui.screens.investigate_modal import InvestigateModal
+
+        client = getattr(self.app, "target_client", None)
+        if client is None:
+            return
+        report = investigate_client(
+            client,
+            getattr(self.app, "array", None),
+            getattr(self.app, "ap_history_store", None),
+        )
+        self.app.push_screen(InvestigateModal(report))
 
     def action_antenna_tune(self) -> None:
         client = getattr(self.app, "target_client", None)

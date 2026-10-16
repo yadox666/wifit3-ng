@@ -246,8 +246,8 @@ def test_airtag_name_keeps_the_family_beside_an_apple_device():
         name="AirTag",
     )
 
-    assert "Apple Device" in hit.labels
-    assert "Apple AirTags" in hit.labels
+    assert hit.labels == ("Apple AirTags",)
+    assert hit.catalog_class == "Finder"
 
 
 def test_penguin_company_is_a_catalog_row_and_not_a_protocol_type():
@@ -289,7 +289,8 @@ def test_find_hub_live_chip_ignores_eddystone_and_keeps_the_protocol_quiet_for_n
     assert "own tag" in nearby.sentence
     assert separated.live == "Separated"
     assert separated.live_strong is True
-    assert eddystone.labels == ()
+    assert eddystone.labels == ("Eddystone",)
+    assert "Google Find Hub" not in eddystone.labels
     assert bare.labels == ()
 
 
@@ -490,7 +491,7 @@ def test_field_ssid_clues_from_user_db():
     assert match_wifi("A17 de Ana", "11:22:33:44:55:66", set()).catalog_class == "Phone"
     assert match_wifi("S23+ de Luis", "11:22:33:44:55:66", set()).catalog_class == "Phone"
     assert match_wifi("[washer]_A1B2", "11:22:33:44:55:66", set()).catalog_class == (
-        "Cleaning device",
+        "Cleaning device"
     )
     assert match_wifi("Samsung Washer", "11:22:33:44:55:66", set()).labels == (
         "Robot vacuum / mop",
@@ -502,13 +503,9 @@ def test_field_ssid_clues_from_user_db():
         "EnGenius cloud AP (setup)",
     )
     assert match_wifi("EC520_ABC", "11:22:33:44:55:66", set()).catalog_class == "Printer"
-    assert match_wifi("pm_wireless_01", "11:22:33:44:55:66", set()).catalog_class == (
-        "Printer",
-    )
+    assert match_wifi("pm_wireless_01", "11:22:33:44:55:66", set()).catalog_class == "Printer"
     assert match_wifi("TP-Link_", "11:22:33:44:55:66", set()).labels == ("TP-Link",)
-    assert match_wifi("S23 Ultra de Maria", "11:22:33:44:55:66", set()).catalog_class == (
-        "Phone",
-    )
+    assert match_wifi("S23 Ultra de Maria", "11:22:33:44:55:66", set()).catalog_class == "Phone"
     assert match_wifi("Dash-5574", "11:22:33:44:55:66", set()).catalog_class == "Camera"
     assert match_wifi("B46P-08BB51", "94:ba:06:08:bb:51", set()).labels == (
         "Dashcam Wi-Fi",
@@ -516,9 +513,7 @@ def test_field_ssid_clues_from_user_db():
     assert match_wifi("YantopCam-ABCDEF", "11:22:33:44:55:66", set()).labels == (
         "Dashcam Wi-Fi",
     )
-    assert match_wifi("GPLUSPR_1234", "11:22:33:44:55:66", set()).catalog_class == (
-        "Printer",
-    )
+    assert match_wifi("GPLUSPR_1234", "11:22:33:44:55:66", set()).catalog_class == "Printer"
     assert match_wifi("HS-004716", "11:22:33:44:55:66", set()).catalog_class == "Printer"
     assert match_wifi("iRobot-ROOMBA", "11:22:33:44:55:66", set()).catalog_class == (
         "Cleaning device"
@@ -949,7 +944,11 @@ def test_bluetooth_catalog_matches_common_saved_device_names():
         ("WH-1000XM4", "Sony headphones", "Audio"),
         ("WH-CH720N", "Sony headphones", "Audio"),
         ("LE_WF-C510", "Sony headphones", "Audio"),
-        ("Xiaomi Mi Color S 1837", "Redmi / Xiaomi wearable", "Wearable"),
+        ("Xiaomi Mi Color S 1837", "Xiaomi Mi ColorS", "Phone"),
+        ("Mi ColorS", "Xiaomi Mi ColorS", "Phone"),
+        ("AirPodsPro1,1", "Apple audio", "Audio"),
+        ("AudioAccessory5,1", "HomePod", "Audio"),
+        ("AirTag1,1", "Apple AirTags", "Finder"),
         ("Epson WF-2910 Series", "Epson printer", "Printer"),
     )
     for name, label, catalog_class in cases:
@@ -1029,3 +1028,51 @@ def test_stock_families_are_searchable_without_replacing_protocol_hits():
     assert catalog_search_text({
         "catalog": {"labels": ["Penguin"], "class": "Surveillance"},
     }) == "Penguin Surveillance"
+
+
+def test_door_lock_appearance_becomes_a_catalog_family():
+    device = BluetoothDevice(
+        identifier="aa:bb:cc:dd:ee:10",
+        name="Orange box",
+        rssi=-80,
+        service_uuids=(),
+        service_data_uuids=(),
+        manufacturer_ids=(),
+        manufacturer_data_bytes=0,
+        service_data_bytes=0,
+        tx_power=None,
+        advertisement_count=1,
+        advertisement_interval=None,
+        first_seen=0.0,
+        last_seen=0.0,
+        appearance=0x0708,
+    )
+    hit = supplement_catalog_hit(CatalogHit(), device)
+    assert hit.catalog_class == "Lock"
+    assert hit.labels == ("Door lock",)
+
+
+def test_published_headphone_board_id_is_apple_audio_and_unknown_device1_is_not():
+    known = match_bluetooth({}, {}, name="Device1,8212")
+    assert known.labels == ()
+    gatt = BluetoothDevice(
+        identifier="aa:bb:cc:dd:ee:11",
+        name="<Unknown>",
+        rssi=-50,
+        service_uuids=(),
+        service_data_uuids=(),
+        manufacturer_ids=(),
+        manufacturer_data_bytes=0,
+        service_data_bytes=0,
+        tx_power=None,
+        advertisement_count=1,
+        advertisement_interval=None,
+        first_seen=0.0,
+        last_seen=0.0,
+        model_number="Device1,8212",
+        manufacturer_name="Apple Inc.",
+    )
+    hit = match_bluetooth({}, {}, name="<Unknown>", gatt_source=gatt)
+    assert hit.labels == ("Apple audio",)
+    assert hit.catalog_class == "Audio"
+    assert match_bluetooth({}, {}, name="Device1,9999").labels == ()

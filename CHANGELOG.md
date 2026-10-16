@@ -4,6 +4,32 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
+## 0.3.25 - 2026-10-16
+
+### Added
+
+- **Investigate** (`G`) on AP and Client Focus: scrollable dossier from the live
+  beacon, OUI/vendor (including locally administered BSSIDs), same-radio /
+  other-band siblings, Offline DB sightings, product-catalog match, and
+  associated clients; optional Markdown save. History helpers
+  ``access_point_dossier``, ``client_dossier``, and ``chassis_access_points``.
+- Supported Hardware documents **GPS / GNSS USB** receivers that speak
+  checksummed NMEA 0183 (``GP``/``GN`` GGA+RMC) over USB-serial.
+- Bundled Apple **audio / finder board ids** (HomePod, AirPods, Beats, AirTag)
+  for GATT marketing-name resolution.
+- Stock product-catalog families for locks, smart home, beacons, and more
+  camera / vehicle name hints.
+
+### Changed
+
+- **AntennaTune**: Passive listen by default; Active enables TX/ACK probe.
+  Packet rates use a 1 s window (``frames_per_second``) instead of per-tick
+  spikes; link panel shows live sent/acked percent.
+- Wi-Fi scanner header shows on-screen **APS** / **STA** counts; Bluetooth
+  header shows **BT** / **BLE** counts beside the sort summary.
+- AirTag-named Find My devices keep the AirTags family without a redundant
+  generic Apple Device label.
+
 ## 0.3.24 - 2026-10-11
 
 ### Added

@@ -201,17 +201,55 @@ class _BluetoothScanTable(DataTable):
         self._suppress_scroll = False
 
 
-class _BluetoothSortReadout(HeaderClock):
-    """Header right slot showing the active BLE table sort."""
+def header_bt_ble(screen) -> str:
+    """Classic and BLE counts for the rows currently in the Bluetooth tables."""
+    if screen is None or not hasattr(screen, "_devices"):
+        return ""
+    devices = []
+    for name in ("_devices", "_private_devices"):
+        bucket = getattr(screen, name, None)
+        if isinstance(bucket, dict):
+            devices.extend(bucket.values())
+    bt_count = sum(
+        1 for device in devices if CLASSIC_RADIO in getattr(device, "radio_types", ())
+    )
+    ble_count = sum(
+        1 for device in devices if BLE_RADIO in getattr(device, "radio_types", ())
+    )
+    return f"BT: {bt_count}  BLE: {ble_count}"
 
-    DEFAULT_CSS = "_BluetoothSortReadout { width: auto; }"
+
+class _BluetoothSortReadout(HeaderClock):
+    """Header right slot: radio counts, then the active table sort."""
+
+    DEFAULT_CSS = """
+    _BluetoothSortReadout {
+        dock: right;
+        width: auto;
+        margin-right: 9;
+        padding: 0 1;
+        content-align: right middle;
+    }
+    """
     summary: Reactive[str] = Reactive("", layout=True)
+    line: Reactive[str] = Reactive("", layout=True)
+
+    def on_mount(self) -> None:
+        self._compose_line()
+        self.set_interval(0.25, self._compose_line)
+
+    def watch_summary(self, _value: str) -> None:
+        self._compose_line()
+
+    def _compose_line(self) -> None:
+        census = header_bt_ble(self.screen)
+        sort = (self.summary or "").strip()
+        body = "  |  ".join(part for part in (sort, census) if part)
+        self.line = f"{body}  |  " if body else ""
+        self.styles.width = Text(self.line).cell_len + 2 if self.line else 0
 
     def render(self) -> RenderResult:
-        body = (self.summary or "").strip()
-        if body:
-            return Text(f"{body}  |  ")
-        return Text("")
+        return Text(self.line)
 
 
 class _BluetoothScannerHeader(WifiteHeader):

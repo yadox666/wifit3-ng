@@ -38,6 +38,7 @@ class NotificationBell(Static):
         dock: right;
         width: auto;
         min-width: 7;
+        margin-left: 2;
         padding: 0 1;
         content-align: center middle;
     }

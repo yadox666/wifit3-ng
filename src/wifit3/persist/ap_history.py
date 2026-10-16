@@ -951,6 +951,167 @@ class ApHistoryStore:
         ]
 
     @_locked
+    def access_point_dossier(self, bssid: str) -> dict[str, Any] | None:
+        """One stored AP plus the sightings, relatives, and identity used to explain it."""
+        connection = self._connection
+        if connection is None:
+            return None
+        key = bssid.casefold()
+        row = connection.execute(
+            """
+            SELECT bssid, ssid, first_seen, last_seen, channel, encryption,
+                   country_code, wps_json, capabilities_json
+            FROM access_points
+            WHERE bssid = ?
+            """,
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        record = dict(row)
+        record["wps"] = _json_object(record.pop("wps_json", None))
+        record["capabilities"] = _json_object(record.pop("capabilities_json", None))
+        record["relationships"] = [
+            dict(item) for item in connection.execute(
+                """
+                SELECT related_bssid, kind, first_seen, last_seen
+                FROM ap_relationships
+                WHERE bssid = ?
+                ORDER BY last_seen DESC
+                """,
+                (key,),
+            )
+        ]
+        record["sessions"] = [
+            dict(item) for item in connection.execute(
+                """
+                SELECT session.name, session.mode, sighting.first_seen,
+                       sighting.last_seen, sighting.sighting_count
+                FROM ap_session_sightings AS sighting
+                JOIN scan_sessions AS session
+                  ON session.session_id = sighting.session_id
+                WHERE sighting.bssid = ?
+                ORDER BY sighting.last_seen DESC
+                LIMIT 12
+                """,
+                (key,),
+            )
+        ]
+        record["identity"] = [
+            dict(item) for item in connection.execute(
+                """
+                SELECT field, source, value, first_seen, last_seen
+                FROM identity_evidence
+                WHERE bssid = ?
+                ORDER BY field, source
+                """,
+                (key,),
+            )
+        ]
+        record["clients"] = [
+            {
+                "client_mac": str(item["client_mac"]),
+                "first_seen": float(item["first_seen"]),
+                "last_seen": float(item["last_seen"]),
+            }
+            for item in connection.execute(
+                """
+                SELECT client_mac, first_seen, last_seen
+                FROM client_associations
+                WHERE bssid = ?
+                  AND client_mac NOT IN (SELECT client_mac FROM own_stations)
+                ORDER BY last_seen DESC
+                LIMIT 20
+                """,
+                (key,),
+            )
+        ]
+        return record
+
+    @_locked
+    def client_dossier(self, client_mac: str) -> dict[str, Any]:
+        """Stored associations and scan dates for one station."""
+        connection = self._connection
+        key = client_mac.casefold()
+        empty: dict[str, Any] = {"associations": [], "sessions": []}
+        if connection is None:
+            return empty
+        empty["associations"] = [
+            {
+                "bssid": str(item["bssid"]),
+                "ssid": _text(item["ssid"]),
+                "channel": _integer(item["channel"]),
+                "encryption": _text(item["encryption"]),
+                "first_seen": float(item["first_seen"]),
+                "last_seen": float(item["last_seen"]),
+            }
+            for item in connection.execute(
+                """
+                SELECT association.bssid, ap.ssid, ap.channel, ap.encryption,
+                       association.first_seen, association.last_seen
+                FROM client_associations AS association
+                JOIN access_points AS ap ON ap.bssid = association.bssid
+                WHERE association.client_mac = ?
+                  AND association.client_mac NOT IN (
+                      SELECT client_mac FROM own_stations
+                  )
+                ORDER BY association.last_seen DESC
+                LIMIT 20
+                """,
+                (key,),
+            )
+        ]
+        empty["sessions"] = [
+            dict(item) for item in connection.execute(
+                """
+                SELECT session.name, sighting.bssid, sighting.first_seen,
+                       sighting.last_seen, sighting.sighting_count
+                FROM client_session_sightings AS sighting
+                JOIN scan_sessions AS session
+                  ON session.session_id = sighting.session_id
+                WHERE sighting.client_mac = ?
+                ORDER BY sighting.last_seen DESC
+                LIMIT 12
+                """,
+                (key,),
+            )
+        ]
+        return empty
+
+    @_locked
+    def chassis_access_points(self, bssid: str) -> list[dict[str, Any]]:
+        """Stored BSSIDs near this address, for the same physical Router-AP.
+
+        Extra SSIDs often set the local bit, and the other band moves one octet,
+        so the match is the whole address distance, not the raw first three bytes.
+        """
+        connection = self._connection
+        if connection is None:
+            return []
+        parts = bssid.casefold().split(":")
+        if len(parts) != 6:
+            return []
+        try:
+            last = int(parts[5], 16)
+        except ValueError:
+            return []
+        patterns = [
+            f"%:{parts[4]}:{(last + delta) & 0xFF:02x}"
+            for delta in range(-2, 3)
+        ]
+        rows = connection.execute(
+            f"""
+            SELECT bssid, ssid, channel, encryption, country_code,
+                   first_seen, last_seen
+            FROM access_points
+            WHERE {" OR ".join("bssid LIKE ?" for _ in patterns)}
+            ORDER BY last_seen DESC
+            """,
+            patterns,
+        )
+        return [dict(row) for row in rows]
+
+    @_locked
     def import_legacy(
         self,
         hidden_ssids_path: Path,

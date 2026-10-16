@@ -6,7 +6,10 @@ optional live chip. An empty match does not clear a family already stored.
 
 Clues follow the public Fieldwatch catalog (MIT, Copyright 2026 Off Grid Pete
 LLC, https://github.com/OffGridPete/Fieldwatch). Router OUI dumps are not
-imported. WPA ``00:50:F2`` and RSN ``00:0F:AC`` are protocol tags, not a brand.
+imported. Company identifiers and 16-bit member service UUIDs are the public
+Bluetooth SIG assigned numbers. A company identifier is a family clue only
+when that company is the product. WPA ``00:50:F2`` and RSN ``00:0F:AC`` are
+protocol tags, not a brand.
 """
 from __future__ import annotations
 
@@ -238,10 +241,11 @@ def with_protocol_live(
     return replace(hit, live=live, live_strong=strong, sentence=sentence)
 
 
-_DISPLAY_DETAIL_FAMILY_IDS = {
+_APPEARANCE_DETAIL_FAMILY_IDS = {
     "Television": "ble-tv-bracket",
     "Monitor": "ble-tv-bracket",
     "Projector": "ble-tv-bracket",
+    "Door Lock": "ble-door-lock",
 }
 
 
@@ -254,9 +258,7 @@ def supplement_catalog_hit(hit: CatalogHit, device) -> CatalogHit:
     from wifit3.bluetooth.classification import device_classification
 
     classification = device_classification(device)
-    if classification.category != "Display":
-        return CatalogHit()
-    family_id = _DISPLAY_DETAIL_FAMILY_IDS.get(classification.detail)
+    family_id = _APPEARANCE_DETAIL_FAMILY_IDS.get(classification.detail)
     if family_id is None:
         return CatalogHit()
     if classification.source not in {"Appearance", "Name"} and classification.confidence not in {
@@ -946,23 +948,27 @@ _NAME_CLASSES = (
     ("Display", ("television", "smart tv", "tv", "projector", "proj", "oled")),
     ("Audio", (
         "soundbar", "speaker", "buds", "earbuds", "earbud", "headphones",
-        "headphone", "headset", "homepod", "airpods", "beats",
+        "headphone", "headset", "homepod", "airpods", "beats", "powerbeats",
     )),
     ("Wearable", ("smart watch", "galaxy watch", "apple watch", "watch")),
     ("Wearable", (
-        "mi color", "mi band", "smart band", "watch fit", "huawei watch",
+        "mi band", "smart band", "watch fit", "huawei watch",
         "galaxy watch", "garmin", "fitbit", "amazfit", "polar",
+        "suunto", "wahoo", "oura", "withings", "huami",
     )),
     ("Phone", (
         "iphone", "smartphone",
         "androidap", "androidshare", "instant hotspot",
-        "redmi note", "redmi", "xiaomi", "galaxy", "infinix", "xperia",
+        "redmi note", "redmi", "xiaomi", "mi color s", "mi colors",
+        "galaxy", "infinix", "xperia",
         "s23+", "a17 de",
     )),
     ("Computer", ("macbook", "laptop", "notebook", "imac", "mac mini", "ai-thinker")),
-    ("Tablet", ("ipad",)),
+    ("Tablet", ("ipad", "ipod")),
+    ("Glasses", ("vision pro",)),
     ("Finder", ("smarttag", "smart tag", "galaxy smarttag", "airtag", "find my")),
-    ("Glasses", ("ray-ban", "rayban", "spectacles", "vuzix", "meta view")),
+    ("Glasses", ("ray-ban", "rayban", "spectacles", "vuzix", "meta view",
+        "even realities", "luxottica", "ixi")),
     ("Vehicle", (
         "tesla", "cybertruck",
         "androidauto", "android auto", "carplay",
@@ -971,6 +977,7 @@ _NAME_CLASSES = (
         "internet da", "hotspot de", "hyundai", "hyunday", "toyota", "lexus",
         "renault", "mazda", "porsche", "kia", "byd",
         "sph-da", "pioneer", "snm941",
+        "volvo", "rivian", "nio", "geotab", "samsara", "onstar", "tpms",
     )),
     # Wi‑Fi SSID hints only - see ``_WIFI_ONLY_NAME_HINT_CLASSES``.
     ("Home router", (
@@ -979,7 +986,10 @@ _NAME_CLASSES = (
         "mifibra", "miwifi", "redwifi", "sagemcom", "lowi", "sercomm",
         "tp-link", "tenda", "iberdrola", "calima", "ohana", "zte",
     )),
-    ("Camera", ("70mai", "dashcam", "cvr", "mtdvr")),
+    ("Camera", (
+        "70mai", "dashcam", "cvr", "mtdvr",
+        "arlo", "hikvision", "verkada", "wyze", "insta360", "insta 360", "rhombus",
+    )),
     ("Alarm", ("securitas", "verisure")),
     ("Cleaning device", ("roomba", "irobot", "braava", "washer")),
     ("IoT", (
@@ -997,7 +1007,17 @@ _NAME_CLASSES = (
         "officejet", "laserjet", "hp-print", "epson",
     )),
     ("Camera", ("osmo",)),
-    ("Drone", ("drone",)),
+    ("Lock", (
+        "yale", "schlage", "allegion", "august home", "august lock",
+        "assa abloy", "salto", "abus", "sesame", "tapkey", "candy house",
+        "door lock", "smart lock",
+    )),
+    ("Smart home", (
+        "aqara", "tuya", "shelly", "signify", "philips hue", "ecobee",
+        "victron", "switchbot", "switch bot", "nest",
+    )),
+    ("Beacon", ("eddystone", "kontakt", "minew", "wiliot", "estimote")),
+    ("Drone", ("drone", "anafi", "bebop", "parrot")),
 )
 
 _WIFI_SSID_FAMILY_IDS = frozenset({
@@ -1262,6 +1282,7 @@ def user_catalog_path() -> Path:
 def reload_catalog() -> None:
     """Drop the in-memory merge of stock and user catalog data."""
     _load.cache_clear()
+    _load_stock.cache_clear()
     _stock_family_ids.cache_clear()
 
 

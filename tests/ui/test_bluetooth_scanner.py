@@ -546,8 +546,8 @@ async def test_bluetooth_scanner_shows_cached_device_model():
         rendered = "\n".join(
             line.text if hasattr(line, "text") else str(line) for line in log.lines
         )
-        assert "GATT Device Information" in rendered
-        assert "Watch7,15" in rendered
+        assert "GATT identity" in rendered
+        assert "Apple Watch SE 3 (GPS + Cellular)" in rendered
         assert "11.0.1" in rendered
 
 
@@ -589,7 +589,7 @@ async def test_scanner_logs_learned_model_and_gates_enrichment_by_screen():
             line.text if hasattr(line, "text") else str(line) for line in log.lines
         )
         assert "Model learned" in rendered
-        assert "Watch7,15" in rendered
+        assert "Apple Watch SE 3 (GPS + Cellular)" in rendered
 
         # Leaving the scanner (entering Focus/Lab) pauses enrichment.
         await scanner.on_screen_suspend()
@@ -619,8 +619,11 @@ async def test_bluetooth_saved_target_row_is_red_and_marked(tmp_path):
         name = scanner.query_one("#bluetooth-table", DataTable).get_row(
             device.identifier,
         )[0]
-        assert name.plain.startswith("! ")
-        assert any("red" in str(span.style) for span in name.spans)
+        assert name.plain.startswith("⌖ ")
+        styled = " ".join(
+            [str(name.style), *(str(span.style) for span in name.spans)]
+        )
+        assert "red" in styled
 
 
 @pytest.mark.asyncio
@@ -687,6 +690,7 @@ async def test_bluetooth_sort_change_shows_toast_and_header_status():
         readout = scanner.query_one(_BluetoothSortReadout)
 
         assert readout.summary == "Sorted: FIRST SEEN (>)"
+        assert "BT: 0  BLE: 0" in readout.line
         scanner.action_cycle_sort()
         assert readout.summary == "Sorted: LAST SEEN (>)"
         assert toasts[-1] == ("Sort changed", "Sorted by LAST SEEN descending")
@@ -779,7 +783,8 @@ async def test_default_sort_keeps_new_devices_at_the_bottom():
         app.switch_screen("bluetooth")
         await pilot.pause(0)
         scanner = app.screen
-        table = scanner.query_one("#bluetooth-private-table", DataTable)
+        # Named devices leave the private/rotating table and sort on the main grid.
+        table = scanner.query_one("#bluetooth-table", DataTable)
         scanner.refresh_table()
         assert [table.get_row_at(i)[0].plain for i in range(2)] == ["First", "Second"]
 
@@ -820,7 +825,7 @@ async def test_default_first_seen_order_stays_put_as_labels_tick(monkeypatch):
         app.switch_screen("bluetooth")
         await pilot.pause(0)
         scanner = app.screen
-        table = scanner.query_one("#bluetooth-private-table", DataTable)
+        table = scanner.query_one("#bluetooth-table", DataTable)
         scanner.refresh_table()
         assert [table.get_row_at(i)[0].plain for i in range(2)] == ["Earlier", "Later"]
 
@@ -848,7 +853,7 @@ async def test_first_seen_sort_uses_timestamps_not_formatted_ages():
         app.switch_screen("bluetooth")
         await pilot.pause(0)
         scanner = app.screen
-        table = scanner.query_one("#bluetooth-private-table", DataTable)
+        table = scanner.query_one("#bluetooth-table", DataTable)
         scanner.refresh_table()
 
         table.update_cell(older.identifier, "first_seen", Text("1 minute ago"))

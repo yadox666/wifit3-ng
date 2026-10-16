@@ -226,6 +226,7 @@ class FocusViewV2(Screen):
         Binding("v", "open_vault", "Vault", show=True),
         Binding("shift+t", "targets_editor", "Targets", show=True),
         Binding("t", "antenna_tune", "AntennaTune", show=True),
+        Binding("g", "investigate", "Investigate", show=True),
     ]
 
     CSS = """
@@ -1269,6 +1270,20 @@ class FocusViewV2(Screen):
         self.app.target_client = client
         self.app.target_ap = ap
         self.app.push_screen("client-focus")
+
+    def action_investigate(self) -> None:
+        from wifit3.ui.investigate import investigate_ap
+        from wifit3.ui.screens.investigate_modal import InvestigateModal
+
+        ap = getattr(self.app, "target_ap", None)
+        if ap is None:
+            return
+        report = investigate_ap(
+            ap,
+            getattr(self.app, "array", None),
+            getattr(self.app, "ap_history_store", None),
+        )
+        self.app.push_screen(InvestigateModal(report))
 
     def action_antenna_tune(self) -> None:
         ap = getattr(self.app, "target_ap", None)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -14,6 +15,37 @@ if TYPE_CHECKING:
     from wifit3.ui.antenna_tune_probe import AntennaTuneSession
 
 SampleProvider = Callable[[], Optional["AntennaTuneSample"]]
+
+_RATE_WINDOW_S = 1.0
+
+
+def frames_per_second(
+    history: deque[tuple[float, dict[str, int]]],
+    now: float,
+    totals: dict[str, int],
+    *,
+    window_s: float = _RATE_WINDOW_S,
+) -> dict[str, float]:
+    """Frames per second over the last ``window_s`` of cumulative counters.
+
+    One frame is 1/s. A short tick must not turn that frame into ``1 / tick``
+    (a beacon in a 120 ms sample is not 8 beacons/s). Until the window is
+    full, the count so far is still quoted per second of the full window.
+    """
+    history.append((now, dict(totals)))
+    cutoff = now - window_s
+    while len(history) > 1 and history[1][0] <= cutoff:
+        history.popleft()
+    oldest_t, oldest = history[0]
+    span = now - oldest_t
+    if span <= 0:
+        return {key: 0.0 for key in totals}
+    divisor = span if span >= window_s else window_s
+    rates: dict[str, float] = {}
+    for key in set(oldest) | set(totals):
+        delta = totals.get(key, 0) - oldest.get(key, 0)
+        rates[key] = (delta if delta > 0 else 0) / divisor
+    return rates
 
 
 @dataclass
