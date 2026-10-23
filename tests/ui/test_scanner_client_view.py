@@ -32,6 +32,9 @@ class _Array:
     async def stop_hopping(self):
         pass
 
+    def drain_threats(self):
+        return []
+
 
 class _Host(App):
     def __init__(self, array):
@@ -455,21 +458,32 @@ async def test_same_ssid_aps_collapse_into_expandable_infrastructure():
         table = scanner.query_one("#ap-table", DataTable)
         scanner.refresh_table()
 
-        assert table.row_count == 1
         group_key = "infrastructure:hotel wifi"
+        assert table.row_count == 2
+        rows = [row.value for row in table._row_locations]
+        assert first.bssid in rows and second.bssid in rows
+        ssid_cells = {
+            first.bssid: table.get_cell(first.bssid, "ssid").plain,
+            second.bssid: table.get_cell(second.bssid, "ssid").plain,
+        }
+        secondary_bssid = next(
+            bssid for bssid, plain in ssid_cells.items() if plain.startswith("  └")
+        )
+        primary_bssid = next(bssid for bssid in ssid_cells if bssid != secondary_bssid)
+        assert "Hotel WiFi" in ssid_cells[primary_bssid]
+        assert ssid_cells[secondary_bssid] == "  └ Hotel WiFi"
+
+        table.move_cursor(row=rows.index(primary_bssid), animate=False)
+        scanner.action_toggle_infrastructure()
+        await pilot.pause(0)
+        assert table.row_count == 1
         assert table.get_cell(group_key, "ssid").plain == "  ▸ Hotel WiFi · 2 APs"
         assert table.get_cell(group_key, "channel").plain == "1,6"
         assert table.get_cell(group_key, "signal").plain == "-40 dBm"
 
-        await pilot.press("enter")
-        await pilot.pause(0)
-        assert table.row_count == 2
-        assert table.get_row_at(0)[0].plain == "  Hotel WiFi"
-        assert table.get_row_at(1)[0].plain == "  └ Hotel WiFi"
-
         scanner.action_toggle_infrastructure()
         await pilot.pause(0)
-        assert table.row_count == 1
+        assert table.row_count == 2
 
 
 @pytest.mark.asyncio

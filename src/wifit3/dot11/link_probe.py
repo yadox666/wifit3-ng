@@ -5,9 +5,10 @@ from wifit3.dot11.mac import mac_header
 from wifit3.dot11.probe import probe_req
 
 
-def ap_link_probe_req(ap_bssid: bytes, sta_mac: bytes, ssid: str = "") -> bytes:
+def ap_link_probe_req(ap_bssid: bytes, sta_mac: bytes, ssid: str = "",
+                      channel: int = 1) -> bytes:
     """Directed Probe Request to the AP (expects an immediate Ack from the AP)."""
-    return probe_req(ap_bssid, sta_mac, ssid)
+    return probe_req(ap_bssid, sta_mac, ssid, channel=channel)
 
 
 def client_link_null(ap_bssid: bytes, client_mac: bytes) -> bytes:

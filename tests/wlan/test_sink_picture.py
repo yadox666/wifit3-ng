@@ -191,3 +191,25 @@ def test_siblings_channel_change_drops_stale_link():
     _seed_beacon(s, "aa:bb:cc:dd:ee:02", 149)      # roams away
     assert s.access_points["aa:bb:cc:dd:ee:00"].siblings == []
     assert s.access_points["aa:bb:cc:dd:ee:02"].siblings == []
+
+
+def test_remove_access_point_clears_clients_and_sibling_backlinks():
+    s = WlanSink()
+    removed_bssid = "aa:bb:cc:dd:ee:00"
+    remaining_bssid = "aa:bb:cc:dd:ee:02"
+    client = "12:22:33:44:55:66"
+    _seed_beacon(s, removed_bssid, 44)
+    _seed_beacon(s, remaining_bssid, 44)
+    s.update(pkt({"type": "data", "to_ds": True, "from_ds": False,
+                  "bssid": removed_bssid, "source": client,
+                  "dest": "de:ad:be:ef:00:02", "rssi": -50}), W0)
+
+    removed = s.remove_access_point(removed_bssid)
+
+    assert removed is not None and removed.bssid == removed_bssid
+    assert client not in s.clients
+    assert s.access_points[remaining_bssid].siblings == []
+
+    _seed_beacon(s, removed_bssid, 149)
+    assert s.access_points[removed_bssid].siblings == []
+    assert s.access_points[remaining_bssid].siblings == []

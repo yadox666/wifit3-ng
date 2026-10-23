@@ -82,6 +82,7 @@ from wifit3.ui.vault.global_tracker import GlobalJobTracker
 from wifit3.wlan.enterprise_risk import enterprise_findings, is_enterprise_ap
 from wifit3.wlan.network_metadata import PassiveNetworkAnalyzer
 from wifit3.wlan.channels import channel_spec_for_ap
+from wifit3.wlan.threats import notify_threats
 
 from ... import focus_model as fm
 from ...capture_events import (
@@ -390,7 +391,7 @@ class FocusViewV2(Screen):
         target = getattr(self.app, "target_ap", None)
         if target is not self._target_ap:
             await self._enter_target()
-        elif target is not None:
+        elif target is not None and not self._any_campaign_active():
             # Re-pin the pool to the target's channel on re-entry (STACK across channel-capable cards).
             array = self.app.array
             if array is not None:
@@ -766,7 +767,10 @@ class FocusViewV2(Screen):
         """Bind to ``app.target_ap``: stop campaigns, reset state, update panels/radio/log."""
         self.stop_packet_capture(notify=False)
         self._stop_network_analysis()
+        campaign = self._controls.current
         self._controls.stop()
+        if campaign is not None:
+            await campaign.stop()
         self._stop_probe()
 
         ap = getattr(self.app, "target_ap", None)
@@ -841,7 +845,7 @@ class FocusViewV2(Screen):
         self._log_band_twins(ap)
         self._log_persisted_history(ap)
         try:
-            self.app.ap_history_store.enrich(ap)
+            await asyncio.to_thread(self.app.ap_history_store.enrich, ap)
         except Exception:
             logger.warning("Could not enrich AP identity from history", exc_info=True)
         self._log_stored_wps_identity(ap)
@@ -935,6 +939,9 @@ class FocusViewV2(Screen):
             return
         self._poll_eap_lab_campaign()
         ap = self._target_ap
+        array = self.app.array
+        if array is not None:
+            notify_threats(self.app.notify, array.drain_threats())
         locked = getattr(self.app, "locked_target", None)
         if (
             locked is not None
@@ -1984,18 +1991,22 @@ class FocusViewV2(Screen):
         panel = self.query_one("#network-metadata", NetworkMetadataPanel)
         clients = self.query_one("#clients", ClientsList)
         open_ap = self._is_open_ap(ap)
+        if not open_ap:
+            self._network_store = None
+            panel.display = False
+            clients.set_open_network_metadata(None, enabled=False)
+            self._network_analyzer = None
+            return
         self._network_store = NetworkMetadataStore(
             self.app.ap_history_store, ap.bssid, ap.ssid,
         )
-        panel.display = open_ap
+        panel.display = True
         clients.set_open_network_metadata(
             self._network_store.metadata,
-            enabled=open_ap,
+            enabled=True,
         )
         for error in self._network_store.errors:
             logger.warning("%s", error)
-        if not open_ap:
-            self._network_analyzer = None
 
     def _start_network_analysis(self, ap, array) -> None:
         """Observe open-AP metadata for the Focus lifetime, independently of PCAP recording."""
@@ -2702,7 +2713,10 @@ class FocusViewV2(Screen):
         # Tear down any running attack: Scanner doesn't own the AP's channel, and a forged daemon would keep injecting.
         self.stop_packet_capture(notify=False)
         self._stop_network_analysis()
+        campaign = self._controls.current
         self._controls.stop()
+        if campaign is not None:
+            await campaign.stop()
         self._stop_probe()
         ap = self._target_ap
         logger.info("[FOCUS] leave: ssid=%r bssid=%s",

@@ -83,7 +83,10 @@ class PacketDashboard(Static):
     def set_footer(self, lines) -> None:
         """Set (or clear, with None/[]) the centered footer lines below the
         sparklines. ``lines`` is a list of rich Texts the caller has rendered."""
-        self._footer = lines or None
+        footer = lines or None
+        if footer == self._footer:
+            return
+        self._footer = footer
         self._repaint()
 
     # ---- sampling -----------------------------------------------------------
@@ -164,7 +167,7 @@ class PacketDashboard(Static):
         # card/router columns as the band grows.
         h = self.content_size.height or len(lines)
         pad = max(0, (h - len(lines)) // 2)
-        self.update(Text("\n").join([Text("")] * pad + lines))
+        self.update(Text("\n").join([Text("")] * pad + lines), layout=False)   # height: 100%
 
     def _row(self, label: str, color: str, cells: str, num: str, bw: int) -> Text:
         """Right-aligned label · space · bars (right-aligned, newest at the right)

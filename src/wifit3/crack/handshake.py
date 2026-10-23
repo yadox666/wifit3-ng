@@ -53,6 +53,8 @@ _PAIR_M1M4_E4 = 0x01
 _PAIR_M2M3_E2 = 0x02
 _PAIR_M3M4_E4 = 0x05
 
+_KEY_INFO_OFFSET = 5
+
 # MIC sits at offset 81 within the 802.1X payload; a usable MIC frame's payload
 # must reach at least through it (81 + 16).
 _MIC_OFFSET = 81
@@ -81,39 +83,47 @@ _NC_BIT = 0x80
 # A capture is worth emitting only if hashcat -m 22000 can crack the *specific
 # artifact*: the PMK must be passphrase-derived (PBKDF2) AND hashcat must support
 # the resulting hashline. SAE (ephemeral PMK), EAP (PMK from the 802.1X MSK, no
-# passphrase), OWE (no password) fail the first test. FT-PSK (PMK-R0→PMK-R1
-# hierarchy, no -m 22000 mode) and the SHA256 PMKID (HMAC-SHA256, while -m 22000's
-# PMKID path is HMAC-SHA1) pass it but fail the second, so the two artifacts gate
-# differently:
+# passphrase), OWE (no password) fail the first test. FT-PSK-SHA384 passes it but
+# fails the second (-m 22000's FT path is the SHA-256 KDF only), so the artifacts
+# gate differently:
 #
-#   EAPOL (WPA*02): hashcat reads the Key Descriptor Version from the embedded
-#     frame, so plain PSK (keyver 2) AND PSK-SHA256 (keyver 3 / AES-CMAC) both
-#     crack; FT has no mode; EAP/Enterprise has no passphrase; OWE (Enhanced Open)
-#     derives its PMK from an ECDH exchange, no password either.
-#     → uncrackable AKMs = SAE | FT-PSK | EAP | OWE.
-#   PMKID (WPA*01): single-algorithm HMAC-SHA1 → only plain PSK (AKM 2). FT and
-#     the SHA256-PSK AKMs (6 / 20) yield a hash -m 22000 can't take.
+#   EAPOL: hashcat reads the Key Descriptor Version from the embedded frame, so plain
+#     PSK (keyver 2) AND PSK-SHA256 (keyver 3 / AES-CMAC) both crack as WPA*02.
+#     FT-PSK (AKM 4) cracks as WPA*04, which needs an M2 of keyver 3 carrying the
+#     MDID, R0KH-ID and R1KH-ID; any other FT-PSK pair is withheld as "FT".
+#     → uncrackable AKMs = SAE | FT-PSK-SHA384 | EAP | OWE.
+#   PMKID: plain PSK (AKM 2, HMAC-SHA1) and PSK-SHA256 (AKM 6, HMAC-SHA256, flagged
+#     by MESSAGEPAIR "03") as WPA*01; FT-PSK (AKM 4, PMKR1Name) as WPA*03, once an M2
+#     of the same client supplied the three FT identifiers.
 #
-# SAE, FT, EAP, and OWE are *strict* (withhold on an unconfirmed transition AP).
-# The SHA256 PMKID is *soft*: AKM 6 is rare, so a PMKID of unknown AKM is assumed
-# to be the common HMAC-SHA1 one unless the AP offers no plain PSK at all.
+# SAE, FT, EAP, and OWE are *strict* (withhold on an unconfirmed transition AP); an
+# FT-PSK capture also needs its AKM known, since that picks WPA*04 over WPA*02.
+# A PMKID of unknown AKM takes the algorithm from its M1's key descriptor version
+# (3 = SHA256, 2 = SHA1); failing that, SHA1 unless the AP offers no plain PSK.
 _SAE_AKMS = frozenset({8, 9, 24, 25})       # SAE / FT-SAE / SAE-EXT-KEY / FT-SAE-EXT-KEY
-_FT_PSK_AKMS = frozenset({4, 19})           # FT-PSK / FT-PSK-SHA384
+FT_PSK_AKM = 4
+_FT_PSK_SHA384_AKM = 19
+_FT_PSK_AKMS = frozenset({FT_PSK_AKM, _FT_PSK_SHA384_AKM})
 _EAP_AKMS = frozenset({1, 3, 5, 11, 12, 13})  # EAP/FT-EAP/EAP-SHA256/EAP-Suite-B[-192]/FT-EAP-SHA384 (Enterprise)
 _OWE_AKMS = frozenset({18})                 # OWE / Enhanced Open: PMK from ECDH, no passphrase
-_EAPOL_BAD_AKMS = _SAE_AKMS | _FT_PSK_AKMS | _EAP_AKMS | _OWE_AKMS  # never -m 22000-crackable as EAPOL
-_PMKID_PSK_AKM = 2                          # the only HMAC-SHA1 (crackable) PMKID
+_EAPOL_BAD_AKMS = _SAE_AKMS | {_FT_PSK_SHA384_AKM} | _EAP_AKMS | _OWE_AKMS  # never -m 22000-crackable
+_FT_KEY_DESCRIPTOR_VERSION = 3              # hashcat rejects a WPA*04 of any other keyver
+_FT_KEY_HOLDER_ID_MAX_LEN = 48
+_PMKID_PSK_AKM = 2                          # HMAC-SHA1 PMKID
+PMKID_PSK_SHA256_AKM = 6                    # HMAC-SHA256 PMKID
+_PMKID_PSK_AKMS = frozenset({_PMKID_PSK_AKM, PMKID_PSK_SHA256_AKM})
+_PMKID_AKM_BY_KEY_DESCRIPTOR_VERSION = {2: _PMKID_PSK_AKM, 3: PMKID_PSK_SHA256_AKM}
 _EAP_LABEL = "EAP/Enterprise"               # badge for a captured-but-worthless EAP 4-way
 _OWE_LABEL = "OWE"                          # badge for a captured-but-worthless OWE (open) 4-way
 
 
 def eapol_verdict(akm: Optional[int], offered: List[int]) -> str:
-    """EAPOL (``WPA*02``) crackability for a negotiated ``akm``, falling back to the AP's
-    ``offered`` suites when the frame's own AKM is unknown (SAE/FT/EAP/OWE are uncrackable)."""
+    """EAPOL crackability for a negotiated ``akm``, falling back to the AP's ``offered``
+    suites when the frame's own AKM is unknown (SAE/FT/EAP/OWE are uncrackable then)."""
     off = set(offered)
-    bad = _EAPOL_BAD_AKMS
     if akm is not None:
-        return "uncrackable" if akm in bad else "crackable"
+        return "uncrackable" if akm in _EAPOL_BAD_AKMS else "crackable"
+    bad = _EAPOL_BAD_AKMS | _FT_PSK_AKMS
     if not (off & bad):
         return "crackable"            # no SAE/FT/EAP/OWE offered, akm unknown → legacy emit
     if off - bad:
@@ -121,17 +131,28 @@ def eapol_verdict(akm: Optional[int], offered: List[int]) -> str:
     return "uncrackable"              # only SAE/FT/EAP/OWE offered
 
 
-def pmkid_crackable(hs: Handshake) -> bool:
-    """True only for a plain-PSK (AKM 2) PMKID, the lone HMAC-SHA1 PMKID hashcat
-    ``-m 22000`` cracks."""
+def crackable_pmkid_akm(hs: Handshake) -> Optional[int]:
+    """The AKM the PMKID was derived under when hashcat ``-m 22000`` cracks it: 2 (PSK,
+    HMAC-SHA1), 6 (PSK-SHA256, HMAC-SHA256) or 4 (FT-PSK). None when uncrackable."""
+    if hs.pmkid_akm == FT_PSK_AKM:
+        return FT_PSK_AKM if ft_identifiers_frame(hs) is not None else None
     if hs.pmkid_akm is not None:
-        return hs.pmkid_akm == _PMKID_PSK_AKM
+        return hs.pmkid_akm if hs.pmkid_akm in _PMKID_PSK_AKMS else None
     offered = set(hs.akm_offered)
     if offered & (_SAE_AKMS | _FT_PSK_AKMS):
-        return False                  # SAE/FT could be the negotiated AKM → withhold
-    if not offered:
-        return True                   # no AKM info (fixtures / pre-RSN) → legacy
-    return _PMKID_PSK_AKM in offered  # plain PSK offered → assume the SHA1 PMKID
+        return None                   # SAE/FT could be the negotiated AKM → withhold
+    psk_offered = offered & _PMKID_PSK_AKMS if offered else _PMKID_PSK_AKMS  # none: fixtures / pre-RSN
+    if not psk_offered:
+        return None
+    m1_akm = _PMKID_AKM_BY_KEY_DESCRIPTOR_VERSION.get(hs.pmkid_key_descriptor_version)
+    if m1_akm in psk_offered:
+        return m1_akm                 # the M1's key descriptor version, as hcxpcapngtool reads it
+    return _PMKID_PSK_AKM if _PMKID_PSK_AKM in psk_offered else PMKID_PSK_SHA256_AKM
+
+
+def pmkid_crackable(hs: Handshake) -> bool:
+    """True for a PSK (AKM 2), PSK-SHA256 (AKM 6) or complete FT-PSK (AKM 4) PMKID."""
+    return crackable_pmkid_akm(hs) is not None
 
 
 def uncrackable_label(akm: Optional[int], offered: List[int]) -> Optional[str]:
@@ -193,7 +214,7 @@ def describe(f: HandshakeMessage) -> MessageInfo:
 
 @dataclass(frozen=True)
 class CrackablePair:
-    """A pair that yields a hashcat-crackable WPA*02 line.
+    """A pair that yields a hashcat-crackable WPA*02 or WPA*04 line.
 
     ``anonce_frame`` donates the ANonce; ``mic_frame`` (always M2 or a non-zeroed
     M4) donates the MIC, the SNonce, and the EAPOL bytes."""
@@ -228,18 +249,42 @@ def _mic_frame_usable(f: HandshakeMessage) -> bool:
     return i.has_mic and i.eapol_complete and i.has_nonce
 
 
+def _ft_identifiers_complete(f: HandshakeMessage) -> bool:
+    return (len(f.mdid) == 2 and 0 < len(f.r0khid) <= _FT_KEY_HOLDER_ID_MAX_LEN
+            and 0 < len(f.r1khid) <= _FT_KEY_HOLDER_ID_MAX_LEN)
+
+
+def ft_identifiers_frame(hs: Handshake) -> Optional[HandshakeMessage]:
+    """The first frame carrying a complete MDID / R0KH-ID / R1KH-ID, or None."""
+    return next((f for f in hs.messages if _ft_identifiers_complete(f)), None)
+
+
+def _ft_pair_incomplete(pair: CrackablePair) -> bool:
+    """An FT-PSK pair WPA*04 can't carry: its keystone must be an M2 of keyver 3 with all
+    three FT identifiers."""
+    f = pair.mic_frame
+    if f.akm != FT_PSK_AKM:
+        return False
+    key_info = int.from_bytes(f.eapol_payload[_KEY_INFO_OFFSET:_KEY_INFO_OFFSET + 2], "big")
+    return not (f.msg_num == 2 and key_info & 3 == _FT_KEY_DESCRIPTOR_VERSION
+                and _ft_identifiers_complete(f))
+
+
 def crackable_pairs(hs: Handshake) -> List[CrackablePair]:
     """Every hashcat-crackable handshake instance: the structural pairs of
     ``_pairs_ignoring_akm`` kept only when the keystone (M2/M4) frame's AKM cracks."""
     offered = hs.akm_offered
     return [p for p in _pairs_ignoring_akm(hs)
-            if eapol_verdict(p.mic_frame.akm, offered) == "crackable"]
+            if eapol_verdict(p.mic_frame.akm, offered) == "crackable"
+            and not _ft_pair_incomplete(p)]
 
 
 def withheld_capture_label(hs: Handshake) -> Optional[str]:
     """Badge (SAE/FT/EAP/OWE) for the first captured 4-way instance whose AKM has no
     ``-m 22000`` crack path, or None. Per instance (a mixed capture still names it)."""
     for p in _pairs_ignoring_akm(hs):
+        if _ft_pair_incomplete(p):
+            return "FT"
         label = uncrackable_label(p.mic_frame.akm, hs.akm_offered)
         if label:
             return label
@@ -329,7 +374,8 @@ def ssid_hex(ssid: str) -> str:
 
 
 def hc22000_line(ssid: str, hs: Handshake, pair: CrackablePair) -> str:
-    """The ``WPA*02*…`` hashline for a crackable pair, MIC field zeroed.
+    """The ``WPA*02*…`` hashline for a crackable pair (``WPA*04*…`` plus MDID, R0KH-ID
+    and R1KH-ID for FT-PSK), MIC field zeroed.
 
     The message-pair byte carries the NC bit (0x80), so hashcat applies
     nonce-error-correction by default (it's off unless this bit is set) and
@@ -337,9 +383,11 @@ def hc22000_line(ssid: str, hs: Handshake, pair: CrackablePair) -> str:
     hcxpcapngtool flags its output."""
     payload = bytearray(pair.mic_frame.eapol_payload)
     payload[_MIC_OFFSET: _MIC_OFFSET + _MIC_LEN] = _ZERO_MIC
-    return (
-        "WPA*02"
-        f"*{pair.mic_frame.mic.hex()}"
+    f = pair.mic_frame
+    is_ft = f.akm == FT_PSK_AKM
+    line = (
+        f"WPA*{'04' if is_ft else '02'}"
+        f"*{f.mic.hex()}"
         f"*{mac_compact(hs.bssid)}"
         f"*{mac_compact(hs.client_mac)}"
         f"*{ssid_hex(ssid)}"
@@ -347,3 +395,6 @@ def hc22000_line(ssid: str, hs: Handshake, pair: CrackablePair) -> str:
         f"*{bytes(payload).hex()}"
         f"*{pair.pair_byte | _NC_BIT:02x}"
     )
+    if is_ft:
+        line += f"*{f.mdid.hex()}*{f.r0khid.hex()}*{f.r1khid.hex()}"
+    return line

@@ -103,7 +103,8 @@ class DecloakAttack:
         )
 
         for candidate in candidates:
-            frame = probe_req(self.bssid_bytes, self.source_mac, candidate)
+            frame = probe_req(self.bssid_bytes, self.source_mac, candidate,
+                               channel=self.target.channel)
             await iface.send_no_wait(frame)
 
             # Poll briefly: the parser flips ap.ssid asynchronously when the AP echoes back a

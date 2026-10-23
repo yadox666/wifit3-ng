@@ -119,13 +119,15 @@ class FakeRegistrar:
         self.authkey, self.keywrapkey, _ = wc.derive_keys(shared, self.nonce_e, self.mac_e, self.nonce_r)
         self.psk1, self.psk2 = wc.derive_psk(self.authkey, M.PBC_PASSWORD)
         self.last_recv = p.raw_wsc_attrs
-        m2 = M.build_m2(self.nonce_e, self.nonce_r, self.uuid_r, self.pkr, self.authkey, p.raw_wsc_attrs)
+        m2 = M.build_m2(self.nonce_e, self.nonce_r, self.uuid_r, self.pkr, self.authkey,
+                        p.raw_wsc_attrs, M.RF_BAND_24GHZ, False)
         await self.t.send(self._req(self._nid(), M.WSC_MSG, m2))
 
     async def _on_m3(self, p):
         self.e_hash1 = p.attrs[M.ATTR_E_HASH1]      # remember to verify against revealed E-S1
         m4 = M.build_m4(self.nonce_e, self.r_s1, self.r_s2, self.psk1, self.psk2,
-                        self.pke, self.pkr, self.authkey, self.keywrapkey, p.raw_wsc_attrs)
+                        self.pke, self.pkr, self.authkey, self.keywrapkey,
+                        p.raw_wsc_attrs, False)
         await self.t.send(self._req(self._nid(), M.WSC_MSG, m4))
 
     async def _on_m5(self, p):
@@ -136,7 +138,8 @@ class FakeRegistrar:
         self.e_hash1_verified = (
             wc.e_or_r_hash(self.authkey, e_s1, self.psk1, self.pke, self.pkr) == self.e_hash1
         )
-        m6 = M.build_m6(self.nonce_e, self.r_s2, self.authkey, self.keywrapkey, p.raw_wsc_attrs)
+        m6 = M.build_m6(self.nonce_e, self.r_s2, self.authkey, self.keywrapkey,
+                        p.raw_wsc_attrs, False)
         await self.t.send(self._req(self._nid(), M.WSC_MSG, m6))
 
     async def _on_m7(self, p):
@@ -157,7 +160,7 @@ class FakeRegistrar:
 async def _run(psk="correct horse 9", ssid="HomeNet"):
     a, b = asyncio.Queue(), asyncio.Queue()
     reg = FakeRegistrar(_QueueTransport(b, a), psk, ssid)
-    enr = WpsEnrollee(_QueueTransport(a, b), BSSID, STA,
+    enr = WpsEnrollee(_QueueTransport(a, b), BSSID, STA, channel=6, wsc_2_0=False,
                       msg_timeout=1.0, eapol_start_timeout=1.0)
     task = asyncio.create_task(reg.run())
     try:
@@ -195,7 +198,7 @@ async def test_pbc_enrollee_aborts_on_should_stop():
     enrollee with ABORTED before it blocks on recv: this is what lets the 'Stop
     PBC' button free the radio promptly instead of running to the ~30 s deadline."""
     a, b = asyncio.Queue(), asyncio.Queue()
-    enr = WpsEnrollee(_QueueTransport(a, b), BSSID, STA,
+    enr = WpsEnrollee(_QueueTransport(a, b), BSSID, STA, channel=6, wsc_2_0=False,
                       msg_timeout=1.0, eapol_start_timeout=1.0,
                       should_stop=lambda: True)
     out = await asyncio.wait_for(enr.run(), timeout=5.0)

@@ -19,6 +19,7 @@ from wifit3.dot11.ie import (
     GENERIC_RSN_IE,
     compatible_wpa2_profile_ies,
     ds_param_ie,
+    ext_rates_ie,
     iter_information_elements,
     rates_ie,
     ssid_ie,
@@ -50,6 +51,14 @@ def test_assoc_resp_success_with_privacy_and_rates():
     assert f[26:28] == b"\x00\x00"                    # status success
     assert f[28:30] == b"\x01\xc0"                    # AID 1 + reserved high bits
     assert rates_ie() in f
+
+
+def test_assoc_resp_rates_follow_the_operating_channel():
+    five = assoc_resp(_BSSID, _CLIENT, channel=36)
+    assert rates_ie(36) in five and rates_ie(1) not in five
+    assert ext_rates_ie(1) not in five
+    two = assoc_resp(_BSSID, _CLIENT, channel=6)
+    assert rates_ie(6) in two and ext_rates_ie(6) in two
 
 
 def test_open_ap_frames_clear_privacy_and_omit_rsn():

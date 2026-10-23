@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from pathlib import Path
 from typing import Optional, Callable
@@ -65,6 +66,7 @@ class MT7921AUDriver(Driver):
         self._rx_callback: Optional[Callable[[dict], None]] = None
         self._init_state: Optional[chip_init.InitState] = None
         self._channel = self.SUPPORTED_CHANNELS[0]
+        self._tx_lock = asyncio.Lock()   # FIFO: concurrent injects reach the bulk-OUT in call order
         # is_warm reflects the bring-up path taken by connect(): True when we light-reattached
         # to already-running firmware (_warm_reattach), False on a cold boot. mac_address is
         # parsed from the GET_NIC_CAPAB reply during cold boot (MT_NIC_CAP_MAC_ADDR TLV); it
@@ -313,7 +315,8 @@ class MT7921AUDriver(Driver):
         except ValueError as e:
             logger.error("MT7921AU inject_frame: %s", e)
             return False
-        return await self.transport.send_bulk_checked(wire, endpoint)
+        async with self._tx_lock:
+            return await self.transport.send_bulk_checked(wire, endpoint)
 
     def _stamp_tx_seq(self, frame_bytes: bytes) -> bytes:
         """Software-stamp an incrementing 802.11 sequence number (frag-preserving, one step is

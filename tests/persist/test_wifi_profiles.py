@@ -27,6 +27,7 @@ def test_wifi_profile_store_round_trips_public_beacon_profile(tmp_path):
         pmf_required=False,
         now=100,
     )
+    store.flush()
 
     payload = json.loads(path.read_text("utf-8"))
     assert payload["version"] == 1
@@ -38,6 +39,28 @@ def test_wifi_profile_store_round_trips_public_beacon_profile(tmp_path):
     assert restored[0].rsn_ie == GENERIC_RSN_IE
     assert restored[0].akm_suites == [2]
     assert restored[0].pmf_capable is True
+
+
+def test_remember_does_not_sync_write(tmp_path):
+    path = tmp_path / "wifi_profiles.json"
+    store = WifiProfileStore(path)
+    beacon = wpa2_beacon(bytes.fromhex("001122334455"), "Test Network", 6)
+    store.remember(
+        bssid="00:11:22:33:44:55",
+        ssid="Test Network",
+        channel=6,
+        beacon=beacon,
+        rsn_ie=GENERIC_RSN_IE,
+        akm_suites=[2],
+        pmf_capable=False,
+        pmf_required=False,
+        now=100,
+    )
+    assert not path.exists()
+    store._last_save = 100.0
+    assert store.flush_if_due(now=120) is False
+    assert store.flush_if_due(now=131) is True
+    assert path.exists()
 
 
 def test_wifi_profile_store_rejects_invalid_rsn(tmp_path):

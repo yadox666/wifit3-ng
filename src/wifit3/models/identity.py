@@ -37,7 +37,19 @@ _CANONICAL_VENDOR_PATTERNS = (
 
 _SILICON_ODMS = frozenset({
     "Ralink", "Realtek", "Celeno", "Broadcom", "MediaTek", "Qualcomm Atheros",
+    "Quantenna",
 })
+
+
+def is_silicon_odm(name: str | None) -> bool:
+    """True when ``name`` is a Wi‑Fi chipset vendor, not the CPE OEM."""
+    cleaned = canonical_vendor(name) or clean_text(name)
+    if not cleaned:
+        return False
+    if cleaned in _SILICON_ODMS:
+        return True
+    lower = cleaned.casefold()
+    return "quantenna" in lower
 
 
 def clean_text(value: str | None) -> str | None:
@@ -169,18 +181,18 @@ class ApIdentity:
     @property
     def manufacturer(self) -> str | None:
         val, _ = self.get(IdKey.MANUFACTURER)
-        if val in _SILICON_ODMS:
+        if is_silicon_odm(val):
             oui_mfr = self.get_source_value(IdKey.MANUFACTURER, IdSource.OUI)
-            if oui_mfr and oui_mfr not in _SILICON_ODMS:
+            if oui_mfr and not is_silicon_odm(oui_mfr):
                 return oui_mfr
         return val
 
     @property
     def manufacturer_source(self) -> IdSource | None:
         val, src = self.get(IdKey.MANUFACTURER)
-        if val in _SILICON_ODMS:
+        if is_silicon_odm(val):
             oui_mfr = self.get_source_value(IdKey.MANUFACTURER, IdSource.OUI)
-            if oui_mfr and oui_mfr not in _SILICON_ODMS:
+            if oui_mfr and not is_silicon_odm(oui_mfr):
                 return IdSource.OUI
         return src
 

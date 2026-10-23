@@ -35,6 +35,8 @@ class WpsEnrollee:
         transport: WpsTransport,
         bssid: bytes,
         our_mac: bytes,
+        channel: int,
+        wsc_2_0: bool,
         msg_timeout: float = 5.0,
         eapol_start_timeout: float = 2.0,
         overall_timeout: float = 30.0,
@@ -47,6 +49,8 @@ class WpsEnrollee:
         self.t = transport
         self.bssid = bssid
         self.our_mac = our_mac
+        self.rf_bands = M.rf_band_for_channel(channel)
+        self.wsc_2_0 = wsc_2_0
         self.msg_timeout = msg_timeout
         self.eapol_start_timeout = eapol_start_timeout
         self.overall_timeout = overall_timeout
@@ -148,7 +152,7 @@ class WpsEnrollee:
             if p.wsc_opcode == M.WSC_START and p.wsc_msg_type == 0:
                 phase("← WSC_Start")
                 if not sent_m1:
-                    m1 = M.build_m1(uuid_e, mac_e, nonce_e, pke)
+                    m1 = M.build_m1(uuid_e, mac_e, nonce_e, pke, self.rf_bands, self.wsc_2_0)
                     phase("→ M1")
                     await self._send_1x(M.eap_wsc_response(p.eap_id, M.WSC_MSG, m1))
                     sent_m1 = True

@@ -120,10 +120,10 @@ class ClientWidget(Horizontal):
         wipes text selection and burns CPU)."""
         if power != self._power and not self._is_fake and not self._is_historical:
             self._power = power
-            self._pwr_label.update(Text(str(power), style=dbm_style(power)))
+            self._pwr_label.update(Text(str(power), style=dbm_style(power)), layout=False)
         if packets != self._packets and not self._is_historical:
             self._packets = packets
-            self._pkts_label.update(str(packets))
+            self._pkts_label.update(str(packets), layout=False)
         manufacturer = (
             "Fake-Connect" if self._is_fake else vendor_for_mac(self._mac) or ""
         )
@@ -606,7 +606,7 @@ class ClientsList(Vertical):
         visible = [row for row in self._rows.values() if row.display]
         historical = sum(row._is_historical for row in visible)
         live = len(visible) - historical
-        self.border_title = (
+        title = (
             f"CLIENTS ({live} live · {historical} history) + WEBSITES"
             if self._open_network_mode and historical
             else f"CLIENTS ({live}) + WEBSITES"
@@ -615,3 +615,5 @@ class ClientsList(Vertical):
             if historical
             else f"CLIENTS ({live})"
         )
+        if self.border_title != title:
+            self.border_title = title

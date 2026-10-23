@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import logging
 import os
 import time
 import webbrowser
@@ -41,9 +42,11 @@ from wifit3.dot11.ie import (
 )
 from wifit3.id import oui_db, vendor_for_mac
 from wifit3.persist.config import Config
+from wifit3.persist.wifi_profiles import WifiProfileStoreError
 from wifit3.persist.rsn_profiles import load_scan_rsn_profiles
 from wifit3.persist.targets import SavedTarget, TargetStoreError
 from wifit3.models import AccessPoint, Client, IdKey, IdSource
+from wifit3.models.identity_display import scanner_identity_summary
 from wifit3.targeting import (
     TargetCandidate,
     ap_candidate,
@@ -86,6 +89,7 @@ from .. import focus_model as fm
 from ..encryption_format import EncryptionType, format_encryption_markup, wep_key_ascii
 from wifit3.wlan.channels import band_ranges
 from wifit3.wlan.scan_plan import member_channels_for_scan, uses_per_card_scan_bands
+from wifit3.wlan.threats import notify_threats
 
 from .channel_filter import ChannelFilterDialog
 from .filter import EncryptionFilter, FilterBar, ScanFilter
@@ -93,6 +97,8 @@ from .open_probe_modal import OpenProbeSsidModal
 
 if TYPE_CHECKING:
     from wifit3.ui.app import WifiteApp
+
+logger = logging.getLogger(__name__)
 
 
 STALE_DURATION_S = 20.0  # AP row dimming: ~one multi-radio hop cycle.
@@ -490,7 +496,7 @@ class ScannerView(Screen):
         Binding("/", "focus_filter", "Filter", show=False),
         Binding("l", "toggle_log", "Toggle Log", show=True),
         Binding("t", "toggle_view", "APs/Clients/Split", show=True),
-        Binding("i", "toggle_infrastructure", "Infrastructure", show=True),
+        Binding("i", "toggle_infrastructure", "Infra all", show=True),
         Binding("n", "targets_editor", "Targets", show=True),
         Binding("a", "open_probe_ap", "Probe Honeypot", show=True),
         Binding("v", "open_vault", "Vault", show=True),
@@ -549,6 +555,7 @@ class ScannerView(Screen):
         super().__init__()
         self.ap_cache: Dict[str, AccessPoint] = {}
         self._refresh_timer = None
+        self._pbc_timer = None
         self._sort_idx = 2         # Default to POWER
         self._sort_reverse = True  # Descending
         self._last_sort_time: float = 0.0
@@ -565,6 +572,7 @@ class ScannerView(Screen):
         # (app.pbc_enabled). Watcher + capturing serialization stay Scanner-local.
         self._pbc_watcher = PbcWatcher()
         self._pbc_capturing = False          # serialize: one invade at a time
+        self._logged_auto_crack: Optional[bool] = None
         self._oui_generation = -1
         self._oui_request = 0
         self._station_labels: Dict[str, str] = {}
@@ -582,7 +590,7 @@ class ScannerView(Screen):
         self._open_probe_event_index = 0
         self._open_probe_saved_clients: set[str] = set()
         self._infrastructure_members: dict[str, tuple[AccessPoint, ...]] = {}
-        self._expanded_infrastructures: set[str] = set()
+        self._collapsed_infrastructures: set[str] = set()
         self._expanded_member_ssids: dict[str, str] = {}
         self._secondary_member_bssids: set[str] = set()
         self._table_map_urls: dict[str, str] = {}
@@ -659,13 +667,29 @@ class ScannerView(Screen):
             log.write(treelog.leaf(row) if i == len(rows) - 1 else treelog.branch(row))
 
         if array:
-            # 15 FPS in-place value updates and sort refreshes.
-            self._refresh_timer = self.set_interval(1 / 15, self.refresh_table)
-            self._pbc_timer = self.set_interval(1.0, self._poll_pbc)
+            self._start_table_timers()
             self._log_pbc_status()  # Auto-invade is ON by default
+            self._log_auto_crack_status_when_changed()
 
         if "PYTEST_CURRENT_TEST" not in os.environ:
             self._schedule_oui_load(False)
+
+    def _start_table_timers(self) -> None:
+        if self._refresh_timer is None and self.app.array:
+            self._refresh_timer = self.set_interval(1 / 15, self.refresh_table)
+        if self._pbc_timer is None and self.app.array:
+            self._pbc_timer = self.set_interval(1.0, self._poll_pbc)
+
+    def _stop_table_timers(self) -> None:
+        if self._refresh_timer is not None:
+            self._refresh_timer.stop()
+            self._refresh_timer = None
+        if self._pbc_timer is not None:
+            self._pbc_timer.stop()
+            self._pbc_timer = None
+
+    async def on_screen_suspend(self) -> None:
+        self._stop_table_timers()
 
     async def on_screen_resume(self) -> None:
         if getattr(self.app, "resume_clients_view", False):
@@ -675,9 +699,11 @@ class ScannerView(Screen):
         if getattr(self.app, "resume_client_stale_after_ap_focus", False):
             self.app.resume_client_stale_after_ap_focus = False
             self._apply_client_stale_policy_after_ap_focus()
+        self._start_table_timers()
         array = self.app.array
         if not array:
             return
+        self._log_auto_crack_status_when_changed()
         await self._start_scan_hopping()
 
     async def _start_scan_hopping(self) -> None:
@@ -790,11 +816,20 @@ class ScannerView(Screen):
     # ----- Per-tick refresh --------------------------------------------------
 
     def refresh_table(self) -> None:
+        if self.app.screen is not self:
+            return
         if not self.app.array:
             return
         self._poll_open_probe_campaign()
         self._poll_eap_lab_campaign()
         array = self.app.array
+        profile_store = getattr(self.app, "wifi_profile_store", None)
+        if profile_store is not None:
+            try:
+                profile_store.flush_if_due()
+            except WifiProfileStoreError:
+                logger.warning("Could not flush Wi-Fi profiles", exc_info=True)
+        notify_threats(self.app.notify, array.drain_threats())
         self._maybe_lock_target(array)
         if self._paused:
             return
@@ -870,7 +905,7 @@ class ScannerView(Screen):
             shown_beacons = ap.beacons
             chips_markup = self._ssid_chips_markup(ap)
             enc_markup = self._encryption_markup(ap)
-            ident_summary = ap.identity.summary
+            ident_summary = scanner_identity_summary(ap)
             catalog_sig = _catalog_signature(ap)
             stations = self._station_labels.get(ap.bssid, "")
             matched = self._match_wifi_ap(ap)
@@ -1119,7 +1154,7 @@ class ScannerView(Screen):
         active_keys = {
             f"{_INFRASTRUCTURE_PREFIX}{ssid}" for ssid in infrastructures
         }
-        self._expanded_infrastructures.intersection_update(active_keys)
+        self._collapsed_infrastructures.intersection_update(active_keys)
         self._infrastructure_members = {}
         self._expanded_member_ssids = {}
         displayed: list[AccessPoint] = []
@@ -1133,7 +1168,7 @@ class ScannerView(Screen):
                 continue
             group_key = f"{_INFRASTRUCTURE_PREFIX}{ssid_key}"
             self._infrastructure_members[group_key] = tuple(members)
-            if group_key in self._expanded_infrastructures:
+            if group_key not in self._collapsed_infrastructures:
                 self._expanded_member_ssids[ap.bssid] = group_key
                 displayed.append(ap)
                 continue
@@ -1439,7 +1474,7 @@ class ScannerView(Screen):
             return
         now = time.time()
         to_drop = [
-            bssid for bssid, ap in self.ap_cache.items()
+            ap.bssid for ap in self.app.array.get_access_points(include_eviltwin=False)
             if self._ap_has_expired(self._ap_row_age(ap, now))
         ]
         for bssid in to_drop:
@@ -1507,13 +1542,7 @@ class ScannerView(Screen):
     def _forget_row(self, bssid: str, *, drop_from_array: bool) -> None:
         """Drop the AP's row and caches; drop_from_array also evicts it and its clients from the registry."""
         if drop_from_array and self.app.array:
-            self.app.array.access_points.pop(bssid, None)
-            orphans = [
-                mac for mac, c in self.app.array.clients.items()
-                if c.bssid == bssid
-            ]
-            for mac in orphans:
-                self.app.array.clients.pop(mac, None)
+            self.app.array.remove_access_point(bssid)
         self.ap_cache.pop(bssid, None)
         self._prev_beacons.pop(bssid, None)
         self._beacon_flash_until.pop(bssid, None)
@@ -1692,7 +1721,7 @@ class ScannerView(Screen):
             return Text(f"OUR HONEYPOT AP · {state}", style="bold red")
         fg = self._theme_fg
         dim = "dim " if is_stale else ""
-        text = ap.identity.summary
+        text = scanner_identity_summary(ap)
         cell = Text(text, style=f"{dim}{fg}")
         if is_stale:
             cell.stylize("dim")
@@ -1789,7 +1818,7 @@ class ScannerView(Screen):
         group_key = f"{_INFRASTRUCTURE_PREFIX}{parent.ssid.casefold()}"
         if group_key not in self._infrastructure_members:
             return parent.bssid
-        if group_key not in self._expanded_infrastructures:
+        if group_key in self._collapsed_infrastructures:
             return group_key
         if parent.bssid in self._expanded_member_ssids:
             return parent.bssid
@@ -2015,7 +2044,7 @@ class ScannerView(Screen):
                 return (sentinel, enc.lower(), sec_sig, bssid)
 
             if sort_key == "identity":
-                ident = (ap.identity.summary or "") if ap else ""
+                ident = (scanner_identity_summary(ap) if ap else "")
                 is_empty = not ident
                 sentinel = int(is_empty != reverse)
                 return (sentinel, ident.lower(), sec_sig, bssid)
@@ -2259,6 +2288,32 @@ class ScannerView(Screen):
                 "[bold]WPS PushButton Extraction[/bold] is "
                 "[orange1]disabled[/orange1] [dim](detect only, press [bold]w[/bold] to toggle)[/dim]",
                 color="orange1"))
+
+    def _log_auto_crack_status_when_changed(self) -> None:
+        enabled = Config.auto_crack is not None
+        if enabled == self._logged_auto_crack:
+            return
+        self._logged_auto_crack = enabled
+        if enabled:
+            self._write_log(treelog.header(
+                "[bold]Auto-crack[/bold] is [bold green]enabled[/bold green] "
+                f"[dim]({Config.auto_crack}, change in Prefs: [bold]ctrl+p[/bold])[/dim]",
+                color="green",
+            ))
+        else:
+            self._write_log(treelog.header(
+                "[bold]Auto-crack[/bold] is [orange1]disabled[/orange1] "
+                "[dim](change in Prefs: [bold]ctrl+p[/bold])[/dim]",
+                color="orange1",
+            ))
+
+    def on_wifite_app_job_cracked(self, message: "WifiteApp.JobCracked") -> None:
+        job = message.job
+        self._write_log(Text.from_markup(
+            f' [bold green]✓ WPA PSK[/bold green] [dim](via {escape(job.display_name)})[/dim] '
+            f'= "{escape(job.key or "")}"',
+            emoji=False,
+        ))
 
     def _poll_pbc(self) -> None:
         array = self.app.array
@@ -2683,44 +2738,53 @@ class ScannerView(Screen):
         if campaign is not None and not campaign.done:
             await campaign.stop()
 
-    def action_toggle_infrastructure(self) -> None:
-        if self._view_mode == "clients":
-            self.notify("Infrastructure grouping is available in AP view")
-            return
-        table = self.query_one("#ap-table", DataTable)
-        if not table.row_count:
-            return
-        try:
-            row_key = str(
-                table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value,
-            )
-        except Exception:
-            return
-        group_key = (
-            row_key
-            if row_key in self._infrastructure_members
-            else self._expanded_member_ssids.get(row_key)
-        )
-        if group_key is None:
-            self.notify("Selected AP is not part of a multi-AP infrastructure")
-            return
-        members = self._infrastructure_members.get(group_key, ())
-        if group_key in self._expanded_infrastructures:
-            self._expanded_infrastructures.remove(group_key)
-            destination = group_key
-        else:
-            self._expanded_infrastructures.add(group_key)
-            destination = members[0].bssid if members else group_key
+    def _rebuild_ap_table(self, *, cursor_bssid: str | None = None) -> None:
         ap_table = self.query_one("#ap-table", _APScanTable)
         ap_table.clear(columns=False)
         self.ap_cache.clear()
         self._row_states.clear()
         self.refresh_table()
         ap_table._reclamp_capped_columns()
+        if cursor_bssid is None:
+            return
         try:
-            ap_table.move_cursor(row=ap_table.get_row_index(destination), animate=False)
+            ap_table.move_cursor(
+                row=ap_table.get_row_index(cursor_bssid), animate=False,
+            )
         except Exception:
             pass
+
+    def action_toggle_infrastructure(self) -> None:
+        """Collapse every multi-AP SSID group, or expand them all (default: expanded)."""
+        if self._view_mode == "clients":
+            self.notify("Infrastructure grouping is available in AP view")
+            return
+        active = set(self._infrastructure_members)
+        if not active:
+            self.notify("No multi-AP infrastructures in the list")
+            return
+        collapsed = active & self._collapsed_infrastructures
+        if len(collapsed) < len(active):
+            self._collapsed_infrastructures.update(active)
+            self.notify(f"Collapsed {len(active)} infrastructures")
+            cursor = next(iter(active))
+        else:
+            self._collapsed_infrastructures.difference_update(active)
+            self.notify(f"Expanded {len(active)} infrastructures")
+            members = self._infrastructure_members.get(next(iter(active)), ())
+            cursor = members[0].bssid if members else None
+        self._rebuild_ap_table(cursor_bssid=cursor)
+
+    def _expand_infrastructure_group(self, group_key: str) -> None:
+        """Open one collapsed infrastructure row (Enter on the aggregate line)."""
+        if group_key not in self._infrastructure_members:
+            return
+        if group_key not in self._collapsed_infrastructures:
+            return
+        self._collapsed_infrastructures.discard(group_key)
+        members = self._infrastructure_members.get(group_key, ())
+        destination = members[0].bssid if members else group_key
+        self._rebuild_ap_table(cursor_bssid=destination)
 
     def action_targets_editor(self) -> None:
         selected = self._selected_target_candidate()
@@ -3136,7 +3200,7 @@ class ScannerView(Screen):
             and not client_row
             and row_key in self._infrastructure_members
         ):
-            self.action_toggle_infrastructure()
+            self._expand_infrastructure_group(row_key)
             return
         if self._view_mode == "clients" or client_row:
             client = self._client_cache.get(row_key)

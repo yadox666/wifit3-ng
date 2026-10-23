@@ -267,11 +267,19 @@ class WlanArray:
     async def wait_until(self, condition, timeout: float, poll: float = 0.05) -> bool:
         return await self._sink.wait_until(condition, timeout, poll)
 
+    def drain_threats(self):
+        """Nearby-threat events scored since the last UI drain."""
+        return self._sink.drain_threats()
+
     def get_access_points(self, include_eviltwin: bool = True) -> List[AccessPoint]:
         aps = self._sink.get_access_points()
         if include_eviltwin:
             return aps
         return [ap for ap in aps if ap.bssid not in self._evil_twin_bssids]
+
+    def remove_access_point(self, bssid: str) -> Optional[AccessPoint]:
+        """Evict an AP and its dependent registry state."""
+        return self._sink.remove_access_point(bssid)
 
     def register_forged_mac(self, mac) -> None:
         self._sink.register_forged_mac(mac)
@@ -572,5 +580,15 @@ class WlanArray:
         self._run_on_loop(_spawn)
 
     async def close(self) -> None:
-        await asyncio.gather(*(m.close() for m in self._members), return_exceptions=True)
+        await self.stop_hopping()
+        rehop_tasks = list(self._rehop_tasks)
+        if rehop_tasks:
+            await asyncio.gather(*rehop_tasks, return_exceptions=True)
+        members = list(self._members)
         self._members.clear()
+        await asyncio.gather(*(member.close() for member in members), return_exceptions=True)
+        close_tasks = list(self._close_tasks)
+        if close_tasks:
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+        self._preferred = None
+        self._loop = None

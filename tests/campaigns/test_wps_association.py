@@ -223,3 +223,21 @@ def test_assoc_req_dynamic_privacy():
     f_rsn = assoc_req(_BSSID_B, _US, "Net", trailer_ies=rsn_trailer)
     cap_rsn = struct.unpack("<H", f_rsn[24:26])[0]
     assert (cap_rsn & 0x0010) != 0   # Privacy bit SET for RSN
+
+
+_OTHER_AP = bytes.fromhex("020000000001")
+
+
+def _auth_resp_from(bssid: bytes, status: int = 0) -> bytes:
+    # Same shape as _auth_resp, but addr2/addr3 name a different AP.
+    return (b"\xb0\x00\x00\x00" + _US + bssid + bssid + b"\x00\x00"
+            + b"\x00\x00" + b"\x02\x00" + struct.pack("<H", status))
+
+
+def test_rx_cb_ignores_a_response_from_another_bssid():
+    a = Association(_RespIface(), _BSSID, "Net", 1, our_mac=_US)
+    a._active = True
+    a._rx_cb(WlanFrameParser.parse_80211_frame(_auth_resp_from(_OTHER_AP), -40))
+    assert a._auth_ok is False and a.fail_reason is None
+    a._rx_cb(WlanFrameParser.parse_80211_frame(_auth_resp_from(_BSSID_B), -40))
+    assert a._auth_ok is True

@@ -11,7 +11,7 @@ pcap-verified. MAC/BB/RF/efuse/calibration/RX/TX milestones follow.
 VID:PID set kept in lockstep with the mainline sibling ``chips/rtl8188eus`` (all one silicon).
 """
 from wifit3.models.device_id import DeviceID
-from wifit3.chips.products import AboCom, DLink, Edimax, Elecom, Realtek, Sitecom, TPLink
+from wifit3.chips.products import AboCom, DLink, Edimax, Elecom, Mercusys, Realtek, Sitecom, TPLink
 
 _IDS = (
     (0x2357, 0x010C, "RTL8188EUS", None, TPLink.TL_WN722N_V2_V3),
@@ -26,6 +26,7 @@ _IDS = (
     (0x2001, 0x331B, "RTL8188EUS", None, DLink.DWA_121B1),
     (0x056E, 0x4008, "RTL8188EUS", None, Elecom.WDC_150SU2M),
     (0x7392, 0xB811, "RTL8188EUS", None, Edimax.EW_7811UN_V2),
+    (0x2C4E, 0x0102, "RTL8188EUS", None, Mercusys.MW150US),
 )
 
 SUPPORTED_IDS = [

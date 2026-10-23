@@ -322,7 +322,7 @@ def _read_anonces(path: Path) -> set[str]:
         return out
     for line in text.splitlines():
         entry = parse_hc22000(line)
-        if entry and entry.kind == "02" and entry.anonce:
+        if entry and entry.kind in {"02", "04"} and entry.anonce:
             out.add(entry.anonce)
     return out
 
@@ -335,7 +335,7 @@ def _read_pmkids(path: Path) -> set[str]:
         return out
     for line in text.splitlines():
         entry = parse_hc22000(line)
-        if entry and entry.kind == "01" and entry.pmkid_or_mic:
+        if entry and entry.kind in {"01", "03"} and entry.pmkid_or_mic:
             out.add(entry.pmkid_or_mic)
     return out
 
@@ -348,6 +348,14 @@ class HcFiles:
         self.ssid = ssid or ""
         self.bssid = bssid
         self.agg_path = captures_dir / f"{safe_ssid(self.ssid)}_{bssid_to_dashed(bssid)}.hc22000"
+
+    def lines(self) -> list:
+        """Every parseable line of this AP's aggregate hash file."""
+        try:
+            text = self.agg_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        return [entry for line in text.splitlines() if (entry := parse_hc22000(line))]
 
     def find_existing_anonce(self, anonce: str) -> Path | None:
         """Find if ANonce already exists in either the aggregate file or any split file."""
@@ -412,9 +420,9 @@ class HcFiles:
                         continue
                     e = parse_hc22000(ln)
                     if e:
-                        if e.kind == "01" and e.pmkid_or_mic:
+                        if e.kind in {"01", "03"} and e.pmkid_or_mic:
                             seen_pmkids.add(e.pmkid_or_mic)
-                        elif e.kind == "02" and e.anonce:
+                        elif e.kind in {"02", "04"} and e.anonce:
                             seen_anonces.add(e.anonce)
                     merged_lines.append(ln)
             except OSError:
@@ -433,11 +441,11 @@ class HcFiles:
                     continue
                 e = parse_hc22000(ln)
                 if e:
-                    if e.kind == "01" and e.pmkid_or_mic:
+                    if e.kind in {"01", "03"} and e.pmkid_or_mic:
                         if e.pmkid_or_mic in seen_pmkids:
                             continue
                         seen_pmkids.add(e.pmkid_or_mic)
-                    elif e.kind == "02" and e.anonce:
+                    elif e.kind in {"02", "04"} and e.anonce:
                         if e.anonce in seen_anonces:
                             continue
                         seen_anonces.add(e.anonce)

@@ -71,6 +71,17 @@ class _FakeArray:
     async def stop_hopping(self) -> None:
         pass
 
+    def drain_threats(self):
+        return []
+
+    def remove_access_point(self, bssid: str):
+        ap = self.access_points.pop(bssid, None)
+        self.clients = {
+            mac: client for mac, client in self.clients.items()
+            if client.bssid != bssid
+        }
+        return ap
+
 
 class _ScannerHost(App):
     def __init__(self, array: _FakeArray):
@@ -409,18 +420,6 @@ async def test_guess_stays_with_infrastructure_when_collapsed_and_expanded():
         scanner._sort_reverse = True
         scanner.refresh_table()
 
-        collapsed = [row.value for row in table._row_locations]
-        assert collapsed == [
-            louder.bssid,
-            group_key,
-            hidden.bssid,
-            quieter.bssid,
-        ]
-        assert table.get_cell(group_key, "bssid").plain == "3 BSSIDs"
-
-        table.move_cursor(row=collapsed.index(group_key), animate=False)
-        scanner.action_toggle_infrastructure()
-
         expanded = [row.value for row in table._row_locations]
         assert expanded == [
             louder.bssid,
@@ -437,11 +436,27 @@ async def test_guess_stays_with_infrastructure_when_collapsed_and_expanded():
         bssid_col = table.columns[ColumnKey("bssid")]
         assert bssid_col.content_width <= _APScanTable.BSSID_COL_WIDTH
 
-        bssid_col.content_width = 60
         table.move_cursor(row=expanded.index(lead.bssid), animate=False)
         scanner.action_toggle_infrastructure()
         await pilot.pause(0)
+
+        collapsed = [row.value for row in table._row_locations]
+        assert collapsed == [
+            louder.bssid,
+            group_key,
+            hidden.bssid,
+            quieter.bssid,
+        ]
         assert table.get_cell(group_key, "bssid").plain == "3 BSSIDs"
+
+        bssid_col.content_width = 60
+        table.move_cursor(row=collapsed.index(group_key), animate=False)
+        scanner.action_toggle_infrastructure()
+        await pilot.pause(0)
+        re_expanded = [row.value for row in table._row_locations]
+        assert group_key not in re_expanded
+        assert lead.bssid in re_expanded
+        assert table.get_cell(named.bssid, "ssid").plain == "  └ MOVISTAR-WIFI6-A250"
         assert bssid_col.content_width <= _APScanTable.BSSID_COL_WIDTH
 
 

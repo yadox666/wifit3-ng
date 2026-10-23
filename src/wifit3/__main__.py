@@ -58,7 +58,11 @@ def build_parser():
     parser.add_argument("--version", action="version", version=f"wifit3 {__version__}")
     parser.add_argument("--smoke", action="store_true", help="TEST ONLY: Run headless, render, exit 0")
     parser.add_argument("--quiet", action="store_true", help="Do not emit any logs")
-    parser.add_argument("--debug", action="store_true", help="Emit verbose debug logs")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Verbose logs (wifit3.log), UI stall monitor, and SLOW/ms tracing",
+    )
     parser.add_argument("--trace", action="store_true", help="Emit very verbose trace logs")
     parser.add_argument(
         "--background",
@@ -111,6 +115,15 @@ def main() -> None:
     import asyncio
     import os
 
+    if args.debug:
+        os.environ["WIFIT3_UI_DEBUG"] = "1"
+
+    from wifit3.debug.ui_block import configure, install_on_loop, patch_ap_history
+
+    configure(enabled_flag=bool(args.debug))
+    if args.debug:
+        patch_ap_history()
+
     # Own the event loop instead of letting app.run() call asyncio.run(). On exit,
     # asyncio.run() drains the default thread-pool executor (and the interpreter's
     # concurrent.futures atexit hook joins it again) - if a background worker is
@@ -121,6 +134,8 @@ def main() -> None:
     # skip the thread-join entirely.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    if args.debug:
+        install_on_loop(loop)
     app = WifiteApp(
         cli_log_level=cli_log_level,
         background=args.background,

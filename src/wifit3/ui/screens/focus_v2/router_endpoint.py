@@ -62,6 +62,7 @@ class RouterEndpoint(Vertical):
         self._identity_details = identity_details
         self._width = art_size("focus-ap.ans")[0]      # endpoint column width
         self._last: dict[str, str] = {}                # last-pushed label value; skip no-op repaints
+        self._last_power: Text | None = None
 
     def compose(self) -> ComposeResult:
         power = Label(self._power_line(), classes="ap-power", id="ap-power")
@@ -110,7 +111,10 @@ class RouterEndpoint(Vertical):
         self._catalog = catalog
         self._fingerprint = fingerprint
         self._identity, self._identity_details = identity, identity_details
-        self.query_one("#ap-power", Label).update(self._power_line())
+        power = self._power_line()
+        if power != self._last_power:
+            self._last_power = power
+            self.query_one("#ap-power", Label).update(power, layout=False)
         self.query_one("#router-art", BreathingArt).tooltip = identity_details
         self._push("#ap-essid", self._essid_markup(essid, ssid_note))
         catalog_label = self.query_one("#ap-catalog", Label)

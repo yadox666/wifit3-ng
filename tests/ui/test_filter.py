@@ -3,7 +3,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Button, Input, Select
 
-from wifit3.models import AccessPoint
+from wifit3.models import AccessPoint, IdKey, IdSource
 from wifit3.ui.encryption_format import EncryptionType
 from wifit3.ui.screens.filter import (
     EncryptionFilter,
@@ -140,6 +140,13 @@ def test_scan_filter_catalog_family():
     assert filt.catalog_family_matches(flock)
     assert not filt.catalog_family_matches(other)
     assert ScanFilter().catalog_family_matches(other)
+
+
+def test_scan_filter_matches_vendor_model_in_identity_fields():
+    ap = _ap(ssid="MOVISTAR_WIFI6_AAAA")
+    ap.identity.set(IdSource.WSC_BEACON, IdKey.DEVICE_NAME, "MitraStar GPT-2541GNAC")
+    assert ScanFilter(text="2541").matches(ap)
+    assert not ScanFilter(text="2741").matches(ap)
 
 
 def test_scan_filter_supports_signal_wps_and_country():

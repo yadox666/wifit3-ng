@@ -76,12 +76,13 @@ class WpsPbcCapture(Campaign):
         # clears all three (and restores the channel) on exit.
         lease = self.array.lease(channel=self.channel, fake_mac=self.our_mac,
                                  bssid=str_to_mac(self.bssid), ack_tally=True, iface=self.iface)
+        wsc_2_0 = self.target.wps_version == "2.0"
         async with lease as iface:
             if lease.mac:
                 self.our_mac = str_to_mac(lease.mac)
             assoc = Association(iface, self.bssid, self.target.ssid or "",
                                 self.channel, our_mac=self.our_mac,
-                                assoc_trailer_ies=wps_assoc_ie(WPS_REQ_ENROLLEE),
+                                assoc_trailer_ies=wps_assoc_ie(WPS_REQ_ENROLLEE, wsc_2_0),
                                 should_stop=lambda: self.stopped)
             assoc.start()
             warning = iface.active_monitor_warning()
@@ -99,7 +100,8 @@ class WpsPbcCapture(Campaign):
                     if not await assoc.associate():
                         self.log(f"assoc failed ({assoc.fail_reason}); running EAPOL anyway")
                     outcome = await WpsEnrollee(transport, str_to_mac(self.bssid),
-                                                self.our_mac, log=self.log,
+                                                self.our_mac, channel=self.channel,
+                                                wsc_2_0=wsc_2_0, log=self.log,
                                                 should_stop=lambda: self.stopped,
                                                 msg_timeout=8.0, eapol_start_timeout=6.0,
                                                 overall_timeout=40.0,

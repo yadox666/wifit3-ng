@@ -38,6 +38,7 @@ from wifit3.persist.enterprise_sessions import (
 from wifit3.persist.ap_history import ApHistoryStore, ApHistoryStoreError
 from wifit3.persist.locations import LocationStore
 from wifit3.wlan.packet_stats import PacketStats
+from wifit3.wlan.threats import ThreatEvent, ThreatWatcher
 from wifit3.wlan.wep_store import WepCaptureStore
 
 logger = logging.getLogger(__name__)
@@ -55,29 +56,6 @@ def _enc_rank(label: str) -> int:
     if label == "WEP":
         return 1
     return 2  # any IE-derived label
-
-
-def _bssid_bit_diff(a: str, b: str) -> int:
-    """Hamming distance between two ``aa:bb:…``-formatted BSSIDs."""
-    pa = a.lower().split(":")
-    pb = b.lower().split(":")
-    if len(pa) != 6 or len(pb) != 6:
-        return 48
-    try:
-        return sum(
-            bin(int(x, 16) ^ int(y, 16)).count("1") for x, y in zip(pa, pb)
-        )
-    except ValueError:
-        return 48
-
-
-def _bssid_byte_diff(a: str, b: str) -> int:
-    """Count differing bytes between two ``aa:bb:…``-formatted BSSIDs."""
-    pa = a.lower().split(":")
-    pb = b.lower().split(":")
-    if len(pa) != 6 or len(pb) != 6:
-        return 6
-    return sum(1 for x, y in zip(pa, pb) if x != y)
 
 
 def _fmt_frame(tag: str, ftype: str, src, dest, bssid) -> str:
@@ -114,6 +92,7 @@ class WlanSink:
         self.accuracy_provider = accuracy_provider
         self.wep_store = WepCaptureStore()  # WEP IV tallying
         self.packet_stats = PacketStats()   # Packet dashboard source
+        self.threats = ThreatWatcher()
         self.own_macs: Set[str] = set()     # MACs we transmit as; dropped at ingest, never a client
         # Once a MAC has been ours it stays ignored for the session, even after the
         # radio stops ACKing it. Otherwise the AP's reply still looks like a client.
@@ -201,6 +180,36 @@ class WlanSink:
         self._on_wepdata_frame(pkt)
         self._track_client(pkt, card_id, channel_hint)
         self._on_eapol_frame(pkt)
+        self._observe_threat(pkt, channel_hint)
+
+    def drain_threats(self) -> list[ThreatEvent]:
+        """Nearby-threat events scored since the last drain."""
+        return self.threats.drain()
+
+    def _observe_threat(self, pkt: Packet, channel_hint: int) -> None:
+        ap = self.access_points.get(pkt.bssid or "")
+        ssid = ap.ssid if ap is not None and ap.ssid else pkt.ssid
+        peer_count = 0
+        if ssid and ssid.strip() and ssid != "<hidden>":
+            needle = ssid.casefold()
+            bssid_key = (pkt.bssid or "").casefold()
+            peer_count = sum(
+                1
+                for other in self.access_points.values()
+                if other.bssid.casefold() != bssid_key
+                and other.ssid
+                and other.ssid.casefold() == needle
+            )
+        self.threats.observe(
+            pkt,
+            pmf_required=bool(ap is not None and ap.pmf_required),
+            ssid=ssid,
+            channel=ap.channel if ap is not None else channel_hint,
+            listening_channel=channel_hint,
+            own_fake=bool(ap is not None and ap.is_own_fake),
+            own_macs=frozenset(self.own_macs | self._retired_own_macs),
+            same_ssid_peer_count=peer_count,
+        )
 
     def record_signal(self, card_id: str, bssid: str, rssi: int) -> None:
         """Update per-card RSSI from a cross-card duplicate: the frame's picture was already folded
@@ -358,11 +367,11 @@ class WlanSink:
                     ap.pairwise_cipher = pairwise_cipher
                 if ap.group_cipher is None and pkt.group_cipher is not None:
                     ap.group_cipher = pkt.group_cipher
-                ap.wpa3 = ap.wpa3 or wpa3
-                ap.transition_mode = ap.transition_mode or transition_mode
-                ap.pmf_capable = ap.pmf_capable or pmf_capable
-                ap.pmf_required = ap.pmf_required or pmf_required
-                ap.beacon_protection = ap.beacon_protection or beacon_protection
+                ap.wpa3 = wpa3
+                ap.transition_mode = transition_mode
+                ap.pmf_capable = pmf_capable
+                ap.pmf_required = pmf_required
+                ap.beacon_protection = beacon_protection
             # Only refresh WPS when this frame carried the IE.
             if wps:
                 ap.wps = True
@@ -606,9 +615,12 @@ class WlanSink:
                 key_data_len=pkt.key_data_len,
                 eapol_payload=pkt.payload,
                 akm=akm,
+                mdid=pkt.mdid,
+                r0khid=pkt.r0khid,
+                r1khid=pkt.r1khid,
                 timestamp=time.time(),
             )
-            hs.messages.append(eapol)
+            hs.add_message(eapol)
             msg_label = f"M{eapol.msg_num}" if eapol.msg_num else "EAPOL-?"
             logger.info(f"[{msg_label}] {bssid} <-> {client_mac} (replay {eapol.replay_hex})")
 
@@ -616,6 +628,9 @@ class WlanSink:
         if pmkid and not hs.pmkid:
             hs.pmkid = pmkid
             hs.pmkid_akm = akm
+            hs.pmkid_key_descriptor_version = (
+                pkt.key_info & 3 if pkt.key_info is not None else None
+            )
             logger.info(f"[PMKID] {bssid} <-> {client_mac} captured {pmkid.hex()}")
         return True
 
@@ -767,31 +782,55 @@ class WlanSink:
         """True for a usable SSID (not hidden)."""
         return bool(ssid) and ssid != "<hidden>"
 
+    @staticmethod
+    def _mac_octets(mac: str) -> Optional[bytes]:
+        """The six octets of an ``aa:bb:..``-form MAC, or None if malformed."""
+        parts = mac.split(":")
+        if len(parts) != 6:
+            return None
+        try:
+            return bytes(int(p, 16) for p in parts)
+        except ValueError:
+            return None
+
+    @classmethod
+    def _is_sibling(cls, a: bytes, b: bytes) -> bool:
+        """Same-radio heuristic: MACs differ within SIBLING_BIT_DIFF_MAX bits, or one octet."""
+        bit_diff = byte_diff = 0
+        for x, y in zip(a, b):
+            delta = x ^ y
+            if delta:
+                byte_diff += 1
+                bit_diff += bin(delta).count("1")
+        return bit_diff > 0 and (bit_diff <= cls.SIBLING_BIT_DIFF_MAX or byte_diff == 1)
+
     def _recompute_siblings_for(self, bssid: str) -> None:
-        """Refresh sibling links for ``bssid`` against the whole registry."""
+        """Refresh ``bssid``'s sibling links on its channel.
+
+        Links are symmetric, so only its own list points back at it: tear that
+        down first (covers a roam), then rebuild same-channel.
+        """
         ap = self.access_points.get(bssid)
-        if not ap:
+        if ap is None:
             return
+        for stale in ap.siblings:
+            other = self.access_points.get(stale)
+            if other is not None and bssid in other.siblings:
+                other.siblings.remove(bssid)
+
+        octets = self._mac_octets(bssid)
         new_siblings: List[str] = []
-        for other_bssid, other_ap in self.access_points.items():
-            if other_bssid == bssid:
-                continue
-            same_channel = other_ap.channel == ap.channel
-            bit_d = _bssid_bit_diff(bssid, other_bssid)
-            byte_d = _bssid_byte_diff(bssid, other_bssid)
-            is_sibling = (
-                same_channel
-                and bit_d > 0
-                and (bit_d <= self.SIBLING_BIT_DIFF_MAX or byte_d == 1)
-            )
-            if is_sibling:
+        if octets is not None:
+            channel = ap.channel
+            for other_bssid, other_ap in self.access_points.items():
+                if other_bssid == bssid or other_ap.channel != channel:
+                    continue
+                other_octets = self._mac_octets(other_bssid)
+                if other_octets is None or not self._is_sibling(octets, other_octets):
+                    continue
                 new_siblings.append(other_bssid)
                 if bssid not in other_ap.siblings:
                     other_ap.siblings.append(bssid)
-            else:
-                # Channel mismatch or too divergent: drop any stale link.
-                if bssid in other_ap.siblings:
-                    other_ap.siblings.remove(bssid)
         ap.siblings = new_siblings
 
     # ----- reads / forged-MAC bookkeeping / TX stats -------------------------
@@ -799,6 +838,26 @@ class WlanSink:
     def get_access_points(self) -> List[AccessPoint]:
         """A list of discovered Access Points."""
         return list(self.access_points.values())
+
+    def remove_access_point(self, bssid: str) -> Optional[AccessPoint]:
+        """Evict an AP, its clients, and every sibling link that points to it."""
+        key = bssid.lower()
+        ap = self.access_points.pop(key, None)
+        if ap is not None:
+            for sibling_bssid in ap.siblings:
+                sibling = self.access_points.get(sibling_bssid)
+                if sibling is not None and key in sibling.siblings:
+                    sibling.siblings.remove(key)
+            ap.siblings.clear()
+        orphaned_clients = [
+            mac for mac, client in self.clients.items()
+            if client.bssid and client.bssid.lower() == key
+        ]
+        for mac in orphaned_clients:
+            self.clients.pop(mac, None)
+        self.wep_store.remove(key)
+        self.packet_stats.remove(key)
+        return ap
 
     def dispatch_rx(self, pkt) -> None:
         """Resolve any next_frame waiters this deduped RX frame matches."""

@@ -87,6 +87,18 @@ class VidPidFamily:
     resolve: Callable[[usb.core.Device], str]
 
 
+def _resolve_148f_760a(dev: usb.core.Device) -> str:
+    """148f:760a is claimed by both mt7601u and mt76x0; only the silicon ID tells them apart."""
+    try:
+        data = dev.ctrl_transfer(
+            bmRequestType=0xC0, bRequest=0x07, wValue=0, wIndex=0x0000,
+            data_or_wLength=4, timeout=300)
+        asic_rev = int.from_bytes(bytes(data), "little") if data else 0
+    except Exception:
+        return "mt7601u"
+    return "mt7601u" if (asic_rev >> 16) == 0x7601 else "mt76x0u"
+
+
 def _resolve_2357_0137(dev: usb.core.Device) -> str:
     try:
         cfg = dev.get_active_configuration()
@@ -116,6 +128,7 @@ _DKMS_BY_DIR: dict[str, DkmsFamily] = {
 # Distinct chips behind one vid:pid, keyed by (vid, pid).
 _VIDPID_FAMILIES: dict[VidPid, VidPidFamily] = {
     (0x2357, 0x0137): VidPidFamily(default="mt76x2u", resolve=_resolve_2357_0137),
+    (0x148F, 0x760A): VidPidFamily(default="mt7601u", resolve=_resolve_148f_760a),
 }
 
 
@@ -422,6 +435,7 @@ class DeviceManager:
         except BringUpError as e:
             return BringupResult.failed(self._fault_message(device_id, e))
         except OSError as e:
+            logger.exception("%s: USB error during bring-up", device_id.chipset)
             return BringupResult.failed(self._usb_fault_message(device_id, e))
 
         device_id = await self.setup.install(device_id, self.prompter)
@@ -434,6 +448,7 @@ class DeviceManager:
         except BringUpError as e:
             return BringupResult.failed(self._fault_message(device_id, e))
         except OSError as e:
+            logger.exception("%s: USB error during bring-up", device_id.chipset)
             return BringupResult.failed(self._usb_fault_message(device_id, e))
 
     async def uninstall(self, device_id) -> SetupResult:
@@ -500,4 +515,7 @@ class DeviceManager:
         chip = device_id.chipset
         if is_device_gone(e) or e.errno in (errno.EIO, errno.ENODEV):
             return f"{chip}: adapter disconnected during bring-up; replug it and try again"
+        if e.errno == errno.ENOENT:
+            return (f"{chip}: the dongle is present but not answering -- it enumerates "
+                    "without an interface. Unplug it, wait a few seconds, and replug it.")
         return f"{chip}: USB I/O failed during bring-up: {e}"

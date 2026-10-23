@@ -1,158 +1,146 @@
-"""WPA/WPA2-PSK key derivation + the 4-way EAPOL MIC (no I/O).
+"""WPA/WPA2-PSK candidate checks against captured MICs and PMKIDs (no I/O).
 
-PMK = PBKDF2-HMAC-SHA1(psk, ssid, 4096, 32). PTK = PRF-512 over the sorted MAC pair and
-sorted nonce pair. The MIC (key descriptor version 2, plain PSK) is HMAC-SHA1-128 over the
-EAPOL payload with its MIC field zeroed, keyed by the KCK (PTK[:16]). Version 3 (PSK-SHA256,
-AES-CMAC) is not implemented.
-
-This module also verifies a *candidate passphrase* against a captured 4-way handshake
-(:func:`verify_passphrase`): an offline check that a typed password matches the real PSK.
-It is the same math a cracker uses (PMK → PTK → MIC), just with one guess instead of a
-wordlist.
+EAPOL key descriptor versions 1 (HMAC-MD5), 2 (HMAC-SHA1) and 3 (AES-CMAC, PSK-SHA256 and FT-PSK);
+PMKIDs in HMAC-SHA1, HMAC-SHA256 when the message-pair field flags it, or FT PMKR1Name. No nonce
+error correction.
 """
-from __future__ import annotations
-
 import hashlib
 import hmac
-from typing import TYPE_CHECKING, Optional
 
-if TYPE_CHECKING:
-    from wifit3.models import Handshake
+from wifit3.crack.hc22000_format import PMKID_SHA256_MESSAGE_PAIR_BIT, Hc22000Line
+from wifit3.dot11.wpa import (
+    KCK_LEN,
+    derive_ft_pmk_r0,
+    derive_ft_pmk_r1,
+    derive_ft_ptk,
+    derive_pmk,
+    derive_ptk,
+    derive_ptk_sha256,
+    eapol_mic,
+    eapol_mic_aes_cmac,
+    eapol_mic_hmac_md5,
+    ft_pmk_r1_name,
+)
 
-_KCK_LEN = 16
+_KEY_INFO_OFFSET = 5
+_SNONCE_OFFSET = 17
+_NONCE_LEN = 32
+# hcxpcapngtool's FT message pairs 3 and 4 hold the SNonce in the ANONCE field (module_22000.c).
+_FT_MESSAGE_PAIRS_WITH_SNONCE_FIELD = frozenset({3, 4})
 
 
+def mic_for(psk: str, ssid: bytes | str, aa: bytes, spa: bytes, anonce: bytes, snonce: bytes,
+            eapol_payload_mic_zeroed: bytes) -> bytes:
+    """The M2 MIC a client with this PSK would produce over these EAPOL bytes."""
+    if isinstance(ssid, str):
+        ssid = ssid.encode()
+    kck = derive_ptk(derive_pmk(psk, ssid), aa, spa, anonce, snonce, KCK_LEN)
+    return eapol_mic(kck, eapol_payload_mic_zeroed)
+
+
+def pmkid(pmk: bytes, aa: bytes, spa: bytes) -> bytes:
+    return hmac.new(pmk, b"PMK Name" + aa + spa, hashlib.sha1).digest()[:16]
+
+
+def _message_pair_bits(line: Hc22000Line) -> int:
+    try:
+        return int(line.message_pair, 16) if len(line.message_pair) == 2 else 0
+    except ValueError:
+        return 0
+
+
+def _key_descriptor_version(eapol: bytes) -> int:
+    return int.from_bytes(eapol[_KEY_INFO_OFFSET:_KEY_INFO_OFFSET + 2], "big") & 3
+
+
+def _ft_psk_matches(pmk: bytes, line: Hc22000Line) -> bool:
+    """FT-PSK (``WPA*03`` PMKR1Name / ``WPA*04`` MIC) check, as module_22000.c derives it."""
+    mac_ap, mac_sta = bytes.fromhex(line.mac_ap), bytes.fromhex(line.mac_sta)
+    expected = bytes.fromhex(line.pmkid_or_mic)
+    r1khid = bytes.fromhex(line.r1khid)
+    pmk_r0, pmk_r0_name = derive_ft_pmk_r0(pmk, bytes.fromhex(line.essid), bytes.fromhex(line.mdid),
+                                           bytes.fromhex(line.r0khid), mac_sta)
+    if line.kind == "03":
+        return hmac.compare_digest(ft_pmk_r1_name(pmk_r0_name, r1khid, mac_sta), expected)
+    eapol = bytes.fromhex(line.eapol)
+    if _key_descriptor_version(eapol) != 3:
+        return False
+    frame_nonce = eapol[_SNONCE_OFFSET:_SNONCE_OFFSET + _NONCE_LEN]
+    field_nonce = bytes.fromhex(line.anonce)
+    if _message_pair_bits(line) & 7 in _FT_MESSAGE_PAIRS_WITH_SNONCE_FIELD:
+        snonce, anonce = field_nonce, frame_nonce
+    else:
+        snonce, anonce = frame_nonce, field_nonce
+    pmk_r1 = derive_ft_pmk_r1(pmk_r0, r1khid, mac_sta)
+    kck = derive_ft_ptk(pmk_r1, snonce, anonce, mac_ap, mac_sta, KCK_LEN)
+    return hmac.compare_digest(eapol_mic_aes_cmac(kck, eapol), expected)
+
+
+def psk_matches(pmk: bytes, line: Hc22000Line) -> bool:
+    """True if this PMK cracks the hashline (key descriptor version 1, 2 or 3, or FT-PSK)."""
+    if line.kind in ("03", "04"):
+        return _ft_psk_matches(pmk, line)
+    mac_ap, mac_sta = bytes.fromhex(line.mac_ap), bytes.fromhex(line.mac_sta)
+    expected = bytes.fromhex(line.pmkid_or_mic)
+    if line.kind == "01":
+        if _message_pair_bits(line) & PMKID_SHA256_MESSAGE_PAIR_BIT:
+            digest = hmac.new(pmk, b"PMK Name" + mac_ap + mac_sta, hashlib.sha256).digest()
+            return hmac.compare_digest(digest[:16], expected)
+        return hmac.compare_digest(pmkid(pmk, mac_ap, mac_sta), expected)
+    if line.kind != "02":
+        return False
+    eapol = bytes.fromhex(line.eapol)
+    key_descriptor_version = _key_descriptor_version(eapol)
+    snonce = eapol[_SNONCE_OFFSET:_SNONCE_OFFSET + _NONCE_LEN]
+    anonce = bytes.fromhex(line.anonce)
+    if key_descriptor_version == 1:
+        kck = derive_ptk(pmk, mac_ap, mac_sta, anonce, snonce, KCK_LEN)
+        return hmac.compare_digest(eapol_mic_hmac_md5(kck, eapol), expected)
+    if key_descriptor_version == 2:
+        kck = derive_ptk(pmk, mac_ap, mac_sta, anonce, snonce, KCK_LEN)
+        return hmac.compare_digest(eapol_mic(kck, eapol), expected)
+    if key_descriptor_version == 3:
+        kck = derive_ptk_sha256(pmk, mac_ap, mac_sta, anonce, snonce, KCK_LEN)
+        return hmac.compare_digest(eapol_mic_aes_cmac(kck, eapol), expected)
+    return False
+
+
+# Compatibility API for the fork's live WPA station campaign. Key derivation
+# itself lives in dot11.wpa.
 def pmk(psk: str, ssid: str) -> bytes:
-    return hashlib.pbkdf2_hmac("sha1", psk.encode(), ssid.encode(), 4096, 32)
-
-
-def _prf(key: bytes, label: bytes, data: bytes, nbytes: int) -> bytes:
-    out = b""
-    i = 0
-    while len(out) < nbytes:
-        out += hmac.new(key, label + b"\x00" + data + bytes([i]), hashlib.sha1).digest()
-        i += 1
-    return out[:nbytes]
+    return derive_pmk(psk, ssid.encode())
 
 
 def ptk(pmk_bytes: bytes, aa: bytes, spa: bytes, anonce: bytes, snonce: bytes,
         nbytes: int = 48) -> bytes:
-    """AA = AP MAC, SPA = client MAC. Both the MAC pair and the nonce pair enter sorted, so
-    the two peers derive the same PTK regardless of who is addressed first."""
-    data = min(aa, spa) + max(aa, spa) + min(anonce, snonce) + max(anonce, snonce)
-    return _prf(pmk_bytes, b"Pairwise key expansion", data, nbytes)
+    return derive_ptk(pmk_bytes, aa, spa, anonce, snonce, nbytes)
 
 
 def kck(ptk_bytes: bytes) -> bytes:
-    return ptk_bytes[:_KCK_LEN]
+    return ptk_bytes[:KCK_LEN]
 
 
-def eapol_mic(kck_bytes: bytes, eapol_payload_mic_zeroed: bytes) -> bytes:
-    return hmac.new(kck_bytes, eapol_payload_mic_zeroed, hashlib.sha1).digest()[:16]
+def verify_hc22000_line(line: str, psk: str, ssid: str | None = None) -> bool | None:
+    from wifit3.crack.hc22000_format import parse_hc22000
 
-
-def mic_for(psk: str, ssid: str, aa: bytes, spa: bytes, anonce: bytes, snonce: bytes,
-            eapol_payload_mic_zeroed: bytes) -> bytes:
-    """The M2 MIC a client with this PSK would produce over these EAPOL bytes."""
-    k = kck(ptk(pmk(psk, ssid), aa, spa, anonce, snonce))
-    return eapol_mic(k, eapol_payload_mic_zeroed)
-
-
-# ----- Offline passphrase verification against a captured handshake ----------
-_MIC_OFFSET = 81                 # MIC position inside the 802.1X payload (see crack.handshake)
-_MIC_LEN = 16
-_KEY_INFO_OFFSET = 5             # 802.1X: 4-byte header, then 2-byte Key Information
-_KEYVER_SHA1 = 2                 # HMAC-SHA1 MIC (plain WPA2-PSK) - the version we verify
-
-
-def _mac_bytes(mac: str) -> bytes:
-    return bytes.fromhex(mac.replace(":", "").replace("-", "").lower())
-
-
-def verify_passphrase(hs: "Handshake", ssid: str, psk: str) -> Optional[bool]:
-    """Is ``psk`` the real passphrase for this captured 4-way handshake?
-
-    Recomputes the keystone (M2/M4) MIC from ``psk`` and compares it, in constant
-    time, to the MIC the client actually transmitted. Returns:
-
-    * ``True``  - the passphrase matches (the network's real PSK),
-    * ``False`` - a usable handshake exists but the passphrase is wrong,
-    * ``None``  - no verifiable handshake (no crackable pair, truncated EAPOL, or
-      an AES-CMAC / PSK-SHA256 keystone this SHA-1 path can't check).
-
-    No secret is logged or persisted here; the caller decides what to do with the
-    verdict. The math is identical to :func:`mic_for`, applied to the captured
-    ANonce/SNonce/EAPOL rather than a live exchange.
-    """
-    if not psk or not ssid:
-        return None
-    # Deferred import: crack.handshake imports models, which import nothing here.
-    from wifit3.crack.handshake import crackable_pairs
-
-    pairs = crackable_pairs(hs)
-    if not pairs:
-        return None
-    aa = _mac_bytes(hs.bssid)
-    spa = _mac_bytes(hs.client_mac)
-    pmk_bytes = pmk(psk, ssid)
-    verifiable = False
-    for pair in pairs:
-        mic_frame = pair.mic_frame
-        payload = mic_frame.eapol_payload
-        if len(payload) < _MIC_OFFSET + _MIC_LEN:
-            continue
-        # Only the HMAC-SHA1 key-descriptor version is verifiable here.
-        if len(payload) >= _KEY_INFO_OFFSET + 1:
-            keyver = payload[_KEY_INFO_OFFSET + 1] & 0x07
-            if keyver and keyver != _KEYVER_SHA1:
-                continue
-        verifiable = True
-        zeroed = bytearray(payload)
-        zeroed[_MIC_OFFSET:_MIC_OFFSET + _MIC_LEN] = b"\x00" * _MIC_LEN
-        derived = eapol_mic(
-            kck(ptk(pmk_bytes, aa, spa, pair.anonce_frame.nonce, mic_frame.nonce)),
-            bytes(zeroed),
-        )
-        if hmac.compare_digest(derived, mic_frame.mic[:_MIC_LEN]):
-            return True
-    return False if verifiable else None
-
-
-_SNONCE_OFFSET = 17              # SNonce start inside the 802.1X payload (see crack.handshake)
-_NONCE_LEN = 32
-
-
-def verify_hc22000_line(line: str, psk: str, ssid: str | None = None) -> Optional[bool]:
-    """Verify ``psk`` against a persisted hashcat ``WPA*02*…`` line (a Vault capture).
-
-    Confirms a typed password against a handshake saved in a prior session without
-    re-capturing one. ``ssid`` overrides the line's ESSID field for
-    the PMK salt (use the real target SSID). Returns True/False/None like
-    :func:`verify_passphrase`. PMKID (``WPA*01``) lines return None (unhandled).
-    """
-    if not psk or not line:
-        return None
-    parts = line.strip().split("*")
-    if len(parts) < 8 or parts[0].upper() != "WPA" or parts[1] != "02":
+    parsed = parse_hc22000(line)
+    if parsed is None or not psk:
         return None
     try:
-        mic = bytes.fromhex(parts[2])
-        aa = bytes.fromhex(parts[3])
-        spa = bytes.fromhex(parts[4])
-        essid = bytes.fromhex(parts[5]).decode("utf-8", "replace")
-        anonce = bytes.fromhex(parts[6])
-        eapol = bytes.fromhex(parts[7])            # MIC field already zeroed by the writer
-    except ValueError:
+        salt = (ssid.encode() if ssid is not None else bytes.fromhex(parsed.essid))
+        return psk_matches(derive_pmk(psk, salt), parsed)
+    except (UnicodeError, ValueError):
         return None
-    salt = ssid or essid
-    if not salt or len(eapol) < _MIC_OFFSET + _MIC_LEN or len(anonce) != _NONCE_LEN:
+
+
+def verify_passphrase(hs, ssid: str, psk: str) -> bool | None:
+    from wifit3.crack.hc22000_format import eapol_hashlines, parse_hc22000
+
+    if not ssid or not psk:
         return None
-    if len(eapol) >= _KEY_INFO_OFFSET + 1:
-        keyver = eapol[_KEY_INFO_OFFSET + 1] & 0x07
-        if keyver and keyver != _KEYVER_SHA1:
-            return None
-    snonce = eapol[_SNONCE_OFFSET:_SNONCE_OFFSET + _NONCE_LEN]
-    zeroed = bytearray(eapol)
-    zeroed[_MIC_OFFSET:_MIC_OFFSET + _MIC_LEN] = b"\x00" * _MIC_LEN
-    derived = eapol_mic(kck(ptk(pmk(psk, salt), aa, spa, anonce, snonce)), bytes(zeroed))
-    return hmac.compare_digest(derived, mic[:_MIC_LEN])
+    lines = [parse_hc22000(line) for line in eapol_hashlines(ssid, hs)]
+    parsed = [line for line in lines if line is not None]
+    if not parsed:
+        return None
+    candidate = derive_pmk(psk, ssid.encode())
+    return any(psk_matches(candidate, line) for line in parsed)

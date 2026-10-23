@@ -36,6 +36,10 @@ from .transport import AR9271Transport
 logger = logging.getLogger(__name__)
 
 _RX_BUF_SIZE = 16384          # [SRC] hif_usb.h:60 MAX_RX_BUF_SIZE — one bulk-IN read
+# Focus / single-channel dwell: firmware RX can go silent without periodic retune (scanner hops
+# mask this). Re-run the same full channel change the hopper uses when bulk-IN goes idle too long.
+_RX_STALL_SEC = 45.0
+_RX_WATCH_POLL_SEC = 5.0
 
 # TP-Link OUIs (maclookup.app, 2026-08). 0cf3:9271 is only ever an AR9271, and TP-Link's sole AR9271
 # product is the TL-WN722N v1, so any TP-Link OUI on this VID:PID identifies a v1 (see
@@ -85,6 +89,9 @@ class AR9271V2Driver(Driver):
         self._rx_callback: Optional[Callable[[dict], None]] = None
         self._on_lost: Optional[Callable[[Exception], None]] = None
         self._reader: Optional[RxReaderThread] = None
+        self._channel_io_lock = asyncio.Lock()
+        self._last_rx_at: float = 0.0
+        self._dwell_watch_task: Optional[asyncio.Task] = None
 
     @classmethod
     def from_usb_device(cls, dev: Device, id_entry: DeviceID) -> "AR9271V2Driver":
@@ -239,6 +246,7 @@ class AR9271V2Driver(Driver):
                 self._reader.start()
                 res = await loop.run_in_executor(None, bringup.warm_reattach, self.transport)
                 self._adopt(res)
+                self._start_dwell_watchdog()
                 _p(1.0, f"AR9271 re-attached warm (ch ?, {self.mac_address})")
                 return True
             except Exception as e:  # noqa: BLE001
@@ -297,6 +305,7 @@ class AR9271V2Driver(Driver):
                 "USB timeout; please replug and try again."
             ) from e
         self._adopt(res)
+        self._start_dwell_watchdog()
         _p(1.0, f"AR9271 monitor up (ch 1, {self.mac_address})")
         return True
 
@@ -428,8 +437,46 @@ class AR9271V2Driver(Driver):
         except RuntimeError:
             self._do_channel_change(ch, _fastcc)
             return True
-        await loop.run_in_executor(None, self._do_channel_change, ch, _fastcc)
+        async with self._channel_io_lock:
+            await loop.run_in_executor(None, self._do_channel_change, ch, _fastcc)
+        self._last_rx_at = time.monotonic()
         return True
+
+    def _start_dwell_watchdog(self) -> None:
+        """Refresh the tune after prolonged RX silence (Focus dwell wedge)."""
+        self._last_rx_at = time.monotonic()
+        if self._dwell_watch_task is not None:
+            self._dwell_watch_task.cancel()
+        loop = asyncio.get_running_loop()
+        self._dwell_watch_task = loop.create_task(self._dwell_watchdog_loop())
+
+    async def _dwell_watchdog_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(_RX_WATCH_POLL_SEC)
+                hw = self.hw
+                reader = self._reader
+                if hw is None or hw.curchan is None or reader is None or not reader.running:
+                    continue
+                idle = time.monotonic() - self._last_rx_at
+                if idle < _RX_STALL_SEC:
+                    continue
+                ch = hw.curchan
+                logger.warning(
+                    "ar9271_v2: RX idle %.0fs on ch %s; re-tuning (Focus dwell recovery)",
+                    idle, ch.channel,
+                )
+                loop = asyncio.get_running_loop()
+                try:
+                    async with self._channel_io_lock:
+                        await loop.run_in_executor(
+                            None, self._do_channel_change, ch, False,
+                        )
+                    self._last_rx_at = time.monotonic()
+                except Exception:
+                    logger.exception("ar9271_v2: dwell RX refresh failed")
+        except asyncio.CancelledError:
+            pass
 
     def _do_channel_change(self, ch: chanmod.Channel, fastcc: bool) -> None:
         if fastcc:
@@ -458,7 +505,9 @@ class AR9271V2Driver(Driver):
         cb = self._rx_callback
         if cb is None and not self._ack_detect_on:
             return
+        saw_frame = False
         for frame, rssi in rx_decode.iter_frames(buf):
+            saw_frame = True
             # A 10-byte 0xD4 frame is an ACK (the parser drops control frames); the base tallies it
             # iff the ACK tap is armed and RA=frame[4:10] is a MAC we inject as.
             if len(frame) == 10 and frame[0] == 0xD4:
@@ -468,6 +517,8 @@ class AR9271V2Driver(Driver):
                 parsed = WlanFrameParser.parse_80211_frame(frame, rssi)
                 if parsed is not None:
                     cb(parsed)
+        if saw_frame:
+            self._last_rx_at = time.monotonic()
 
     # ---- RX-ACK detection (admit the recipient's ACK to RX) ---------------
     async def _enable_rx_acks(self) -> None:
@@ -555,6 +606,13 @@ class AR9271V2Driver(Driver):
         self.hw.write(R.AR_STA_ID1, id1)
 
     async def close(self) -> None:
+        if self._dwell_watch_task is not None:
+            self._dwell_watch_task.cancel()
+            try:
+                await self._dwell_watch_task
+            except asyncio.CancelledError:
+                pass
+            self._dwell_watch_task = None
         if self._reader is not None:
             await self._reader.stop()        # join the reader BEFORE releasing the USB handle
             self._reader = None

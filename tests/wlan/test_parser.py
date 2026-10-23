@@ -1,5 +1,7 @@
 import struct
 
+import pytest
+
 
 from wifit3.dot11.parser import WlanFrameParser
 from wifit3.dot11.packet import (
@@ -742,6 +744,25 @@ def test_beacon_with_control_char_ssid_returns_none():
     SSID holds control bytes → _parse_tags rejects it as corrupt → parse None."""
     frame = _build_beacon(ssid="\x01\x02\x03")
     assert WlanFrameParser.parse_80211_frame(frame, -50) is None
+
+
+@pytest.mark.parametrize("bad", [
+    "\x7f",
+    "\u009b",
+    "\u0085",
+    "\u202e",
+    "\t",
+    "\n",
+])
+def test_ssid_rejected_when_any_codepoint_is_unprintable(bad):
+    assert WlanFrameParser.parse_80211_frame(_build_beacon(ssid="Net" + bad), -50) is None
+
+
+@pytest.mark.parametrize("good", ["Ooredoo-322961", "Café", "\u0639\u0631\u0628\u064a", "WiFi\U0001f4f6"])
+def test_ssid_keeps_printable_unicode(good):
+    parsed = WlanFrameParser.parse_80211_frame(_build_beacon(ssid=good), -50)
+    assert parsed is not None
+    assert parsed.ssid == good
 
 
 def test_wep_data_with_ht_control_offset():

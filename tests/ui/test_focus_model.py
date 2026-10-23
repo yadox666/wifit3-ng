@@ -125,7 +125,7 @@ def test_headline_persisted_wep_idle_shows_recovered(tmp_path):
     """A prior-session WEP key on disk, no campaign → the recovered-key banner."""
     _seed_wep(tmp_path, "aa-bb-cc-dd-ee-ff")
     h = _headline(_wep_ap())
-    assert "WEP key recovered" in h[0]
+    assert 'WEP key: 6162636465 = "abcde"' in h[0]
 
 
 def test_headline_active_campaign_outranks_recovered_key():
@@ -196,7 +196,7 @@ def test_headline_recovered_wps_psk_shows_banner():
     """A recovered WPS PSK (PBC or PIN, after the campaign is torn down) shows a
     terminal banner instead of decaying back to 'Listening'."""
     h = _headline(_wpa_ap(wps_pbc_psk="hunter2"))
-    assert "PSK recovered" in h[0]
+    assert "PSK: hunter2" in h[0]
 
 
 def test_headline_listening_when_no_psk():
@@ -218,7 +218,7 @@ def test_headline_wps_pin_found_while_held_then_psk_after_teardown():
     # After teardown the PSK lives on the AP → recovered banner (not Listening).
     Campaign.active = None
     after = _headline(_wpa_ap(wps_pbc_psk="hunter2"))
-    assert "PSK recovered" in after[0]
+    assert "PSK: hunter2" in after[0]
 
 
 def _iface_with_usable(n):

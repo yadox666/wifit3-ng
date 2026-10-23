@@ -30,6 +30,7 @@ _LED = (0, 128, 0)                 # dark green = the animation target
 _BREATHE_LO = 60
 _BREATHE_HI = 150
 _FLICKER_GREEN = 255
+_BREATHE_LEVELS = 4    # each level change re-renders the whole art; ~4 repaints/s per cycle
 
 
 @lru_cache(maxsize=None)
@@ -79,7 +80,8 @@ def _paint(name: str, green: int) -> Text:
 def _breathe_green(phase: float) -> int:
     """Idle-glow green level for ``phase`` (0..1, one smooth lo->hi->lo cycle)."""
     factor = (1.0 - math.cos(2.0 * math.pi * phase)) / 2.0      # 0 -> 1 -> 0
-    return int(round(_BREATHE_LO + (_BREATHE_HI - _BREATHE_LO) * factor))
+    step = round(factor * (_BREATHE_LEVELS - 1)) / (_BREATHE_LEVELS - 1)
+    return int(round(_BREATHE_LO + (_BREATHE_HI - _BREATHE_LO) * step))
 
 
 def breathe(name: str, phase: float) -> Text:
@@ -111,6 +113,7 @@ class BreathingArt(Static):
         self._blink = "idle"      # idle | on | refractory
         self._blink_left = 0
         self._pending = False     # a pulse arrived mid-cycle → blink again next
+        self._green: int | None = None   # LED level last painted; None forces the next paint
 
     def on_mount(self) -> None:
         w, h = art_size(self._name)
@@ -148,7 +151,10 @@ class BreathingArt(Static):
 
     def _repaint(self) -> None:
         green = _FLICKER_GREEN if self._blink == "on" else _breathe_green(self._phase)
-        self.update(_paint(self._name, green))
+        if green == self._green:
+            return
+        self._green = green
+        self.update(_paint(self._name, green), layout=False)    # the box is pinned to the art size
 
     def set_art(self, name: str) -> None:
         """Swap which .ans this widget shows: the card art follows the selected/primary card. No-op
@@ -157,6 +163,7 @@ class BreathingArt(Static):
         if name == self._name:
             return
         self._name = name
+        self._green = None
         w, h = art_size(name)
         self.styles.width = w
         self.styles.height = h

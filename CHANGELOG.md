@@ -4,6 +4,39 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
+## 0.3.26 - 2026-10-23
+
+### Added
+
+- Upstream **wifit3 v0.5.3** merge: RTL8187L/**B** port-correctness and RX fixes;
+  **FT-PSK** handshakes/PMKIDs as hashcat `WPA*03`/`WPA*04`; **Hashtopolis**
+  vault tool; per-tool `config.toml` tables (`cpu_crack`, `hashcat`,
+  `hashtopolis`) with auto-crack tool picker and CPU Crack password sources;
+  v0.5.1–v0.5.2 RX/UI performance, clipboard, MT7921AU/MT76x2U and WPA
+  key-version fixes.
+- **MediaTek MT7601U** userspace driver (17 VID:PIDs from the kernel table):
+  monitor RX/TX, Active Monitor ACKs, deauth, handshake/PMKID, WPS, and WEP.
+- `./start.sh --debug` / `--debug`: UI stall monitor, slow-path tracing
+  (`wifit3.debug.ui_block`), and `wifit3.log` detail.
+- Scanner **VENDOR/ID** column uses chipset/CPE/fw enrichment; multi-AP SSID
+  groups default **expanded** (`└` members), **`i`** collapses/expands all,
+  **Enter** on aggregate expands one group.
+- Nearby **threat** toasts (deauth/disassoc burst detection with session warmup;
+  ignores own TX via `tx_ledger`).
+- **Deauth** campaign floors: at least 5 client rounds and 10 broadcast frames
+  (low intensity still respects higher tiers).
+- **AR9271** dwell watchdog: retune after prolonged RX idle (~45s).
+- WPS Pixie Dust PRNG helpers and expanded PIN/registrar campaign coverage.
+
+### Fixed
+
+- Scanner UI freezes during dense scans: `wifi_profiles.json` is no longer
+  rewritten synchronously on every beacon (deferred flush from the table timer).
+- Scanner table refresh pauses while Focus or other screens are on top.
+- Focus no longer loads open-network metadata SQLite history for WPA/WPA2 targets.
+- Text filter matches enriched VENDOR/ID text (`scanner_identity_summary`, WPS
+  device/model, e.g. `GPT-2541`).
+
 ## 0.3.25 - 2026-10-16
 
 ### Added

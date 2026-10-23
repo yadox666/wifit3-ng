@@ -6,15 +6,28 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from wifit3.models import PersistedCapture
-from wifit3.models.jobs import JobState, ToolCapability, ToolStatus, ToolResult
+from wifit3.models.jobs import JobAction, JobState, ToolCapability, ToolStatus, ToolResult
 from wifit3.vault.tools.base import VaultTool
+from wifit3.vault.tools.cpu_crack import CpuCrackTool
 from wifit3.vault.tools.hashcat import HashcatTool
-from wifit3.persist.common import parse_hc22000
+from wifit3.vault.tools.hashtopolis import HashtopolisTool
+from wifit3.crack.hc22000_format import parse_hc22000
 from wifit3.persist.config import Config
-from wifit3.persist.private_files import write_private_text
+from wifit3.persist.private_files import ensure_private_directory, write_private_text
 
 
 logger = logging.getLogger(__name__)
+
+
+def _set_actions(job: JobState, offered: JobAction) -> None:
+    clearable = JobAction.NONE if job.status == ToolStatus.RUNNING else JobAction.CLEAR
+    job.actions = offered | clearable
+
+
+def _copy_progress(job: JobState, res: ToolResult) -> None:
+    job.percent = res.percent
+    job.detail = res.detail
+    job.key = res.key
 
 
 class JobManager:
@@ -23,6 +36,8 @@ class JobManager:
         self.jobs: Dict[str, JobState] = {}
         self.tools: Dict[str, VaultTool] = {}
         self.register_tool(HashcatTool())
+        self.register_tool(CpuCrackTool())
+        self.register_tool(HashtopolisTool())
         self._load()
 
     def register_tool(self, tool: VaultTool) -> None:
@@ -43,20 +58,16 @@ class JobManager:
             return
         for k, v in data.items():
             try:
-                if 'status' in v:
-                    v['status'] = ToolStatus(v['status'])
-                self.jobs[k] = JobState(**v)
+                self.jobs[k] = JobState.from_dict(v)
+                _set_actions(self.jobs[k], JobAction.NONE)
             except Exception:
                 logger.exception(f"Skipping unreadable job entry {k!r} in {jobs_file}")
 
     def _save(self) -> None:
         jobs_file = self.get_jobs_file()
-        data = {}
-        for k, v in self.jobs.items():
-            d = v.__dict__.copy()
-            d['status'] = d['status'].value
-            data[k] = d
-        logger.info(f"Saving {len(data.keys())} jobs to {jobs_file}")
+        data = {k: v.to_dict() for k, v in self.jobs.items()}
+        logger.debug(f"Saving {len(data.keys())} jobs to {jobs_file}")
+        ensure_private_directory(jobs_file.parent)
         write_private_text(jobs_file, json.dumps(data, indent=2))
 
     def reconcile_on_startup(self) -> None:
@@ -67,19 +78,17 @@ class JobManager:
                 continue
             try:
                 tool = self.tools.get(job.tool_name)
-                if not (tool and job.log_path):
-                    job.status = ToolStatus.ERROR
-                    job.progress_msg = "Process ended while wifit3 was closed."
+                if tool and ToolCapability.ADOPTABLE not in tool.capabilities:
+                    job.status = ToolStatus.STOPPED
+                    job.progress_msg = "Stopped when wifit3 closed."
                     changed = True
                     continue
-                tracking = {
-                    'pid': job.pid,
-                    'log_path': job.log_path,
-                    'api_id': job.api_id,
-                    'capture_path': job.capture_path,
-                    'config': job.config or {},
-                }
-                res = tool.poll_status(tracking)
+                if not (tool and (job.log_path or job.api_id)):
+                    job.status = ToolStatus.ERROR
+                    job.progress_msg = "Interrupted: wifit3 closed before the job started"
+                    changed = True
+                    continue
+                res = tool.poll_status(job)
                 if res.status == ToolStatus.RUNNING:
                     logger.info(f"Adopted still-running {job.tool_name} job {job_id}")
                 else:
@@ -90,8 +99,10 @@ class JobManager:
                         job.progress_msg = res.value or job.progress_msg
                     else:
                         job.progress_msg = res.value or "Process ended while wifit3 was closed."
+                    _copy_progress(job, res)
                     self._persist_cracked_key(job, res)
                     changed = True
+                _set_actions(job, res.actions)
             except Exception as exc:
                 logger.exception(f"Failed to reconcile job {job_id}")
                 job.status = ToolStatus.ERROR
@@ -101,11 +112,12 @@ class JobManager:
         if changed:
             self._save()
 
-    def submit_job(self, tool_name: str, capture: PersistedCapture, config: dict) -> str:
+    def submit_job(self, tool_name: str, capture: PersistedCapture, config: dict,
+                   auto_crack: bool = False) -> str:
         """Submit a job. It will be marked QUEUED and launched on the next poll if slots are free."""
         job_id = f"{tool_name}_{Path(capture.path).name}_{int(time.time())}"
         
-        display_name = f"{tool_name} ({capture.ssid or Path(capture.path).stem})"
+        display_name = f"{self.tools[tool_name].label} ({capture.ssid or Path(capture.path).stem})"
         
         job = JobState(
             job_id=job_id,
@@ -114,7 +126,8 @@ class JobManager:
             capture_path=capture.path,
             status=ToolStatus.QUEUED,
             progress_msg="Waiting in queue...",
-            config=config
+            config=config,
+            auto_crack=auto_crack,
         )
         self.jobs[job_id] = job
         logger.info(f"Submitted job {job}")
@@ -124,11 +137,19 @@ class JobManager:
     def poll_jobs(self) -> None:
         """Called periodically by a UI timer."""
         changed = False
+        captures_by_path = None
+
+        def capture_for(path):
+            nonlocal captures_by_path
+            if captures_by_path is None:
+                captures_by_path = {capture.path: capture for capture in self.vault.all_captures()}
+            return captures_by_path.get(path)
 
         running_by_tool: Counter = Counter(
             j.tool_name for j in self.jobs.values() if j.status == ToolStatus.RUNNING)
 
         for job_id, job in list(self.jobs.items()):
+            _set_actions(job, JobAction.NONE)       # a running job's own actions come from its poll
             tool = self.tools.get(job.tool_name)
             if not tool:
                 logger.warning(f"Unable to find tool for job ID {job_id}: '{job.tool_name}' not found")
@@ -142,8 +163,7 @@ class JobManager:
 
                 # Slot available, launch it
                 try:
-                    # Retrieve the actual capture object from the vault
-                    cap = next((c for c in self.vault.all_captures() if c.path == job.capture_path), None)
+                    cap = capture_for(job.capture_path)
                     if not cap:
                         logger.error(f"Unable to find capture for job ID {job_id}, path {job.capture_path} not found")
                         job.status = ToolStatus.ERROR
@@ -151,12 +171,10 @@ class JobManager:
                         changed = True
                         continue
 
-                    tracking = tool.launch(cap, job.config or {})
+                    tool.launch(job, cap)
                     job.status = ToolStatus.RUNNING
                     job.progress_msg = "Starting..."
-                    job.pid = tracking.get('pid')
-                    job.log_path = tracking.get('log_path')
-                    job.api_id = tracking.get('api_id')
+                    _set_actions(job, JobAction.STOP)
                     changed = True
                     running_by_tool[job.tool_name] += 1
                 except Exception as exc:
@@ -166,22 +184,20 @@ class JobManager:
                     changed = True
 
             elif job.status == ToolStatus.RUNNING:
-                tracking = {
-                    'pid': job.pid,
-                    'log_path': job.log_path,
-                    'api_id': job.api_id,
-                    'capture_path': job.capture_path,
-                    'config': job.config or {}
-                }
                 try:
-                    res = tool.poll_status(tracking)
+                    tracked = job.to_dict()
+                    res = tool.poll_status(job)
                     if res.status != job.status or res.value != job.progress_msg:
                         logger.info(f"Changed status for job ID {job_id}: {res}")
                         job.status = res.status
                         if res.value is not None:
                             job.progress_msg = res.value
-                        self._persist_cracked_key(job, res)
+                        _copy_progress(job, res)
+                        self._persist_cracked_key(job, res, capture_for)
                         changed = True
+                    elif job.to_dict() != tracked:
+                        changed = True      # the tool moved the job on (its next wordlist)
+                    _set_actions(job, res.actions)
                 except Exception as exc:
                     logger.exception(f"Error while polling status for job ID {job_id}")
                     job.status = ToolStatus.ERROR
@@ -191,28 +207,20 @@ class JobManager:
         if changed:
             self._save()
 
-    def _persist_cracked_key(self, job: JobState, res: ToolResult) -> None:
+    def _persist_cracked_key(self, job: JobState, res: ToolResult, capture_for=None) -> None:
         """A SUCCESS result carrying a recovered key is written beside its capture as a
         vault artifact, then folded into the in-memory index."""
-        if res.status != ToolStatus.SUCCESS or not res.result_data or "key" not in res.result_data:
+        if res.status != ToolStatus.SUCCESS or res.key is None:
             return
-        cap = next((c for c in self.vault.all_captures() if c.path == job.capture_path), None)
+        cap = (capture_for(job.capture_path) if capture_for is not None else
+               next((c for c in self.vault.all_captures() if c.path == job.capture_path), None))
         if not cap:
             return
-        ssid = self._essid_from_capture(job.capture_path) or cap.ssid or "Unknown"
-        ssid_safe = "".join(c if c.isalnum() else "_" for c in (cap.ssid or "Unknown"))
-        bssid_safe = cap.bssid.replace(":", "-").lower() if cap.bssid else "00-00-00-00-00-00"
-        out_name = f"{ssid_safe}_{bssid_safe}_{int(time.time())}_wpa_psk.txt"
-        out_path = Path(Config.captures_dir) / out_name
+        ssid = self._essid_from_capture(job.capture_path) or cap.ssid
         try:
-            write_private_text(
-                out_path,
-                f"SSID: {ssid}\nBSSID: {cap.bssid}\nPSK: {res.result_data['key']}\n",
-            )
+            self.vault.save_wpa_psk(ssid, cap.bssid, res.key)
         except OSError:
-            logger.exception(f"Failed to write recovered key to {out_path}")
-            return
-        self.vault.refresh()
+            logger.exception(f"Failed to save the recovered key for {job.capture_path}")
 
     def _essid_from_capture(self, capture_path: str) -> Optional[str]:
         """The AP's real SSID decoded from the capture's hashline (lossless), unlike the
@@ -230,6 +238,31 @@ class JobManager:
                     return None
         return None
 
+    def stop_job(self, job_id: str) -> bool:
+        """Stop a running job; it reports STOPPED once its process is gone."""
+        return self._run_action(job_id, JobAction.STOP)
+
+    def skip_wordlist(self, job_id: str) -> bool:
+        """Move a running job on to the next item of its queue, abandoning the current one."""
+        return self._run_action(job_id, JobAction.SKIP)
+
+    def pause_job(self, job_id: str) -> bool:
+        return self._run_action(job_id, JobAction.PAUSE)
+
+    def resume_job(self, job_id: str) -> bool:
+        return self._run_action(job_id, JobAction.RESUME)
+
+    def _run_action(self, job_id: str, action: JobAction) -> bool:
+        """Hand one of the actions the last poll offered to the owning tool."""
+        job = self.jobs.get(job_id)
+        if job is None or action not in job.actions:
+            return False
+        tool = self.tools.get(job.tool_name)
+        if tool is None or not tool.apply(action, job):
+            return False
+        self._save()
+        return True
+
     def clear_job(self, job_id: str) -> None:
         """Drop a finished job from the list and persist."""
         if self.jobs.pop(job_id, None) is not None:
@@ -238,6 +271,7 @@ class JobManager:
     def kill_all_running(self) -> None:
         """Shutdown: leave ADOPTABLE tools running (re-attached next launch), kill other KILLABLE
         ones so they aren't orphaned."""
+        killed = False
         for job in self.jobs.values():
             if job.status != ToolStatus.RUNNING:
                 continue
@@ -248,9 +282,11 @@ class JobManager:
             if ToolCapability.ADOPTABLE in caps or ToolCapability.KILLABLE not in caps:
                 continue
             try:
-                tool.kill({'pid': job.pid, 'log_path': job.log_path, 'api_id': job.api_id})
+                killed = tool.apply(JobAction.STOP, job) or killed
             except Exception:
                 logger.exception(f"Failed to kill job {job.job_id} on shutdown")
+        if killed:
+            self._save()
 
     def get_active_jobs(self) -> List[JobState]:
         # Return all jobs, sorted by most recently added.

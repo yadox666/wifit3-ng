@@ -28,6 +28,15 @@ if TYPE_CHECKING:
 _NOTIFY_ICON = "✉"
 
 
+def notification_text(message: str) -> Text:
+    """Render stored notification text, including Rich console markup."""
+    raw = message or ""
+    try:
+        return Text.from_markup(raw, emoji=False)
+    except Exception:
+        return Text(raw)
+
+
 class NotificationBell(Static):
     """Header message indicator with unread badge; click opens history."""
 
@@ -260,9 +269,12 @@ class NotificationHistoryModal(ModalScreen[None]):
                 "information": "cyan",
                 "info": "cyan",
             }.get(severity, "")
+            title_cell = notification_text(title)
+            if severity_style:
+                title_cell.stylize(severity_style)
             table.add_row(
                 when,
-                Text(title, style=severity_style) if severity_style else title,
+                title_cell,
                 Text(
                     "information" if severity == "info" else severity,
                     style=severity_style,
@@ -316,14 +328,14 @@ class NotificationHistoryModal(ModalScreen[None]):
             "INFORMATION": "bold cyan",
             "INFO": "bold cyan",
         }.get(severity, "bold")
-        self.query_one("#notify-detail-title", Label).update(
-            Text(title, style=style),
-        )
+        title_text = notification_text(title)
+        title_text.stylize(style)
+        self.query_one("#notify-detail-title", Label).update(title_text)
         self.query_one("#notify-detail-meta", Label).update(
             f"{when} · {severity}",
         )
         self.query_one("#notify-detail-message", Static).update(
-            Text(item.message),
+            notification_text(item.message),
         )
         detail = self.query_one("#notify-detail", VerticalScroll)
         detail.border_title = "PREVIEW"
@@ -343,10 +355,10 @@ class NotificationHistoryModal(ModalScreen[None]):
             "%Y-%m-%d %H:%M:%S",
             time.localtime(item.created_at),
         )
-        title = item.title or "Notification"
+        title = notification_text(item.title or "Notification").plain
         text = (
             f"{when} [{item.severity.upper()}] {title}\n"
-            f"{item.message}"
+            f"{notification_text(item.message).plain}"
         )
         self.app.copy_to_clipboard(text)
         self.notify("Full notification copied to clipboard")

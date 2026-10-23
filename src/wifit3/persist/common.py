@@ -28,10 +28,19 @@ AGGREGATED_HC22000_RE = re.compile(
 
 WEP_KEY_HEX_RE = re.compile(r"WEP key \(hex\):\s*([0-9a-fA-F]+)")
 WPS_PSK_RE = re.compile(r"^PSK:\s*(.+)$", re.MULTILINE)
-WPS_PIN_RE = re.compile(r"^PIN:\s*(.+)$", re.MULTILINE)
+WPS_PIN_RE = re.compile(r"^PIN:[ \t]*(.*)$", re.MULTILINE)
 CAPTIVE_PORTAL_RE = re.compile(r"^Portal:\s*(.*)$", re.MULTILINE)
 CAPTIVE_USERNAME_RE = re.compile(r"^Username:\s*(.*)$", re.MULTILINE)
 CAPTIVE_PASSWORD_RE = re.compile(r"^Password:\s*(.*)$", re.MULTILINE)
+
+
+def parse_wps_pin(text: str) -> Optional[str]:
+    """Read a WPS PIN value, translating the legacy empty-PIN display marker."""
+    match = WPS_PIN_RE.search(text)
+    if match is None:
+        return None
+    pin = match.group(1).strip()
+    return "" if pin == "<empty>" else pin
 
 
 def safe_ssid(ssid: Optional[str]) -> str:

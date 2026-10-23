@@ -131,9 +131,23 @@ class WifiProfileStore:
         if len(self.records) > _MAX_RECORDS:
             oldest = min(self.records.values(), key=lambda item: item.last_seen)
             self.records.pop(oldest.bssid, None)
-        due = now - self._last_save >= _SAVE_INTERVAL_S
-        self._dirty = self._dirty or changed or due
-        if self._dirty and (changed or due):
+        if changed:
+            self._dirty = True
+        # Never write disk from the RX/beacon path (blocks the Textual event loop).
+
+    def flush_if_due(self, now: float | None = None) -> bool:
+        """Persist when dirty and the save interval has elapsed (call from UI timer)."""
+        now = time.time() if now is None else now
+        if not self._dirty:
+            return False
+        if self._last_save > 0 and now - self._last_save < _SAVE_INTERVAL_S:
+            return False
+        self.save()
+        return True
+
+    def flush(self) -> None:
+        """Write immediately when dirty (shutdown/tests)."""
+        if self._dirty or not self.path.exists():
             self.save()
 
     def save(self) -> None:

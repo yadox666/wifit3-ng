@@ -10,13 +10,13 @@ from rich.markup import escape
 from wifit3.wlan.array import WlanArray
 
 from .catalog_format import catalog_detail_lines
-from .encryption_format import format_encryption_markup
+from .encryption_format import format_encryption_markup, wep_key_ascii
 from ..campaigns.campaign import Campaign
 from ..campaigns.pmkid import PmkidHarvestAttack
 from ..campaigns.wep import WepCampaign
 from wifit3.crack.wep import CRACK_READY_THRESHOLD
 from wifit3.crack.handshake import pmkid_crackable
-from wifit3.models import IdKey, IdSource
+from wifit3.models import CaptureType, IdKey, IdSource
 from wifit3.persist.config import Config
 from wifit3.dot11.enterprise import EAP_TYPE_NAMES
 from wifit3.wlan.enterprise_risk import enterprise_findings, tls_cipher_name
@@ -659,12 +659,16 @@ def status_headlines(ap, array, vault) -> list[str]:
     wep = enc == "WEP"
 
     # 4. Recovered credentials, when idle: WEP key / PSK (WPS- or handshake-derived).
-    if ap.wep_key is not None or vault.has_wep_key(ap):
-        return ["[black bold on green] ✓ WEP key recovered [/black bold on green]",
-                "[dim]see the event log for the key[/dim]"]
-    if vault.known_psk(ap):
-        return ["[black bold on green] ✓ PSK recovered [/black bold on green]",
-                "[dim]see the event log for the passphrase[/dim]"]
+    wep_key_hex = (ap.wep_key.hex() if ap.wep_key is not None
+                   else next((c.value for c in vault.persisted(ap.bssid)
+                              if c.type == CaptureType.WEP and c.value), None))
+    if wep_key_hex:
+        return [f"[black bold on green] ✓ WEP key: {escape(wep_key_ascii(wep_key_hex))} [/black bold on green]",
+                "[dim]● Listening for WEP IVs[/dim]"]
+    psk = vault.known_psk(ap)
+    if psk:
+        return [f"[black bold on green] ✓ PSK: {escape(psk)} [/black bold on green]",
+                "[dim]● Listening for handshake + PMKID[/dim]"]
 
     if Config.is_silenced(ap.bssid):
         return ["[dim]● Silenced[/dim]",

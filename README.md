@@ -1,9 +1,9 @@
 # wifit3-ng
-> Version 0.3.25. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
+> Version 0.3.26. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
 
-**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.25 - yadox666`.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.26 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.25** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.26** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
@@ -49,6 +49,12 @@ These capabilities come from the original [derv82/wifit3](https://github.com/der
 ## Fork additions (yadox666)
 
 The sections below are the additions in this fork (0.3.4 through current). They sit on top of the original auditor.
+
+**0.3.26:** Upstream wifit3 v0.5.3 (FT-PSK `WPA*03`/`WPA*04`, Hashtopolis + CPU
+Crack auto-crack, RTL8187L/B RX), **MT7601U** driver, scanner threat toasts /
+VENDOR enrichment / expanded SSID groups, `--debug` UI stall tracing, and dense
+scan freeze fixes. Details in
+[CHANGELOG → 0.3.26](CHANGELOG.md#0326---2026-10-23).
 
 **0.3.25:** **Investigate** on Focus, AntennaTune Passive/Active rates,
 scanner APS/STA and BT/BLE header counts, GPS/GNSS NMEA hardware notes,
@@ -177,6 +183,8 @@ All hardware panels use the same bordered style and a **shared width** so rows s
 ### Wi-Fi scanner
 
 - Channel hopping still visits **every** channel on each card's allowed set, but uses a **spread** permutation (2.4 GHz coprime stride such as 1→6→11→2→7…, then the same idea on 5 GHz) instead of walking 1, 2, 3… so overlapping AP coverage is seen sooner. Dual-band drivers hop **all** 5 GHz primaries the chip can tune, including **DFS** (52–64 and 100–144) for passive beacon capture; this does not enable DFS transmit or radar CAC. Per-card **startup band** pins limit a dongle to 2.4 or 5 GHz; **Channel Lock** (`c`) intersects with that set. When all cards stay on **All bands**, channels are partitioned across the pool so each adapter covers a subset.
+- Nearby **threat** toasts fire on deauth/disassoc bursts (and related flood signals) after a session warmup, ignoring frames this process just transmitted.
+- Same-SSID infrastructures default to **expanded** member rows; **`i`** collapses or expands all groups; **Enter** on an aggregate expands one group. The **VENDOR/ID** column shows chipset/CPE/firmware enrichment when available.
 - AP and client **system logs** auto-scroll to new lines only while you are already at the bottom, so you can read or copy older lines during a busy scan.
 - AP and client tables share signal colours, fixed columns, sorting, reverse
   sorting, filtering, pause, channel lock, and export. Click or touch any
@@ -441,6 +449,11 @@ eviction and twin beacons are visible to nearby devices.
   or unlimited parts.
 - AP Focus and Client Focus show a blinking red `PCAP RECORDING` indicator with the live total across all rotated files, for example `10 files: 814 MB`.
 - Capture filenames follow the Vault naming and sorting convention.
+- Vault cracking tools: **CPU Crack** (local wordlist / SSID-derived candidates),
+  **Hashcat** (including FT-PSK `WPA*03` / `WPA*04`), and **Hashtopolis**
+  (upload to a Hashtopolis server, poll, save recovered keys). Preferences
+  **Captures → auto-crack** picks which tool runs when a new crackable capture
+  lands; each tool keeps its own `config.toml` table.
 
 ### Passive open-network metadata
 
@@ -867,7 +880,7 @@ form). Each setting has a short label above the control.
 | **General** | Theme, check for updates on startup, **Update now** (app), catalog/signatures, OUI database, open diagnostics |
 | **Scanner** | Table sort delay, hide inactive Wi-Fi/Bluetooth rows |
 | **Safety** | Deauth/broadcast intensity, confirm before active actions, WPS PBC auto-capture |
-| **Captures** | Save directory, `.pcap` handshakes, target reacquire timeout, capture file size and rotation, auto-lock saved targets |
+| **Captures** | Save directory, `.pcap` handshakes, target reacquire timeout, capture file size and rotation, auto-lock saved targets; **auto-crack** tool (CPU Crack / Hashcat / Hashtopolis) with per-tool `config.toml` settings |
 | **GPS** | Serial port (blank = auto), movement threshold (≥20 m), max fix error radius |
 
 **About** (`a`) and the **targets library** (`t`) open from Preferences without
@@ -950,7 +963,8 @@ publish the capture directory or location database.
 | Realtek RTL8922AU | 2.4 / 5 GHz | ASUS USB-BE93 |
 | Realtek RTL8822BU | 2.4 / 5 GHz | TP-Link T3U Plus, Archer T4U v3 / T4U+ |
 | Realtek RTL8822CU | 2.4 / 5 GHz | D-Link AC13U |
-| Realtek RTL8187L | 2.4 GHz | ALFA AWUS036**H** |
+| Realtek RTL8187L / RTL8187B | 2.4 GHz | ALFA AWUS036**H**, Belkin F5D7050 v5, Netgear WG111v3, Linksys WUSB54GC v2 |
+| MediaTek MT7601U | 2.4 GHz | Generic MT7601U USB sticks (kernel `mt7601u` VID:PID table) |
 | Realtek RTL8188EUS | 2.4 GHz | TP-Link TL-WN722N v2/v3 |
 | Ralink RT2570 | 2.4 GHz | Buffalo Nintendo Wi-Fi USB Controller |
 | Ralink RT3070 | 2.4 GHz | ALFA AWUS036**NH** |
@@ -1033,7 +1047,7 @@ Retail vendors may change chipsets without changing a product name, so support i
 
 ## Installation and running
 
-Python 3.11 or newer is required to run from source. Release **0.3.25** binaries are published from this fork.
+Python 3.11 or newer is required to run from source. Release **0.3.26** binaries are published from this fork.
 
 ### Option 1: Download a prebuilt binary
 
@@ -1058,7 +1072,7 @@ uv sync
 uv run wifit3
 ```
 
-`./start.sh` creates a local virtualenv, installs the package, and launches the same entry point. On Linux it also installs missing `python3` / `venv` / headers through the distro package manager when needed, and warns if you launched it with `sudo` (USB adapters run in userspace). Each run gets an automatic memorable scan-session name for Offline DB grouping; add **`--case`** when you want to set the name and optional notes in a dialog first (**Enter** accepts; `wifit3 --case` works the same).
+`./start.sh` creates a local virtualenv, installs the package, and launches the same entry point. On Linux it also installs missing `python3` / `venv` / headers through the distro package manager when needed, and warns if you launched it with `sudo` (USB adapters run in userspace). Each run gets an automatic memorable scan-session name for Offline DB grouping; add **`--case`** when you want to set the name and optional notes in a dialog first (**Enter** accepts; `wifit3 --case` works the same). **`--debug`** enables UI stall / slow-path tracing to `wifit3.log` and stderr.
 
 `./start.sh --background --all` stays on the startup screen and records Wi-Fi, Bluetooth Classic, and BLE together until Ctrl+Q or **Stop monitor**. GPS positions are stored when a receiver is connected. The on-screen **BACKGROUND** button uses the cards and the OS BLE switch you have enabled; `--all` turns those three sources on for that launch. Combine flags as needed (for example `./start.sh --case --background --all`).
 

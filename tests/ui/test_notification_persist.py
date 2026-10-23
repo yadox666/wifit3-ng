@@ -115,3 +115,35 @@ async def test_notification_row_always_previews_and_copies_full_message(
         await pilot.pause()
         assert app.notification_store.unread_count() == 0
         assert mark_read.disabled
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_usb_devices")
+async def test_notification_preview_renders_console_markup(tmp_path, monkeypatch):
+    from wifit3.persist.notifications import NotificationStore
+
+    store_path = tmp_path / "notifications.sqlite3"
+    monkeypatch.setattr(
+        "wifit3.ui.app.NotificationStore",
+        lambda: NotificationStore(store_path),
+    )
+    message = (
+        "[bold]MOVISTAR_6E49[/bold] on channel [bold]36[/bold] "
+        "[dim bold](BSSID: e6:41:36:b3:6e:52)[/dim bold]"
+    )
+    copied: list[str] = []
+    app = WifiteApp()
+    monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
+    app.notification_store.append(message, title="PMKID (M1)", severity="information")
+
+    async with app.run_test(size=(110, 38)) as pilot:
+        app.action_notification_history()
+        await pilot.pause()
+        rendered = app.screen.query_one("#notify-detail-message", Static).render()
+        assert rendered.plain == (
+            "MOVISTAR_6E49 on channel 36 (BSSID: e6:41:36:b3:6e:52)"
+        )
+        assert any(str(span.style) == "bold" for span in rendered.spans)
+        await pilot.press("c")
+        assert "[bold]" not in copied[0]
+        assert "MOVISTAR_6E49" in copied[0]

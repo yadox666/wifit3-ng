@@ -1,6 +1,7 @@
 """Ctrl+P preferences modal."""
 import asyncio
 from pathlib import Path
+from typing import Callable
 from rich.padding import Padding
 from rich.style import Style
 from rich.text import Text
@@ -32,7 +33,10 @@ from wifit3.observe.signature_pack import (
     stock_path,
     user_path,
 )
+from wifit3.models import ToolName
 from wifit3.persist.config import Config
+from wifit3.ui.vault.tools_ui import UI_TOOLS
+from wifit3.vault.tools.base import VaultTool
 from wifit3.ui.screens.targets_editor import TargetsEditorDrawer
 
 
@@ -220,6 +224,60 @@ class TargetCaptureSetting(VerticalGroup):
             allow_blank=False,
             id="target_capture_max_parts",
         )
+
+
+class AutoCrackSetting(VerticalGroup):
+    DEFAULT_CSS = """
+    AutoCrackSetting { border: round $primary; height: auto; }
+    AutoCrackSetting Horizontal { height: auto; }
+    AutoCrackSetting Select { width: 1fr; }
+    AutoCrackSetting #auto_crack_configure { min-width: 0; width: 5; margin-left: 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        self.border_title = "Auto-crack new captures with"
+        self._chosen = Config.auto_crack or ""
+        tools = sorted(self.app.vault.manager.tools.values(), key=lambda tool: tool.label)
+        options = [("Off", "")] + [(tool.label, tool.name) for tool in tools]
+        with Horizontal():
+            yield Select(options, id="auto_crack", value=self._chosen, allow_blank=False)
+            yield Button("≡", id="auto_crack_configure")
+
+    def on_mount(self) -> None:
+        self.query_one("#auto_crack_configure", Button).display = bool(self._chosen)
+
+    @on(Select.Changed, "#auto_crack")
+    def select_tool(self, event: Select.Changed) -> None:
+        if event.value == self._chosen:
+            return
+        previous = self._chosen
+        self._choose(str(event.value))
+        tool = self.app.vault.manager.tools.get(self._chosen)
+        if tool is not None and tool.auto_crack_config() is None:
+            self._configure(lambda _: self._revert_if_unconfigured(tool, previous))
+
+    @on(Button.Pressed, "#auto_crack_configure")
+    def configure_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self._configure()
+
+    def _choose(self, tool_name: str) -> None:
+        self._chosen = tool_name
+        self.query_one("#auto_crack", Select).value = tool_name
+        self.query_one("#auto_crack_configure", Button).display = bool(tool_name)
+
+    def _revert_if_unconfigured(self, tool: VaultTool, previous: str) -> None:
+        if tool.auto_crack_config() is None:
+            self._choose(previous)
+
+    def _configure(self, on_dismiss: Callable[[dict | None], None] | None = None) -> None:
+        modal = UI_TOOLS.get(ToolName(self._chosen)) if self._chosen else None
+        if modal is not None:
+            self.app.push_screen(modal(confirm_label="Save"), on_dismiss)
+
+    @property
+    def tool(self) -> ToolName | None:
+        return ToolName(self._chosen) if self._chosen else None
 
 
 class SaveFooter(Horizontal):
@@ -531,6 +589,7 @@ class PreferencesModal(ModalScreen):
                         )
                 with VerticalScroll(id="panel-captures", classes="pref-panel-scroll"):
                     yield CapturesDirSetting()
+                    yield AutoCrackSetting()
                     with Vertical(classes="pref-field"):
                         yield _pref_tag("Handshake archives")
                         yield Checkbox(
@@ -600,6 +659,7 @@ class PreferencesModal(ModalScreen):
             self.app.reconfigure_gps(Config.gps_port)
         self.app.vault.refresh()
         Config.save_pcap = self.query_one("#save_pcap", Checkbox).value
+        Config.auto_crack = self.query_one(AutoCrackSetting).tool
         Config.auto_check_updates = self.query_one("#auto_check_updates", Checkbox).value
         Config.confirm_active_actions = self.query_one("#confirm_active_actions", Checkbox).value
         Config.auto_wps_pbc = self.query_one("#auto_wps_pbc", Checkbox).value

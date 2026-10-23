@@ -32,6 +32,9 @@ class _FakeArray:
     async def stop_hopping(self):
         pass
 
+    def drain_threats(self):
+        return []
+
 
 class _Host(App):
     def __init__(self, array):

@@ -10,8 +10,9 @@ import sys
 import time
 import zipfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Callable, Dict, Iterable, List, Optional
 
+from wifit3.crack.hc22000_format import Hc22000Line
 from wifit3.models import CaptureType, PersistedCapture
 from wifit3.persist import save
 from wifit3.persist.capture_history import load_capture_index, summarize
@@ -44,6 +45,17 @@ def _open_in_file_manager(path: Path) -> None:
         subprocess.Popen(["xdg-open", str(path)])
 
 
+def _is_m1m2_eapol(line: Hc22000Line) -> bool:
+    return line.kind in {"02", "04"} and int(line.message_pair or "0", 16) & 0x07 == 0
+
+
+def crosses_auto_crack_threshold(before: List[Hc22000Line], after: List[Hc22000Line]) -> bool:
+    if not before:
+        return bool(after)
+    return (all(_is_m1m2_eapol(line) for line in before)
+            and any(not _is_m1m2_eapol(line) for line in after))
+
+
 class Vault:
     """Caches the on-disk capture index (from Config.captures_dir) and is the
     backend interface for querying/deleting capture files.
@@ -65,6 +77,7 @@ class Vault:
 
     def __init__(self) -> None:
         self._index: Dict[str, List[PersistedCapture]] = {}
+        self._probed_ssids_source: Callable[[], Iterable[str]] = lambda: ()
         self.errors: list[str] = []                       # surfaced as toasts by the app on mount
         try:
             self.refresh()
@@ -82,6 +95,14 @@ class Vault:
     def refresh(self) -> None:
         """Re-scan Config.captures_dir into the cache."""
         self._index = load_capture_index()
+
+    def set_probed_ssids_source(self, source: Callable[[], Iterable[str]]) -> None:
+        self._probed_ssids_source = source
+
+    def add_probed_ssids(self, config: dict) -> dict:
+        if not config.get("probed_ssid_passwords"):
+            return config
+        return {**config, "extra_passwords": sorted(self._probed_ssids_source())}
 
     # ----- reads -----
 
@@ -149,12 +170,13 @@ class Vault:
         ), None)
         if direct:
             return direct
-        if not ap.ssid:
+        ssid = getattr(ap, "ssid", None)
+        if not ssid:
             return None
         scoped = {
             capture.value
-            for capture in self._index.get(ssid_scope_key(ap.ssid), [])
-            if capture.type in self._PSK_TYPES and capture.value and capture.ssid == ap.ssid
+            for capture in self._index.get(ssid_scope_key(ssid), [])
+            if capture.type in self._PSK_TYPES and capture.value and capture.ssid == ssid
         }
         if len(scoped) == 1:
             return next(iter(scoped))
@@ -167,7 +189,7 @@ class Vault:
             if (
                 capture.type in self._PSK_TYPES
                 and capture.value
-                and capture.ssid == ap.ssid
+                and capture.ssid == ssid
                 and capture.bssid
             )
         }
@@ -203,20 +225,42 @@ class Vault:
     # ----- writes (persist to disk, then fold into the cache) -----
 
     def save_handshake(self, ap: "AccessPoint", client_mac: str) -> Optional[SaveResult]:
+        before = self._hc_lines(ap)
         result = save.save_handshake(ap, client_mac)
         if result and result.was_new:
-            self._index.setdefault(ap.bssid, []).insert(
-                0, PersistedCapture(type=CaptureType.HS, timestamp=int(time.time()),
-                                    path=str(result.path), bssid=ap.bssid, ssid=ap.ssid))
+            capture = PersistedCapture(
+                type=CaptureType.HS, timestamp=int(time.time()), path=str(result.path),
+                bssid=ap.bssid, ssid=ap.ssid)
+            self._index.setdefault(ap.bssid, []).insert(0, capture)
+            self._auto_crack(ap, capture, before)
         return result
 
     def save_pmkid(self, ap: "AccessPoint", client_mac: str) -> Optional[SaveResult]:
+        before = self._hc_lines(ap)
         result = save.save_pmkid(ap, client_mac)
         if result and result.was_new:
-            self._index.setdefault(ap.bssid, []).insert(
-                0, PersistedCapture(type=CaptureType.PMKID, timestamp=int(time.time()),
-                                    path=str(result.path), bssid=ap.bssid, ssid=ap.ssid))
+            capture = PersistedCapture(
+                type=CaptureType.PMKID, timestamp=int(time.time()), path=str(result.path),
+                bssid=ap.bssid, ssid=ap.ssid)
+            self._index.setdefault(ap.bssid, []).insert(0, capture)
+            self._auto_crack(ap, capture, before)
         return result
+
+    def _hc_lines(self, ap: "AccessPoint") -> List[Hc22000Line]:
+        return save.HcFiles(Path(Config.captures_dir), ap.ssid, ap.bssid).lines()
+
+    def _auto_crack(self, ap: "AccessPoint", capture: PersistedCapture,
+                    before: List[Hc22000Line]) -> None:
+        tool = self.manager.tools.get(Config.auto_crack) if Config.auto_crack else None
+        if tool is None or self.has_psk(ap) or not tool.can_crack(capture):
+            return
+        config = tool.auto_crack_config()
+        if config is None:
+            return
+        if crosses_auto_crack_threshold(before, self._hc_lines(ap)):
+            self.manager.submit_job(
+                tool.name, capture, self.add_probed_ssids(config), auto_crack=True,
+            )
 
     def save_wep_key(self, ap: "AccessPoint", key: bytes) -> Optional[SaveResult]:
         result = save.save_wep_key(ap, key)

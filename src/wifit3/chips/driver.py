@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar, List, Optional, Proto
 import usb.core
 
 from wifit3.models.device_id import DeviceID
+from wifit3.wlan.tx_ledger import note_own_transmission
 
 if TYPE_CHECKING:
     from wifit3.dot11.packet import Packet
@@ -132,11 +133,13 @@ class Driver(ABC):
         (the driver's per-chip retry limit) is the only retransmission. When the ACK tally is
         armed, the frame's Addr2 is registered so ``record_ack`` counts its ACKs. For a
         software retry that blocks on the recipient's ACK, use ``inject_frame_slow_retry``."""
+        stamped = self._stamp_tx_seq(frame_bytes)
+        note_own_transmission(stamped)
         if self._ack_detect_on:
-            mac = self._extract_mac(frame_bytes)
+            mac = self._extract_mac(stamped)
             if mac is not None:
                 self._our_tx_macs.add(mac)
-        return await self._inject_frame(self._stamp_tx_seq(frame_bytes))
+        return await self._inject_frame(stamped)
 
     async def inject_frame_slow_retry(self, frame_bytes: bytes,
                                       timeout: Optional[float] = None,

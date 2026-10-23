@@ -63,9 +63,10 @@ def test_no_crackable_pair_is_none():
     assert verify_passphrase(hs, SSID, PSK) is None
 
 
-def test_sha256_keystone_not_verifiable_is_none():
-    # keyver 3 (PSK-SHA256 / AES-CMAC) is outside this SHA-1 path.
-    assert verify_passphrase(_handshake(keyver=3), SSID, PSK) is None
+def test_sha256_keystone_with_sha1_mic_is_rejected():
+    # v0.5.3 verifies keyver 3 using AES-CMAC; this fixture deliberately carries
+    # an HMAC-SHA1 MIC, so it is a verifiable mismatch.
+    assert verify_passphrase(_handshake(keyver=3), SSID, PSK) is False
 
 
 def test_empty_inputs_are_none():

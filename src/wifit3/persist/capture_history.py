@@ -12,16 +12,13 @@ from typing import Dict, List
 from wifit3.models import CaptureType, PersistedCapture
 from wifit3.persist.common import (
     AGGREGATED_HC22000_RE,
-    CAPTIVE_PASSWORD_RE,
-    CAPTIVE_PORTAL_RE,
-    CAPTIVE_USERNAME_RE,
     LEGACY_CAPTURE_RE,
     WEP_KEY_HEX_RE,
-    WPS_PIN_RE,
     WPS_PSK_RE,
     bssid_to_colon,
+    capture_index_key,
     is_ssid_scoped_token,
-    ssid_scope_key,
+    parse_wps_pin,
 )
 from wifit3.persist.config import Config
 
@@ -59,8 +56,7 @@ def _read_wps_pin(path: Path) -> str | None:
     text = _read_text(path)
     if text is None:
         return None
-    m = WPS_PIN_RE.search(text)
-    return m.group(1).strip() if m else None
+    return parse_wps_pin(text)
 
 
 def _read_ssid(path: Path) -> str | None:
@@ -69,21 +65,18 @@ def _read_ssid(path: Path) -> str | None:
     if text is None:
         return None
     for line in text.splitlines():
-        if not line.startswith("SSID:"):
-            continue
-        value = line.removeprefix("SSID:")
-        if value.startswith(" "):
-            value = value[1:]
-        return value or None
+        if line.startswith("SSID:"):
+            value = line.removeprefix("SSID:")
+            return value.removeprefix(" ") or None
     return None
 
 
-def _count_hashlines(path: Path, prefix: str) -> int:
-    """Number of ``WPA*01*`` / ``WPA*02*`` records in a .hc22000 file (0 if unreadable)."""
+def _count_hashlines(path: Path, prefixes: tuple[str, ...]) -> int:
+    """Number of records starting with one of ``prefixes`` in a .hc22000 file (0 if unreadable)."""
     text = _read_text(path)
     if text is None:
         return 0
-    return sum(1 for ln in text.splitlines() if ln.strip().startswith(prefix))
+    return sum(1 for ln in text.splitlines() if ln.strip().startswith(prefixes))
 
 
 def _parse_aggregate_hc(path: Path, bssid: str) -> List[PersistedCapture]:
@@ -99,9 +92,9 @@ def _parse_aggregate_hc(path: Path, bssid: str) -> List[PersistedCapture]:
     pmkid = hs = 0
     for line in text.splitlines():
         line = line.strip()
-        if line.startswith("WPA*01*"):
+        if line.startswith(("WPA*01*", "WPA*03*")):
             pmkid += 1
-        elif line.startswith("WPA*02*"):
+        elif line.startswith(("WPA*02*", "WPA*04*")):
             hs += 1
     out: List[PersistedCapture] = []
     if pmkid:
@@ -155,46 +148,18 @@ def _parse_file(path: Path, bssid: str) -> List[PersistedCapture]:
         if psk is None:
             return []
         return [PersistedCapture(type=CaptureType.WPA_PSK, timestamp=epoch, path=str(path),
-                                 bssid=bssid, value=psk,
-                                 ssid=_read_ssid(path) or ssid)]
-    if kind == "captive_password" and ext == "txt":
-        text = _read_text(path)
-        if text is None:
-            return []
-        pw_match = CAPTIVE_PASSWORD_RE.search(text)
-        if pw_match is None:
-            return []
-        user_match = CAPTIVE_USERNAME_RE.search(text)
-        portal_match = CAPTIVE_PORTAL_RE.search(text)
-        username = user_match.group(1).strip() if user_match else None
-        portal_name = portal_match.group(1).strip() if portal_match else None
-        return [PersistedCapture(
-            type=CaptureType.CAPTIVE_PASSWORD,
-            timestamp=epoch,
-            path=str(path),
-            bssid=bssid,
-            value=pw_match.group(1).strip(),
-            ssid=_read_ssid(path) or ssid,
-            username=username or None,
-            portal_name=portal_name or None,
-        )]
+                                 bssid=bssid, value=psk, ssid=_read_ssid(path) or ssid)]
     if kind == "handshake" and ext in ("hc22000", "pcap"):
-        count = _count_hashlines(path, "WPA*02*") if ext == "hc22000" else 0
+        count = _count_hashlines(path, ("WPA*02*", "WPA*04*")) if ext == "hc22000" else 0
         return [PersistedCapture(type=CaptureType.HS, timestamp=epoch, path=str(path),
                                  bssid=bssid, ssid=ssid, record_count=count)]
     if kind == "pmkid" and ext in ("hc22000", "pcap"):
-        count = _count_hashlines(path, "WPA*01*") if ext == "hc22000" else 0
+        count = _count_hashlines(path, ("WPA*01*", "WPA*03*")) if ext == "hc22000" else 0
         return [PersistedCapture(type=CaptureType.PMKID, timestamp=epoch, path=str(path),
                                  bssid=bssid, ssid=ssid, record_count=count)]
     if kind == "packet_capture" and ext == "pcap":
-        return [PersistedCapture(
-            type=CaptureType.PCAP,
-            timestamp=epoch,
-            path=str(path),
-            bssid=bssid,
-            ssid=ssid,
-            record_count=0,
-        )]
+        return [PersistedCapture(type=CaptureType.PCAP, timestamp=epoch, path=str(path),
+                                 bssid=bssid, ssid=ssid, record_count=0)]
     return []
 
 
@@ -209,12 +174,11 @@ def load_capture_index() -> Dict[str, List[PersistedCapture]]:
             continue
         m = LEGACY_CAPTURE_RE.match(path.name)
         if m:
-            if is_ssid_scoped_token(m.group("bssid")):
-                for capture in _parse_file(path, ""):
-                    index[ssid_scope_key(capture.ssid)].append(capture)
-                continue
-            bssid = bssid_to_colon(m.group("bssid"))
-            index[bssid].extend(_parse_file(path, bssid))
+            token = m.group("bssid")
+            bssid = "" if is_ssid_scoped_token(token) else bssid_to_colon(token)
+            captures = _parse_file(path, bssid)
+            for capture in captures:
+                index[capture_index_key(capture.bssid, capture.ssid)].append(capture)
             continue
         m_agg = AGGREGATED_HC22000_RE.match(path.name)
         if m_agg:

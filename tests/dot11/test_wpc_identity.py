@@ -110,6 +110,8 @@ def test_identity_from_built_m1():
         mac_e=b"\x22" * 6,
         nonce_e=b"\x33" * 16,
         pke=b"\x44" * 192,
+        rf_bands=M.RF_BAND_24GHZ,
+        wsc_2_0=False,
     )
     ident = ApIdentity()
     assert I.apply_wsc_identity(ident, IdSource.WSC_M1, M.parse_tlvs(m1)) is True

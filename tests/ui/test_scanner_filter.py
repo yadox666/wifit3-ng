@@ -62,6 +62,9 @@ class _FakeArray:
     async def stop_hopping(self):
         self.stop_calls += 1
 
+    def drain_threats(self):
+        return []
+
     @asynccontextmanager
     async def claim(self, iface):
         await iface.stop_hopping()

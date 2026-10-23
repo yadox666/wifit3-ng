@@ -1,11 +1,14 @@
+import asyncio
 import logging
 import os
+import signal
 import sys
 import time
 from pathlib import Path
 from textual import events, work
 from textual.app import App
 from textual.binding import Binding
+from textual.message import Message
 from textual.widgets import Header
 from textual.widgets._header import HeaderClock, HeaderIcon, HeaderTitle
 from typing import Optional
@@ -64,6 +67,7 @@ from .screens.vault_drawer import VaultDrawer
 from .screens.vault_table import VaultTable
 from .notification_center import NotificationHistoryModal
 from .screens.session_start_modal import SessionStartInput, SessionStartModal
+from .clipboard import copy_macos_text, copy_windows_text
 from .pref import PreferencesModal
 from .themes import register_app_themes
 from wifit3.updates import UpdateInfo, check_for_update, install_update as install_release_update
@@ -103,6 +107,13 @@ HeaderClock.ALLOW_SELECT = False
 
 class WifiteApp(App):
     """wifit3 TUI Main App."""
+
+    class JobCracked(Message):
+        """An auto-crack job recovered a key; posted to every screen on the stack."""
+
+        def __init__(self, job: JobState) -> None:
+            super().__init__()
+            self.job = job
 
     TITLE = f"wifit3-ng v{__version__} - yadox666"
     unread_notifications = reactive(0)
@@ -331,6 +342,11 @@ class WifiteApp(App):
 
     def action_notification_history(self) -> None:
         self.push_screen(NotificationHistoryModal())
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """Copy through Win32 or pbcopy, falling back to terminal OSC 52."""
+        if not copy_windows_text(text) and not copy_macos_text(text):
+            super().copy_to_clipboard(text)
 
     def on_text_selected(self, event: events.TextSelected) -> None:
         selected = self.screen.get_selected_text()
@@ -584,6 +600,33 @@ class WifiteApp(App):
         self.call_after_refresh(self._begin_app_scan_session)
         if Config.auto_check_updates:
             self.check_updates()
+        self._quit_on_termination_signals()
+
+    def _quit_on_termination_signals(self) -> None:
+        if sys.platform == "win32":
+            return
+        loop = asyncio.get_running_loop()
+        signals = (signal.SIGTERM, signal.SIGHUP)
+
+        def quit_on_signal(signum: int, _frame) -> None:
+            # signal.signal, not loop.add_signal_handler: a dead terminal blocks
+            # Textual's loop, which would then swallow every signal. Restoring the
+            # defaults here lets the next one kill.
+            for sig in signals:
+                signal.signal(sig, signal.SIG_DFL)
+            loop.call_soon_threadsafe(self._quit_after_signal, signal.Signals(signum))
+
+        self._handlers_before_mount = {
+            sig: signal.signal(sig, quit_on_signal) for sig in signals
+        }
+
+    def on_unmount(self) -> None:
+        for sig, handler in getattr(self, "_handlers_before_mount", {}).items():
+            signal.signal(sig, handler)
+
+    def _quit_after_signal(self, sig: signal.Signals) -> None:
+        logger.info("Received %s, closing the cards before exit", sig.name)
+        self.call_later(self.action_quit)
 
     def _gps_error(self, message: str) -> None:
         self.notify(message, title="GPS unavailable", severity="warning")
@@ -603,13 +646,18 @@ class WifiteApp(App):
     def _notify_completions(self) -> None:
         """Toast each job the first time it finishes this session; jobs already terminal when
         the app started are recorded silently rather than re-announced."""
-        terminal = (ToolStatus.SUCCESS, ToolStatus.FAILURE, ToolStatus.ERROR)
+        terminal = (ToolStatus.SUCCESS, ToolStatus.FAILURE, ToolStatus.ERROR, ToolStatus.STOPPED)
         cracked = False
         for job in self.active_jobs:
             prev = self._job_status.get(job.job_id)
             if job.status in terminal and prev is not None and prev not in terminal:
-                self._toast_job(job)
-                cracked = cracked or job.status == ToolStatus.SUCCESS
+                succeeded = job.status == ToolStatus.SUCCESS
+                if succeeded or not job.auto_crack:
+                    self._toast_job(job)
+                if succeeded and job.auto_crack:
+                    for screen in self.screen_stack:
+                        screen.post_message(self.JobCracked(job))
+                cracked = cracked or succeeded
             self._job_status[job.job_id] = job.status
         live = {job.job_id for job in self.active_jobs}
         self._job_status = {k: v for k, v in self._job_status.items() if k in live}
@@ -817,7 +865,7 @@ class WifiteApp(App):
         except HiddenSsidStoreError:
             logger.warning("Could not flush hidden SSID/probe history", exc_info=True)
         try:
-            self.wifi_profile_store.save()
+            self.wifi_profile_store.flush()
         except WifiProfileStoreError:
             logger.warning("Could not flush Wi-Fi profile history", exc_info=True)
         try:

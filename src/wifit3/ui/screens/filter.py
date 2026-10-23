@@ -14,6 +14,7 @@ from textual.widgets import Button, Input, Label, Select
 from wifit3.ui.search_input import SearchInput, sync_search_input_has_text
 
 from wifit3.models import AccessPoint
+from wifit3.models.identity_display import scanner_identity_summary
 from wifit3.id import vendor_for_mac
 from wifit3.ui.encryption_format import EncryptionType
 from wifit3.observe.product_catalog import catalog_family_select_options, matched_wifi_family_ids
@@ -90,7 +91,13 @@ class ScanFilter:
         searchable = " ".join(filter(None, (
             ssid or ap.ssid,
             vendor_for_mac(ap.bssid),
+            scanner_identity_summary(ap),
             ap.identity.summary,
+            ap.identity.model_name,
+            ap.identity.model_number,
+            ap.identity.device_name,
+            ap.capabilities.wps_device_name,
+            ap.capabilities.wps_model,
             ap.country_code,
             ap.capabilities.remote_id,
             ap.capabilities.signature_label,

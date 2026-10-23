@@ -9,6 +9,7 @@ from wifit3.campaigns.pbc import PbcWatcher, WpsPbcCapture
 from wifit3.campaigns.wps.registrar import AttemptOutcome, PinResult
 from wifit3.wlan.lease import Lease
 from wifit3.dot11 import mac_to_str, str_to_mac
+from wifit3.models import AccessPoint
 
 
 def _ap(bssid, active):
@@ -141,7 +142,7 @@ def _fake_enrollee_cls(outcome):
 
 
 def _pbc_target():
-    return SimpleNamespace(bssid="34:21:09:00:01:ff", ssid="TESTPBC", channel=1)
+    return AccessPoint(bssid="34:21:09:00:01:ff", ssid="TESTPBC", channel=1)
 
 
 def _patch_collaborators(monkeypatch, outcome):

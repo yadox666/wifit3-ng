@@ -180,7 +180,8 @@ class AntennaTuneLinkProbe:
             if ap is None:
                 return None
             ssid = ap.ssid if ap.ssid and ap.ssid != "<hidden>" else ""
-            return ap_link_probe_req(str_to_mac(ap.bssid), self._tx_mac, ssid)
+            return ap_link_probe_req(
+                str_to_mac(ap.bssid), self._tx_mac, ssid, channel=ap.channel)
         if client is None or ap is None:
             return None
         return client_link_null(str_to_mac(ap.bssid), str_to_mac(client.mac))

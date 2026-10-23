@@ -23,7 +23,7 @@ from .enterprise import (
     EnterpriseProfile,
     EnterpriseSession,
 )
-from .jobs import ToolCapability, ToolStatus, JobState, ToolResult
+from .jobs import JobAction, ToolCapability, ToolName, ToolStatus, JobState, ToolResult
 
 __all__ = [
     "ApIdentity",

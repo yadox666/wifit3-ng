@@ -35,12 +35,14 @@ def build_client_leaving(bssid: bytes, our_mac: bytes, deauth: bool = True) -> b
 class WlanTransport:
     """Send/recv/drain over a live WlanInterface."""
 
+    RX_QUEUE_SIZE = 64
+
     def __init__(self, iface, bssid: bytes, our_mac: bytes, tx_observer=None):
         self.iface = iface
         self.bssid = bssid
         self.our_mac = our_mac
         self.tx_observer = tx_observer
-        self._q: asyncio.Queue = asyncio.Queue()
+        self._q: asyncio.Queue = asyncio.Queue(maxsize=self.RX_QUEUE_SIZE)
         self._loop = asyncio.get_running_loop()
         self._active = False
 
@@ -52,7 +54,15 @@ class WlanTransport:
         if frame[4:10] != self.our_mac or frame[10:16] != self.bssid:
             return
         # Thread-safe handoff (driver RX may fire from a background reader).
-        self._loop.call_soon_threadsafe(self._q.put_nowait, bytes(frame))
+        self._loop.call_soon_threadsafe(self._enqueue_frame, bytes(frame))
+
+    def _enqueue_frame(self, frame: bytes) -> None:
+        if self._q.full():
+            try:
+                self._q.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        self._q.put_nowait(frame)
 
     def start(self) -> None:
         if self._active:
@@ -160,7 +170,7 @@ class Association:
                 # not seen probe, then deauth Assoc with reason 9.
                 logger.info("-> Probe Req to %s", self.bssid)
                 await self.iface.send_no_wait(
-                    probe_req(self.bssid_bytes, self.our_mac, self.ssid)
+                    probe_req(self.bssid_bytes, self.our_mac, self.ssid, channel=self.channel)
                 )
                 await asyncio.sleep(0.08)
             logger.info("-> Auth Req to %s", self.bssid)
@@ -219,7 +229,8 @@ class Association:
             await asyncio.sleep(0.02)
 
     def _rx_cb(self, pkt) -> None:
-        if not self._active or pkt.raw[4:10] != self.our_mac:   # addressed to us
+        if (not self._active or pkt.raw[4:10] != self.our_mac
+                or pkt.raw[10:16] != self.bssid_bytes):
             return
         if isinstance(pkt, AssocRespPacket):
             desc = status_description(pkt.status)

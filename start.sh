@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Usage: ./start.sh [--case] [--background] [--all] …
-#   --case  prompt for scan session name and notes (default: auto-generated name)
+# Usage: ./start.sh [--case] [--background] [--all] [--debug] …
+#   --case   prompt for scan session name and notes (default: auto-generated name)
+#   --debug  wifit3.log + stderr: UI stall stacks, SLOW/ms on scanner and SQLite
 set -euo pipefail
 
 cd "$(dirname "$0")"

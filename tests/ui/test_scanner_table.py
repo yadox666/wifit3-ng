@@ -63,6 +63,9 @@ class _FakeDeviceManager:
     async def stop_hopping(self):
         pass
 
+    def drain_threats(self):
+        return []
+
 
 class _ScannerHostApp(App):
     def __init__(self, array):

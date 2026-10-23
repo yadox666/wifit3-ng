@@ -1,134 +1,221 @@
 import logging
 import os
+import shlex
+import signal
 import subprocess
 import json
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 from wifit3.models import PersistedCapture, ToolCapability, ToolResult, ToolStatus
-from wifit3.persist.hashcat_modes import hashcat_mode_for_path
-from wifit3.vault.tools.base import VaultTool
+from wifit3.models.jobs import JobAction, JobState, ToolName
+from wifit3.persist.config import Config
+from wifit3.vault.tools import hashcat_keypress
+from wifit3.vault.tools.cracker import CrackerTool, WordlistQueue, expand_wordlists
 
 
 logger = logging.getLogger(__name__)
 
 _STILL_ACTIVE = 259                             # GetExitCodeProcess: process has not exited
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_LOG_TAIL_BYTES = 256 * 1024
+_EXIT_WAIT_SECONDS = 5.0
+_TERMINATE_WAIT_SECONDS = 0.5                   # no SIGTERM handler in hashcat: it exits at once
+_QUIT_GRACE_SECONDS = 10.0                      # how long 'q' has to work before we kill instead
+_STATUS_NAMES = {2: "Autotuning", 3: "Running", 4: "Paused"}   # hashcat --status-json codes
 
 
-class HashcatTool(VaultTool):
-    name = "hashcat"
-    description = "Advanced password recovery (WPA/PMKID/MS-CHAPv2)"
+def _read_log_tail(path, limit: int = _LOG_TAIL_BYTES, start: int = 0) -> list[str]:
+    """Up to ``limit`` bytes of whole lines from the end of the log."""
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            begin = max(start, size - limit)
+            if begin > start:
+                f.seek(begin - 1)
+                starts_midline = f.read(1) != b"\n"
+            else:
+                starts_midline = False
+            f.seek(begin)
+            data = f.read()
+    except OSError:
+        return []
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if starts_midline and lines:
+        lines = lines[1:]
+    return lines
+
+
+def _split_args(raw: str) -> list[str]:
+    # posix=False to retain Windows backslashes. Strip unnecessary quotes.
+    return [token.strip('"') for token in shlex.split(raw, posix=False)]
+
+
+@dataclass
+class HashcatQueue(WordlistQueue):
+    log_offset: int = 0         # bytes already in the job's log when the current process started
+    stdin_path: str = ""            # hashcat's stdin; see hashcat_keypress.send
+    quit_sent_at: float = 0.0       # time.time() of the 'q' keypress
+
+
+class HashcatTool(CrackerTool[HashcatQueue]):
+    name = ToolName.HASHCAT
+    label = "Hashcat"
+    description = "Advanced password recovery (WPA/WPA2/PMKID)"
     # ADOPTABLE: hashcat is left running when wifit3 exits and re-attached on the next launch, so a
-    # long crack survives closing the app. KILLABLE is the user's explicit Kill, not shutdown.
+    # long crack survives closing the app. KILLABLE is the user's explicit Stop, not shutdown.
     capabilities = ToolCapability.KILLABLE | ToolCapability.SINGLETON | ToolCapability.ADOPTABLE
+    queue_type = HashcatQueue
 
     def __init__(self) -> None:
         self._procs: Dict[int, subprocess.Popen] = {}
 
-    def can_crack(self, capture: PersistedCapture) -> bool:
-        lowered = capture.path.lower()
-        return (
-            lowered.endswith(".hc22000")
-            or lowered.endswith(".mschapv2")
-            or lowered.endswith(".netntlmv2")
-        )
+    def auto_crack_config(self) -> Optional[dict[str, Any]]:
+        if not (Config.hashcat.path and Config.hashcat.wordlists):
+            return None
+        return {"hashcat_exe": Config.hashcat.path, "wordlists": list(Config.hashcat.wordlists),
+                "hashcat_args": Config.hashcat.args or ""}
 
-    def launch(self, capture: PersistedCapture, config: Dict[str, Any]) -> Dict[str, Any]:
-        hashcat_exe = config.get("hashcat_exe")
-        wordlist = config.get("wordlist")
-        if not hashcat_exe or not wordlist:
-            logger.error(f"Missing hashcat_exe {hashcat_exe!r} or wordlist {wordlist!r} in config")
-            raise ValueError("Missing hashcat_exe or wordlist in config")
+    def launch(self, job: JobState, capture: PersistedCapture) -> None:
+        hashcat_exe = job.config.get("hashcat_exe")
+        requested = job.config.get("wordlists") or []
+        if not hashcat_exe or not requested:
+            logger.error(f"Missing hashcat_exe {hashcat_exe!r} or wordlists {requested!r} in config")
+            raise ValueError("Missing hashcat_exe or wordlists in config")
         if not Path(hashcat_exe).is_file():
             raise ValueError(f"hashcat executable not found: {hashcat_exe}")
-        if not Path(wordlist).is_file():
-            raise ValueError(f"Wordlist not found: {wordlist}")
+        wordlists = expand_wordlists(requested)
+        if not wordlists:
+            raise ValueError(f"Wordlist not found: {', '.join(requested)}")
 
-        hashcat_dir = str(Path(hashcat_exe).parent)
-        abs_capture = str(Path(capture.path).resolve())
-        abs_wordlist = str(Path(wordlist).resolve())
-        potfile = str(Path(capture.path).with_suffix('.potfile').resolve())
-        log_path = str(Path(capture.path).with_suffix('.hashcat.log').resolve())
-        
-        # Clear old potfile if it exists so we start fresh for this job
-        if os.path.exists(potfile):
+        potfile = self._potfile(job.capture_path)
+        if potfile and os.path.exists(potfile):
             try:
                 logger.info(f"Removing old potfile {potfile}")
                 os.remove(potfile)
             except OSError:
                 logger.warning(f"Could not remove old potfile {potfile}", exc_info=True)
 
-        mode = hashcat_mode_for_path(abs_capture)
+        job.log_path = str(Path(job.capture_path).with_suffix('.hashcat.log').resolve())
+        Path(job.log_path).write_bytes(b"")      # one log per job, every wordlist appended to it
+        self._start_wordlist(job, HashcatQueue(wordlists=wordlists))
+
+    def _start_wordlist(self, job: JobState, queue: HashcatQueue) -> None:
+        """Run hashcat against the queue's current wordlist, appending to the job's log."""
+        hashcat_exe = str(job.config.get("hashcat_exe"))
+        self._drop_dead_pidfile(hashcat_exe)
         cmd = [
             hashcat_exe,
-            "-m", mode,
-            abs_capture,
-            abs_wordlist,
-            "--potfile-path", potfile,
+            "-m", "22000",
+            "--potfile-path", str(self._potfile(job.capture_path)),
             "--status",
             "--status-json",
             "--status-timer", "1",
+            *_split_args(job.config.get("hashcat_args") or ""),
+            str(Path(job.capture_path).resolve()),
+            str(queue.current),
         ]
-        
-        creationflags = 0
-        if os.name == 'nt':
-            creationflags = subprocess.CREATE_NO_WINDOW
 
-        with open(log_path, 'w') as f:
-            logger.info(f"Launching {' '.join(cmd)}, saving output to {log_path}")
-            proc = subprocess.Popen(
-                cmd,
-                cwd=hashcat_dir,
-                # Detach stdin: with a real console on stdin hashcat runs interactively (its
-                # [s]/[p]/[q] prompt), reading the same keys Textual needs and freezing the UI.
-                stdin=subprocess.DEVNULL,
-                stdout=f,
-                stderr=subprocess.STDOUT,
-                creationflags=creationflags,
-                # setsid on POSIX so hashcat leaves wifit3's session and survives SIGHUP when the
-                # terminal closes; no effect on Windows.
-                start_new_session=True,
-            )
-        self._procs[proc.pid] = proc
+        with open(job.log_path, 'ab') as f:
+            f.write(f"\n=== wordlist: {queue.current} ===\n".encode("utf-8"))
+            f.flush()
+            queue.log_offset = f.tell()
+        logger.info(f"Launching {' '.join(cmd)}, saving output to {job.log_path}")
+        proc, pid, stdin_path = hashcat_keypress.spawn(
+            cmd, cwd=str(Path(hashcat_exe).parent), log_path=job.log_path)
 
-        return {
-            "pid": proc.pid,
-            "log_path": log_path,
-            "potfile": potfile,
-            "hashcat_exe": hashcat_exe,
-            "hashcat_dir": hashcat_dir,
-            "capture_path": abs_capture
-        }
+        if proc is not None:
+            self._procs[pid] = proc
+        job.pid = pid
+        queue.stdin_path = stdin_path
+        queue.quit_sent_at = 0.0
+        queue.write_to(job)
+        logger.info(f"hashcat running on pid {pid} for {queue.label}")
 
-    def poll_status(self, tracking_data: Dict[str, Any], assume_dead: bool = False) -> ToolResult:
-        log_path = tracking_data.get("log_path")
-        progress_msg = "Running..."
-        if log_path and os.path.exists(log_path):
-            progress_msg = self.parse_progress(log_path) or progress_msg
+    def _drop_dead_pidfile(self, hashcat_exe: str) -> None:
+        """hashcat refuses to start while the pid in its session pidfile is alive, and a run we
+        killed never gets to remove that file."""
+        candidates = (Path(hashcat_exe).parent / "hashcat.pid",
+                      Path.home() / ".hashcat" / "sessions" / "hashcat.pid",
+                      Path.home() / ".local" / "share" / "hashcat" / "sessions" / "hashcat.pid")
+        for pidfile in candidates:
+            try:
+                recorded = int.from_bytes(pidfile.read_bytes()[:4], "little")
+            except OSError:
+                continue
+            if recorded and not self._is_running(recorded, hashcat_exe):
+                try:
+                    pidfile.unlink()
+                except OSError:
+                    logger.warning(f"Could not remove {pidfile}", exc_info=True)
+                else:
+                    logger.info(f"Removed {pidfile}: hashcat pid {recorded} is gone")
 
-        pid = tracking_data.get("pid")
-        capture_path = tracking_data.get("capture_path")
-        potfile = str(Path(capture_path).resolve().with_suffix('.potfile')) if capture_path else None
+    def poll_status(self, job: JobState, assume_dead: bool = False) -> ToolResult:
+        self._remove_exited_processes()
+        queue = HashcatQueue.from_job(job)
+        lines = _read_log_tail(job.log_path, start=queue.log_offset)
+        progress_msg, percent = self._parse_progress(lines) or ("Running...", None)
 
         # The potfile is the source of truth for a recovered key. Check it FIRST, regardless of
         # liveness: hashcat sometimes hangs after printing its result, and blocking the poll until
-        # the process exits froze the whole UI. If the key is there, reap the process and succeed.
-        key = self._key_from_potfile(potfile)
+        # the process exits froze the whole UI. If the key is there, end the process and succeed.
+        key = self._key_from_potfile(self._potfile(job.capture_path))
         if key is not None:
-            self._terminate(pid)
-            return ToolResult(status=ToolStatus.SUCCESS, value=f"Cracked! Key: {key}", result_data={"key": key})
+            self._terminate(job.pid)
+            return self._cracked(key)
 
-        exe = (tracking_data.get("config") or {}).get("hashcat_exe")
-        if not assume_dead and self._is_running(pid, exe):
-            return ToolResult(status=ToolStatus.RUNNING, value=progress_msg)
+        if not assume_dead and self._is_running(job.pid, job.config.get("hashcat_exe")):
+            self._kill_if_quit_timed_out(job, queue)
+            return self._running(progress_msg, percent, queue)
 
-        self._terminate(pid)
-        if "Exhausted" in progress_msg:
-            wordlist = (tracking_data.get("config") or {}).get("wordlist")
-            return ToolResult(status=ToolStatus.FAILURE, value=Path(wordlist).name if wordlist else "wordlist")
-        reason = self._last_log_message(log_path)
+        self._terminate(job.pid)
+        ended = self._wordlist_ended(job, queue, exhausted="Exhausted" in progress_msg)
+        if ended is not None:
+            return ended
+        reason = self._last_log_message(lines)
         return ToolResult(status=ToolStatus.ERROR, value=reason or "hashcat exited without recovering the key")
+
+    def _request_pause(self, job: JobState, queue: HashcatQueue) -> bool:
+        return hashcat_keypress.send("p", pid=job.pid, stdin_path=queue.stdin_path)
+
+    def _request_resume(self, job: JobState, queue: HashcatQueue) -> bool:
+        return hashcat_keypress.send("r", pid=job.pid, stdin_path=queue.stdin_path)
+
+    def _request_stop(self, job: JobState, queue: HashcatQueue) -> bool:
+        if not hashcat_keypress.send("q", pid=job.pid, stdin_path=queue.stdin_path):
+            return False
+        queue.quit_sent_at = time.time()
+        queue.write_to(job)
+        logger.info(f"Sent 'q' to hashcat pid {job.pid}")
+        return True
+
+    def _kill_if_quit_timed_out(self, job: JobState, queue: HashcatQueue) -> None:
+        if not queue.quit_sent_at or time.time() - queue.quit_sent_at < _QUIT_GRACE_SECONDS:
+            return
+        logger.warning(f"hashcat pid {job.pid} is still running {_QUIT_GRACE_SECONDS:.0f}s "
+                       f"after 'q'; killing it")
+        self._kill(job)
+        queue.quit_sent_at = 0.0
+        queue.write_to(job)
+
+    def _running_actions(self, queue: HashcatQueue, progress_msg: str) -> JobAction:
+        if queue.quit_sent_at:
+            return JobAction.STOP
+        actions = self._queue_actions(queue)
+        if queue.stdin_path:
+            actions |= self._pause_action(progress_msg)
+        return actions
+
+    @staticmethod
+    def _potfile(capture_path: str) -> Optional[str]:
+        return str(Path(capture_path).resolve().with_suffix('.potfile')) if capture_path else None
 
     def _key_from_potfile(self, potfile):
         """The recovered passphrase from a per-capture potfile, or None. A line is
@@ -212,83 +299,85 @@ class HashcatTool(VaultTool):
         finally:
             k32.CloseHandle(handle)
 
+    def _remove_exited_processes(self) -> None:
+        # poll() also releases an exited child: unpolled it stays defunct until wifit3 exits
+        for pid, proc in list(self._procs.items()):
+            if proc.poll() is not None:
+                del self._procs[pid]
+
     def _terminate(self, pid) -> None:
-        proc = self._procs.pop(pid, None)
-        if proc is not None and proc.poll() is None:
+        proc = self._procs.get(pid)
+        if proc is None:
+            return
+        if proc.poll() is None:
             try:
                 proc.terminate()
+                proc.wait(timeout=_TERMINATE_WAIT_SECONDS)
             except Exception:
-                logger.exception(f"Failed to terminate hashcat pid {pid}")
+                logger.warning(f"hashcat pid {pid} did not exit when terminated", exc_info=True)
+                return                  # still tracked, so a later poll removes it
+        del self._procs[pid]
 
-    def _last_log_message(self, log_path):
+    def _kill(self, job: JobState) -> None:
+        """Kill the job's process and wait for it to exit: hashcat refuses to start while
+        another instance of the same executable is running."""
+        pid = job.pid
+        if not pid:
+            return
+        proc = self._procs.get(pid)
+        if proc is not None:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=_EXIT_WAIT_SECONDS)
+                    logger.info(f"Killed hashcat pid {pid}")
+                except Exception:
+                    logger.exception(f"Failed to kill hashcat pid {pid}")
+                    return                  # still tracked, so a later poll removes it
+            del self._procs[pid]
+            return
+        if not self._is_running(pid, job.config.get("hashcat_exe")):
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            logger.warning(f"Could not terminate hashcat pid {pid}", exc_info=True)
+            return
+        deadline = time.monotonic() + _EXIT_WAIT_SECONDS
+        while self._pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+    def _last_log_message(self, lines: list[str]) -> Optional[str]:
         """hashcat's last human-readable line (skips JSON status, prompts, banners), so a
         failed job reports hashcat's own error rather than a generic message."""
-        if not log_path or not os.path.exists(log_path):
-            return None
-        skip = ("{", "[s]tatus", "Started:", "Stopped:", "hashcat (")
+        skip = ("{", "[s]tatus", "Started:", "Stopped:", "hashcat (", "=== wordlist")
         candidate = None
-        try:
-            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                for raw in f:
-                    line = raw.strip()
-                    if line and not line.startswith(skip):
-                        candidate = line
-        except OSError:
-            return None
+        for raw in lines:
+            line = raw.strip()
+            if line and not line.startswith(skip):
+                candidate = line
         if candidate and len(candidate) > 200:
             candidate = candidate[:197] + "..."
         return candidate
 
-    def parse_progress(self, log_path):
-        progress_msg = None
-        try:
-            with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
-                lines = f.readlines()
-                for line in reversed(lines):
-                    line = line.strip()
-                    if line.startswith('{') and line.endswith('}'):
-                        try:
-                            status_data = json.loads(line)
-                            progress = status_data.get('progress', [0, 1])
-                            percent = (progress[0] / max(progress[1], 1)) * 100
-                            status_code = status_data.get('status', 0)
-                            if status_code == 2:
-                                progress_msg = "Autotuning (%.2f%%)" % percent
-                            elif status_code == 3:
-                                progress_msg = "Running (%.2f%%)" % percent
-                            elif status_code == 4:
-                                progress_msg = "Paused (%.2f%%)" % percent
-                            elif status_code == 5:
-                                progress_msg = "Exhausted"
-                            elif status_code == 6:
-                                progress_msg = "Cracked! (100%)"
-                            else:
-                                progress_msg = f"Status {status_code} (%.2f%%)" % percent
-                            break
-                        except json.JSONDecodeError:
-                            logger.warning(f"Could not parse hashcat status JSON: {line}", exc_info=True)
-        except Exception:
-            logger.exception(f"Error while parsing progress from {log_path}")
-        return progress_msg
-
-    def kill(self, tracking_data: Dict[str, Any]) -> None:
-        pid = tracking_data.get("pid")
-        if not pid:
-            return
-        proc = self._procs.pop(pid, None)
-        if proc is not None:
-            try:
-                proc.kill()
-            except Exception:
-                logger.exception(f"Failed to kill hashcat pid {pid}")
-            return
-        # A job adopted from a previous session (no handle we own). Only signal it if still alive
-        # and still hashcat, so a reused PID is left alone. SIGTERM -> TerminateProcess on Windows.
-        exe = (tracking_data.get("config") or {}).get("hashcat_exe")
-        if not self._is_running(pid, exe):
-            return
-        try:
-            import signal
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            logger.warning(f"Could not terminate hashcat pid {pid}", exc_info=True)
+    def _parse_progress(self, lines: list[str]) -> Optional[tuple[str, float]]:
+        """hashcat's status and percent done from the newest ``--status-json`` line in the log."""
+        for line in reversed(lines):
+            line = line.strip()
+            if line.startswith('{') and line.endswith('}'):
+                try:
+                    status_data = json.loads(line)
+                    progress = status_data.get('progress', [0, 1])
+                    percent = (progress[0] / max(progress[1], 1)) * 100
+                    status_code = status_data.get('status', 0)
+                    if status_code == 5:
+                        progress_msg = "Exhausted"
+                    elif status_code == 6:
+                        progress_msg = "Cracked! (100%)"
+                    else:
+                        state = _STATUS_NAMES.get(status_code, f"Status {status_code}")
+                        progress_msg = self._progress_msg(state, percent)
+                    return progress_msg, percent
+                except json.JSONDecodeError:
+                    logger.warning(f"Could not parse hashcat status JSON: {line}", exc_info=True)
+        return None
