@@ -28,9 +28,10 @@ import usb.util
 
 from wifit3.chips.rx_reader import RxReaderThread
 from wifit3.chips.driver import DeviceID, Driver, FakeMacSupport, ProgressCallback
+from wifit3.dot11.parser import WlanFrameParser
 from wifit3.errors import BringUpError
 from wifit3.wlan.channels import DUAL_BAND_SCAN_CHANNELS
-from . import bringup, chan, mac, phy, tx
+from . import bringup, chan, efuse, mac, phy, tx, watchdog
 from .rx import iter_frames
 from .transport import Rtl8821cuTransport
 

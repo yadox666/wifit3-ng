@@ -8,7 +8,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Static
 
-from wifit3.observe.product_catalog import families, matching_families
+from wifit3.observe.product_catalog import matching_families
 from wifit3.ui.search_input import SearchInput, sync_search_input_has_text
 
 

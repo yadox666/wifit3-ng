@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from wifit3.bluetooth.sources import OS_SOURCE_ID, source_chip_label, usb_source_id
+from wifit3.bluetooth.sources import OS_SOURCE_ID, usb_source_id
 from wifit3.bluetooth.usb_hci import UsbBluetoothController
 
 BLE_SCAN = "BLE scan"

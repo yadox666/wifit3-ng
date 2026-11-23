@@ -6,7 +6,7 @@ import time
 from collections import deque
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from rich.markup import escape
 from rich.text import Text
@@ -374,7 +374,8 @@ class ClientFocusView(Screen):
         client = self._live_client()
         if client is None:
             return dict(
-                mac="", label="", power_dbm=-100, signal=None, identity_details=None,
+                mac="", label="", power_dbm=-100, signal=None,
+                fingerprint_summary="", identity_details=None,
             )
         fp = fingerprint(client.mac)
         label = fp.label if fp else (vendor_for_mac(client.mac) or "Client")
@@ -384,6 +385,7 @@ class ClientFocusView(Screen):
             label=label,
             power_dbm=client.signal,
             signal=rate,
+            fingerprint_summary="",
             identity_details=fm.client_advertised_details(client),
         )
 

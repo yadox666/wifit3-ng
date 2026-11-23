@@ -4,6 +4,22 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
+## 0.3.28 - 2026-11-23
+
+### Fixed
+
+- **RTL8821CU DKMS driver** (`src/wifit3/chips/rtl8821cu_dkms/driver.py`): imported missing `watchdog`, `efuse`, and `WlanFrameParser` symbols to prevent runtime `NameError` during bring-up, RX parsing, and active-monitor teardown.
+- **RTL8822CU driver** (`src/wifit3/chips/rtl8822cu/driver.py`): imported missing `RxReaderThread` and `WlanFrameParser` symbols to prevent runtime `NameError` during RX reader startup and frame dispatch.
+- **Code quality (`ruff check src/` clean)**: fixed remaining 21 lint issues across `src/` (import ordering in `persist/config.py`, `__all__` exports in `models/__init__.py`, `SearchInput.DEFAULT_CSS` literal string, `oui_db` downloader helper, unused locals in `splash.py`, and unused imports).
+
+## 0.3.27 - 2026-11-23
+
+### Fixed
+
+- **ClientFocusView** crash on mount when loading client details (`fix/client-focus-crash`).
+- **Job tracker Kill button** (`WifiteApp.kill_job`) now delegates to `VaultManager.stop_job` / `clear_job` instead of calling the removed `tool.kill(...)` method on `HashcatTool`.
+- **Frozen Windows standalone `.exe` (`wifit3.exe`)**: added `--hashcat-console` CLI dispatch in `wifit3.__main__` so `hashcat_keypress` works from the PyInstaller bundle without invoking `-m` against the frozen executable.
+
 ## 0.3.26 - 2026-10-23
 
 ### Added

@@ -17,7 +17,7 @@ from wifit3 import __version__
 from wifit3.chips import log_trace
 from textual.reactive import reactive
 from typing import List
-from wifit3.models.jobs import JobState, ToolCapability, ToolStatus
+from wifit3.models.jobs import JobState, ToolStatus
 from wifit3.persist.config import Config, ConfigError
 from wifit3.persist.hidden_ssids import HiddenSsidStore, HiddenSsidStoreError
 from wifit3.persist.wifi_profiles import WifiProfileStore, WifiProfileStoreError
@@ -688,18 +688,14 @@ class WifiteApp(App):
             self.notify(f"ERROR  {job.progress_msg}", title=job.display_name, severity="error")
 
     def kill_job(self, job_id: str) -> None:
-        """Kill a running job, then refresh the tracker immediately."""
+        """Kill a running (or queued) job, then refresh the tracker immediately."""
         job = self.vault.manager.jobs.get(job_id)
         if job is None:
             return
-        tool = self.vault.manager.tools.get(job.tool_name)
-        if tool is not None and ToolCapability.KILLABLE in tool.capabilities:
-            tool.kill({
-                "pid": job.pid,
-                "log_path": job.log_path,
-                "api_id": job.api_id,
-                "config": job.config,
-            })
+        if job.status == ToolStatus.QUEUED:
+            self.vault.manager.clear_job(job_id)
+        else:
+            self.vault.manager.stop_job(job_id)
         self._poll_jobs()
 
     def clear_job(self, job_id: str) -> None:

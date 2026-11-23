@@ -90,6 +90,13 @@ def check_cli(parser, args) -> None:
 
 def main() -> None:
     """Parse CLI args, then run the headless smoke test or launch the TUI."""
+    import sys
+
+    if len(sys.argv) >= 2 and sys.argv[1] == "--hashcat-console":
+        from wifit3.vault.tools.hashcat_console import main as hashcat_console_main
+
+        sys.exit(hashcat_console_main(sys.argv[2:]))
+
     parser = build_parser()
     args = parser.parse_args()
     check_cli(parser, args)

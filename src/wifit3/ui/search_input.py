@@ -9,10 +9,10 @@ _HAS_TEXT_CLASS = "-has-text"
 class SearchInput(Input):
     """Filter/search field with a darker background while non-empty."""
 
-    DEFAULT_CSS = f"""
-    SearchInput.-has-text {{
+    DEFAULT_CSS = """
+    SearchInput.-has-text {
         background: $surface-darken-2;
-    }}
+    }
     """
 
     def on_mount(self) -> None:
