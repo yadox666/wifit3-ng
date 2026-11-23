@@ -66,6 +66,7 @@ class ClientWidget(Horizontal):
         self._power = client.signal
         self._packets = client.packets
         self._ipv4_hint = ""
+        self._deauth_enabled = True
 
     def compose(self) -> ComposeResult:
         badge = (
@@ -101,8 +102,9 @@ class ClientWidget(Horizontal):
             self._fp_label.add_class("fp-known")
             self._mac_label.add_class("fp-known")
         self._deauth = Button("✕", classes="cl-deauth", tooltip="Deauthenticate Client")
-        if self._is_fake or self._is_historical:
+        if self._is_fake or self._is_historical or not self._deauth_enabled:
             self._deauth.disabled = True
+        if self._is_fake or self._is_historical:
             self._deauth.tooltip = (
                 "Historical client; no active station to deauthenticate"
                 if self._is_historical
@@ -161,7 +163,9 @@ class ClientWidget(Horizontal):
         self.post_message(self.DeauthRequested(self._mac))
 
     def set_deauth_enabled(self, enabled: bool) -> None:
-        self._deauth.disabled = self._is_fake or self._is_historical or not enabled
+        self._deauth_enabled = enabled
+        if hasattr(self, "_deauth"):
+            self._deauth.disabled = self._is_fake or self._is_historical or not enabled
 
     def on_click(self, event: events.Click) -> None:
         targets = (self._mac_label, self._mfr_label)

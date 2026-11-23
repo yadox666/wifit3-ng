@@ -84,8 +84,8 @@ class ClientEndpoint(Vertical):
         label: str,
         power_dbm: int,
         signal: float | None,
-        fingerprint_summary: str,
-        identity_details: str | None,
+        fingerprint_summary: str = "",
+        identity_details: str | None = None,
     ) -> None:
         self.set_art(mac)
         self._mac, self._label = mac, label
