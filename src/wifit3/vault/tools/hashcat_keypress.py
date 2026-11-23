@@ -64,8 +64,12 @@ def _spawn_with_console_input(cmd, cwd, log_path):
 
 
 def _run_console_module(args: list[str]) -> Optional[subprocess.CompletedProcess]:
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "--hashcat-console", *args]
+    else:
+        cmd = [sys.executable, "-m", _CONSOLE_MODULE, *args]
     try:
-        done = subprocess.run([sys.executable, "-m", _CONSOLE_MODULE, *args],
+        done = subprocess.run(cmd,
                               capture_output=True, text=True,
                               creationflags=subprocess.CREATE_NO_WINDOW,
                               timeout=_CONSOLE_TIMEOUT_SECONDS)

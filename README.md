@@ -1,9 +1,9 @@
 # wifit3-ng
-> Version 0.3.26. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
+> Version 0.3.27. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
 
-**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.26 - yadox666`.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.27 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.26** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.27** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
@@ -49,6 +49,9 @@ These capabilities come from the original [derv82/wifit3](https://github.com/der
 ## Fork additions (yadox666)
 
 The sections below are the additions in this fork (0.3.4 through current). They sit on top of the original auditor.
+
+**0.3.27:** `ClientFocusView` mount crash fix, Job Tracker Kill button fix (`stop_job` / `clear_job`), and `--hashcat-console` support for the frozen Windows `.exe`. Details in
+[CHANGELOG → 0.3.27](CHANGELOG.md#0327---2026-11-23).
 
 **0.3.26:** Upstream wifit3 v0.5.3 (FT-PSK `WPA*03`/`WPA*04`, Hashtopolis + CPU
 Crack auto-crack, RTL8187L/B RX), **MT7601U** driver, scanner threat toasts /
