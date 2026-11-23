@@ -456,11 +456,6 @@ class SplashView(Screen):
             d.instance_key for d in self._hackrf_devices
         ]
         gps_status = self.app.gps_manager.status
-        gps_changed = (
-            gps_status.instance_key if gps_status is not None else None
-        ) != (
-            self._gps_status.instance_key if self._gps_status is not None else None
-        )
         not_claimed = self.app.bluetooth_manager.usb_not_claimed_keys()
         claim_changed = not_claimed != self._bt_not_claimed_snapshot
         self._usb_bluetooth_controllers = controllers
@@ -493,7 +488,6 @@ class SplashView(Screen):
         self._enter_scanning_mode()
         self.app.device_watch.resume()
         self.render_devices(self.app.device_watch.present())
-        array = getattr(self.app, "array", None)
 
 
     def render_devices(self, devices) -> None:

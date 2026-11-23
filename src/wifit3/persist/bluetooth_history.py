@@ -19,7 +19,6 @@ from wifit3.observe.product_catalog import (
     bluetooth_catalog_hit_from_history,
     catalog_blob,
     catalog_json_from_hit,
-    match_bluetooth,
     prepare_device_catalog,
     restore_catalog,
     supplement_catalog_hit,

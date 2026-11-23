@@ -3,17 +3,16 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import asdict, dataclass, field, fields, replace
+from pathlib import Path
 from types import UnionType
 from typing import Any, TypeVar, get_args, get_origin, get_type_hints
 
-from wifit3.models.jobs import ToolName
-
-_SSID_MAX_OCTETS = 32
-from pathlib import Path
-
 from platformdirs import user_config_dir
+
+from wifit3.models.jobs import ToolName
 from wifit3.persist.private_files import ensure_private_directory, write_private_text
 
+_SSID_MAX_OCTETS = 32
 _PATH = Path(user_config_dir("wifit3", appauthor=False)) / "config.toml"
 
 

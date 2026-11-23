@@ -20,7 +20,6 @@ from typing import Sequence
 
 from wifit3.bluetooth.analytics import device_lacks_usb_hci_bd_addr
 from wifit3.bluetooth.sources import OS_SOURCE_ID, is_usb_source
-from wifit3.models.bluetooth_device import BLE_RADIO, CLASSIC_RADIO
 
 # Transport tokens shared with the manager.
 BLEAK = "bleak"

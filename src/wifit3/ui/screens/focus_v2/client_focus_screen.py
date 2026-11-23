@@ -6,7 +6,7 @@ import time
 from collections import deque
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from rich.markup import escape
 from rich.text import Text

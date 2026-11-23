@@ -130,7 +130,8 @@ def ensure(
     path = cache_path() if path is None else path
     now = time.time() if now is None else now
     if fetch is None:
-        downloader: Callable[[str], bytes] = lambda url: _download(url, progress)
+        def downloader(url: str) -> bytes:
+            return _download(url, progress)
     else:
         downloader = fetch
     if not force and cache_is_fresh(path, now):

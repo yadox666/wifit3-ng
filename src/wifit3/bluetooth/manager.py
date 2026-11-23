@@ -8,7 +8,6 @@ import sys
 import threading
 import time
 from collections.abc import Mapping
-from pathlib import Path
 from collections import deque
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Sequence
@@ -49,7 +48,6 @@ from wifit3.bluetooth import scan_modes
 from wifit3.bluetooth.sources import (
     OS_SOURCE_ID,
     merge_sources,
-    source_chip_label,
     usb_source_id,
 )
 from wifit3.bluetooth.usb_hci import (
@@ -58,7 +56,7 @@ from wifit3.bluetooth.usb_hci import (
     UsbHciScanner,
     find_usb_bluetooth_controllers,
 )
-from wifit3.models import BluetoothDevice, BluetoothInspection, LocationFix
+from wifit3.models import BluetoothDevice, LocationFix
 from wifit3.models.location import positions_digest
 from wifit3.models.bluetooth_device import (
     BLE_RADIO,

@@ -4,6 +4,14 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
+## 0.3.28 - 2026-11-23
+
+### Fixed
+
+- **RTL8821CU DKMS driver** (`src/wifit3/chips/rtl8821cu_dkms/driver.py`): imported missing `watchdog`, `efuse`, and `WlanFrameParser` symbols to prevent runtime `NameError` during bring-up, RX parsing, and active-monitor teardown.
+- **RTL8822CU driver** (`src/wifit3/chips/rtl8822cu/driver.py`): imported missing `RxReaderThread` and `WlanFrameParser` symbols to prevent runtime `NameError` during RX reader startup and frame dispatch.
+- **Code quality (`ruff check src/` clean)**: fixed remaining 21 lint issues across `src/` (import ordering in `persist/config.py`, `__all__` exports in `models/__init__.py`, `SearchInput.DEFAULT_CSS` literal string, `oui_db` downloader helper, unused locals in `splash.py`, and unused imports).
+
 ## 0.3.27 - 2026-11-23
 
 ### Fixed
