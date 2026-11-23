@@ -4,6 +4,16 @@ This changelog describes the additional functionality in this enhanced local
 build compared with the original
 [derv82/wifit3](https://github.com/derv82/wifit3) source tree.
 
+## 0.3.29 - 2026-11-23
+
+### Changed
+
+- **UI responsiveness & event-loop stall fixes**:
+  - `RxReaderThread._dispatch_batch` (`src/wifit3/chips/rx_reader.py`): slices up to 4 USB RX buffers per event-loop turn and yields via `call_soon`, preventing dense packet bursts from starving Textual keystrokes and rendering.
+  - `ScannerView` (`src/wifit3/ui/screens/scanner.py`): throttled `refresh_table` from 15 Hz (`1/15 s`) to 4 Hz (`0.25 s`).
+  - `SplashView` (`src/wifit3/ui/screens/splash.py`): pauses USB Bluetooth/HackRF and OS BLE polling timers in `on_screen_suspend()` and resumes them in `on_screen_resume()`.
+  - `WifiteApp` (`src/wifit3/ui/app.py`): offloaded `VaultManager.poll_jobs()` to `asyncio.to_thread` with an overlap guard, and relaxed `DeviceWatch.poll` from `0.5 s` to `1.5 s`.
+
 ## 0.3.28 - 2026-11-23
 
 ### Fixed

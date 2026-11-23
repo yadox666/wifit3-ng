@@ -403,13 +403,34 @@ class SplashView(Screen):
         self.app.theme_changed_signal.subscribe(self, lambda _theme: self.refresh_theme_art())
         self._enter_scanning_mode()
         self._set_background_button(running=False)
-        self.set_interval(1.0, self.refresh_usb_bluetooth_controllers)
-        self.set_interval(1.0, self.refresh_os_ble_radio)
+        self._usb_bt_timer = None
+        self._os_ble_timer = None
+        self._start_hardware_timers()
         await self.refresh_usb_bluetooth_controllers()
         self.autoreclaim_usb_bluetooth_once()
         self.probe_os_ble()
         if self.app.background_autostart:
             self.autostart_background()
+
+    def _start_hardware_timers(self) -> None:
+        if self._usb_bt_timer is None:
+            self._usb_bt_timer = self.set_interval(1.0, self.refresh_usb_bluetooth_controllers)
+        if self._os_ble_timer is None:
+            self._os_ble_timer = self.set_interval(1.0, self.refresh_os_ble_radio)
+
+    def _stop_hardware_timers(self) -> None:
+        if self._usb_bt_timer is not None:
+            self._usb_bt_timer.stop()
+            self._usb_bt_timer = None
+        if self._os_ble_timer is not None:
+            self._os_ble_timer.stop()
+            self._os_ble_timer = None
+
+    async def on_screen_suspend(self) -> None:
+        self._stop_hardware_timers()
+
+    async def on_screen_resume(self) -> None:
+        self._start_hardware_timers()
 
     @work(exclusive=True, group="os-ble-probe")
     async def probe_os_ble(self) -> None:

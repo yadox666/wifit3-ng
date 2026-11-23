@@ -676,7 +676,7 @@ class ScannerView(Screen):
 
     def _start_table_timers(self) -> None:
         if self._refresh_timer is None and self.app.array:
-            self._refresh_timer = self.set_interval(1 / 15, self.refresh_table)
+            self._refresh_timer = self.set_interval(0.25, self.refresh_table)
         if self._pbc_timer is None and self.app.array:
             self._pbc_timer = self.set_interval(1.0, self._poll_pbc)
 

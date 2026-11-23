@@ -592,7 +592,7 @@ class WifiteApp(App):
         self.install_screen(OfflineDatabaseView(), name="offline")
         
         self.push_screen("splash")
-        self._device_timer = self.set_interval(0.5, self.device_watch.poll)
+        self._device_timer = self.set_interval(1.5, self.device_watch.poll)
         self.set_interval(2.0, self._poll_jobs)
         self.call_after_refresh(self.device_watch.poll)
         self.call_after_refresh(self._poll_jobs)
@@ -638,10 +638,16 @@ class WifiteApp(App):
             group="gps-reconfigure",
         )
 
-    def _poll_jobs(self) -> None:
-        self.vault.manager.poll_jobs()
-        self.active_jobs = self.vault.manager.get_active_jobs()
-        self._notify_completions()
+    async def _poll_jobs(self) -> None:
+        if getattr(self, "_polling_jobs", False):
+            return
+        self._polling_jobs = True
+        try:
+            await asyncio.to_thread(self.vault.manager.poll_jobs)
+            self.active_jobs = self.vault.manager.get_active_jobs()
+            self._notify_completions()
+        finally:
+            self._polling_jobs = False
 
     def _notify_completions(self) -> None:
         """Toast each job the first time it finishes this session; jobs already terminal when
@@ -696,7 +702,7 @@ class WifiteApp(App):
             self.vault.manager.clear_job(job_id)
         else:
             self.vault.manager.stop_job(job_id)
-        self._poll_jobs()
+        self.call_later(self._poll_jobs)
 
     def clear_job(self, job_id: str) -> None:
         """Remove a finished job, then refresh the tracker immediately."""

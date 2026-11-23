@@ -1,9 +1,9 @@
 # wifit3-ng
-> Version 0.3.28. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
+> Version 0.3.29. A standalone USB Wi-Fi, Bluetooth/BLE, GPS, and RF analysis toolkit for Linux, Windows, and macOS.
 
-**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.28 - yadox666`.
+**wifit3-ng** is an enhanced fork of [derv82/wifit3](https://github.com/derv82/wifit3), maintained by [Yadox (@yadox666)](https://github.com/yadox666). The window title reports the running build as `wifit3-ng v0.3.29 - yadox666`.
 
-The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.28** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
+The original project is the technical foundation: user-space USB mini-drivers, the cross-platform wireless stack, the scanner, the capture engines, and the WPA, WPS, and WEP workflows. This fork keeps that work and adds reconnaissance, analysis, capture, Enterprise assessment, target-tracking, and Bluetooth/BLE changes through **0.3.29** in [CHANGELOG.md](CHANGELOG.md). The full delta from upstream is there as well.
 
 <p align="center">
   <img src="assets/wifit3-1-splash.png" alt="wifit3 splash / adapter picker" width="700">
@@ -49,6 +49,9 @@ These capabilities come from the original [derv82/wifit3](https://github.com/der
 ## Fork additions (yadox666)
 
 The sections below are the additions in this fork (0.3.4 through current). They sit on top of the original auditor.
+
+**0.3.29:** UI responsiveness improvements — sliced `RxReaderThread` event-loop dispatch, throttled `ScannerView` table refresh to 4 Hz, paused `SplashView` USB polling when suspended, and offloaded `VaultManager.poll_jobs()` off the UI thread. Details in
+[CHANGELOG → 0.3.29](CHANGELOG.md#0329---2026-11-23).
 
 **0.3.28:** Fixed missing runtime imports (`NameError` bugs) in `rtl8821cu_dkms` and `rtl8822cu` drivers and cleaned all remaining `src/` lint issues (`ruff check src/` clean). Details in
 [CHANGELOG → 0.3.28](CHANGELOG.md#0328---2026-11-23).

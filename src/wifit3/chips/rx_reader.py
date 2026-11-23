@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 DROP_LOG_PERIOD = 2.0  # Log drop errors once every (seconds)
 PAUSE_POLL = 0.003     # wait while paused (seconds)
 MAX_BATCH_SIZE = 64    # frame buffers per batch
+DISPATCH_SLICE = 4     # max buffers processed per event-loop turn before yielding
 MAX_BACKLOG = 256      # backlog = produced - consumed
 EMPTY_SPIN_LIMIT = 8   # consecutive zero-length reads before backing off
 EMPTY_BACKOFF = 0.001  # wait after a zero-length read run (seconds)
@@ -152,9 +153,13 @@ class RxReaderThread:
     # -- loop side -----------------------------------------------------------
 
     def _dispatch_batch(self, batch: list[bytes]) -> None:
-        for buf in batch:
+        head = batch[:DISPATCH_SLICE]
+        tail = batch[DISPATCH_SLICE:]
+        for buf in head:
             try:
                 self._dispatch(buf)
             except Exception:
                 logger.exception(f"[{self._name}] dispatch raised")
-        self._bufs_consumed += len(batch)
+        self._bufs_consumed += len(head)
+        if tail and self._running:
+            self._loop.call_soon(self._dispatch_batch, tail)
